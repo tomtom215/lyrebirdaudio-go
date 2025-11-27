@@ -244,7 +244,7 @@ func (m *Manager) Run(ctx context.Context) error {
 			m.failures.Add(1)
 			m.setState(StateFailed)
 			m.backoff.RecordFailure()
-			m.logf("FFmpeg failed: %v (failures=%d, backoff=%v)", err, m.failures.Load(), m.backoff.Current())
+			m.logf("FFmpeg failed: %v (failures=%d, backoff=%v)", err, m.failures.Load(), m.backoff.CurrentDelay())
 
 			// Wait for backoff (or context cancellation)
 			if err := m.backoff.WaitContext(ctx); err != nil {
