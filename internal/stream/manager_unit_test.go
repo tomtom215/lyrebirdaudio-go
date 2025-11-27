@@ -309,6 +309,52 @@ func TestBuildFFmpegCommandThreadQueue(t *testing.T) {
 	}
 }
 
+// TestBuildFFmpegCommandInputFormat verifies input format handling.
+func TestBuildFFmpegCommandInputFormat(t *testing.T) {
+	tests := []struct {
+		name        string
+		inputFormat string
+		wantFormat  string
+	}{
+		{"alsa format", "alsa", "alsa"},
+		{"lavfi format", "lavfi", "lavfi"},
+		{"empty defaults to alsa", "", "alsa"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &ManagerConfig{
+				ALSADevice:  "hw:0,0",
+				InputFormat: tt.inputFormat,
+				SampleRate:  48000,
+				Channels:    2,
+				Bitrate:     "128k",
+				Codec:       "opus",
+				RTSPURL:     "rtsp://localhost:8554/test",
+			}
+
+			cmd := buildFFmpegCommand(cfg)
+
+			// Find -f flag
+			foundFormat := false
+			for i, arg := range cmd.Args {
+				if arg == "-f" && i+1 < len(cmd.Args) {
+					if cmd.Args[i+1] == tt.wantFormat {
+						foundFormat = true
+					} else {
+						t.Errorf("input format = %q, want %q", cmd.Args[i+1], tt.wantFormat)
+					}
+					break
+				}
+			}
+
+			if !foundFormat {
+				t.Errorf("input format %q not found in command", tt.wantFormat)
+			}
+		})
+	}
+}
+
 // TestManagerMetricsInitialState verifies initial metrics state.
 func TestManagerMetricsInitialState(t *testing.T) {
 	cfg := &ManagerConfig{

@@ -48,7 +48,8 @@ func (s State) String() string {
 // ManagerConfig contains configuration for a stream manager.
 type ManagerConfig struct {
 	DeviceName  string   // Sanitized device name (e.g., "blue_yeti")
-	ALSADevice  string   // ALSA device identifier (e.g., "hw:0,0")
+	ALSADevice  string   // ALSA device identifier (e.g., "hw:0,0") or lavfi source
+	InputFormat string   // Input format: "alsa" or "lavfi" (default: "alsa")
 	StreamName  string   // Stream name for MediaMTX path
 	SampleRate  int      // Sample rate in Hz
 	Channels    int      // Number of channels
@@ -450,8 +451,14 @@ func (m *Manager) forceStop() error {
 // Returns:
 //   - *exec.Cmd: Configured FFmpeg command
 func buildFFmpegCommand(cfg *ManagerConfig) *exec.Cmd {
+	// Determine input format (default to alsa for backward compatibility)
+	inputFormat := cfg.InputFormat
+	if inputFormat == "" {
+		inputFormat = "alsa"
+	}
+
 	args := []string{
-		"-f", "alsa",
+		"-f", inputFormat,
 		"-i", cfg.ALSADevice,
 		"-ar", fmt.Sprintf("%d", cfg.SampleRate),
 		"-ac", fmt.Sprintf("%d", cfg.Channels),

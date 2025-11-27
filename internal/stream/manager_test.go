@@ -3,10 +3,27 @@ package stream
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"testing"
 	"time"
 )
+
+// getTestAudioDevice returns an appropriate audio device for testing.
+// In CI environments without ALSA, it returns a lavfi virtual audio source.
+// On systems with ALSA, it returns hw:0,0.
+func getTestAudioDevice(t *testing.T) (device, inputFormat string) {
+	t.Helper()
+
+	// Check if ALSA device exists
+	if _, err := os.Stat("/proc/asound/card0"); err == nil {
+		return "hw:0,0", "alsa"
+	}
+
+	// Fall back to lavfi virtual audio (null audio source)
+	// This generates silence for testing
+	return "anullsrc=r=48000:cl=stereo", "lavfi"
+}
 
 // TestStreamManagerLifecycle verifies basic stream lifecycle management.
 //
@@ -14,18 +31,21 @@ import (
 //
 //	idle → starting → running → stopping → stopped
 func TestStreamManagerLifecycle(t *testing.T) {
+	device, inputFormat := getTestAudioDevice(t)
+
 	cfg := &ManagerConfig{
-		DeviceName: "test_device",
-		ALSADevice: "hw:0,0",
-		StreamName: "test_stream",
-		SampleRate: 48000,
-		Channels:   2,
-		Bitrate:    "128k",
-		Codec:      "opus",
-		RTSPURL:    "rtsp://localhost:8554/test",
-		LockDir:    t.TempDir(),
-		FFmpegPath: findFFmpegOrSkip(t),
-		Backoff:    NewBackoff(1*time.Second, 10*time.Second, 5),
+		DeviceName:  "test_device",
+		ALSADevice:  device,
+		InputFormat: inputFormat,
+		StreamName:  "test_stream",
+		SampleRate:  48000,
+		Channels:    2,
+		Bitrate:     "128k",
+		Codec:       "opus",
+		RTSPURL:     "rtsp://localhost:8554/test",
+		LockDir:     t.TempDir(),
+		FFmpegPath:  findFFmpegOrSkip(t),
+		Backoff:     NewBackoff(1*time.Second, 10*time.Second, 5),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -130,18 +150,21 @@ func TestStreamManagerFailureRestart(t *testing.T) {
 //
 // If FFmpeg runs < 300s (success threshold), treat as failure and restart.
 func TestStreamManagerShortRunRestart(t *testing.T) {
+	device, inputFormat := getTestAudioDevice(t)
+
 	cfg := &ManagerConfig{
-		DeviceName: "short_run_device",
-		ALSADevice: "hw:0,0",
-		StreamName: "short_run",
-		SampleRate: 48000,
-		Channels:   2,
-		Bitrate:    "128k",
-		Codec:      "opus",
-		RTSPURL:    "rtsp://localhost:8554/short",
-		LockDir:    t.TempDir(),
-		FFmpegPath: findFFmpegOrSkip(t),
-		Backoff:    NewBackoff(100*time.Millisecond, 1*time.Second, 5),
+		DeviceName:  "short_run_device",
+		ALSADevice:  device,
+		InputFormat: inputFormat,
+		StreamName:  "short_run",
+		SampleRate:  48000,
+		Channels:    2,
+		Bitrate:     "128k",
+		Codec:       "opus",
+		RTSPURL:     "rtsp://localhost:8554/short",
+		LockDir:     t.TempDir(),
+		FFmpegPath:  findFFmpegOrSkip(t),
+		Backoff:     NewBackoff(100*time.Millisecond, 1*time.Second, 5),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -515,9 +538,12 @@ func TestStreamManagerStateTransitions(t *testing.T) {
 
 // TestStreamManagerMetrics verifies metrics collection.
 func TestStreamManagerMetrics(t *testing.T) {
+	device, inputFormat := getTestAudioDevice(t)
+
 	cfg := &ManagerConfig{
 		DeviceName: "metrics_device",
-		ALSADevice: "hw:0,0",
+		ALSADevice:  device,
+		InputFormat: inputFormat,
 		StreamName: "metrics",
 		SampleRate: 48000,
 		Channels:   2,
