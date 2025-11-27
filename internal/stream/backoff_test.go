@@ -283,6 +283,38 @@ func TestBackoffConcurrentAccess(t *testing.T) {
 	}
 }
 
+// TestNewBackoffWithThreshold verifies custom success threshold.
+func TestNewBackoffWithThreshold(t *testing.T) {
+	customThreshold := 600 * time.Second
+	backoff := NewBackoffWithThreshold(10*time.Second, 300*time.Second, customThreshold, 50)
+
+	if backoff.CurrentDelay() != 10*time.Second {
+		t.Errorf("CurrentDelay() = %v, want %v", backoff.CurrentDelay(), 10*time.Second)
+	}
+
+	// Test that custom threshold is used
+	backoff.RecordSuccess(400 * time.Second) // Below custom threshold
+	if backoff.ConsecutiveFailures() == 0 {
+		t.Errorf("Expected failure recorded for run below threshold")
+	}
+
+	backoff.Reset()
+	backoff.RecordSuccess(700 * time.Second) // Above custom threshold
+	if backoff.ConsecutiveFailures() != 0 {
+		t.Errorf("Expected success for run above threshold")
+	}
+}
+
+// TestBackoffMaxAttemptsGetter verifies MaxAttempts() getter method.
+func TestBackoffMaxAttemptsGetter(t *testing.T) {
+	maxAttempts := 42
+	backoff := NewBackoff(10*time.Second, 300*time.Second, maxAttempts)
+
+	if backoff.MaxAttempts() != maxAttempts {
+		t.Errorf("MaxAttempts() = %d, want %d", backoff.MaxAttempts(), maxAttempts)
+	}
+}
+
 // BenchmarkBackoffRecordFailure measures performance of RecordFailure.
 func BenchmarkBackoffRecordFailure(b *testing.B) {
 	backoff := NewBackoff(10*time.Second, 300*time.Second, 10000)
