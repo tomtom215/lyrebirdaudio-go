@@ -46,7 +46,7 @@ func MigrateFromBash(bashConfigPath string) (*Config, error) {
 	cfg := DefaultConfig()
 
 	// Open bash config file
-// #nosec G304 - Bash config path specified by administrator
+	// #nosec G304 - Bash config path specified by administrator
 	file, err := os.Open(bashConfigPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open bash config: %w", err)

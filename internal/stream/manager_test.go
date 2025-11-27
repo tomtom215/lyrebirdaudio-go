@@ -25,6 +25,15 @@ func getTestAudioDevice(t *testing.T) (device, inputFormat string) {
 	return "anullsrc=r=48000:cl=stereo", "lavfi"
 }
 
+// getTestOutputURL returns an appropriate output URL for testing.
+// Uses pipe output to avoid dependency on MediaMTX server.
+func getTestOutputURL(t *testing.T, name string) string {
+	t.Helper()
+	// Use pipe:1 (stdout) which FFmpeg can write to without errors
+	// The output will be discarded
+	return "pipe:1"
+}
+
 // TestStreamManagerLifecycle verifies basic stream lifecycle management.
 //
 // This tests the core state machine:
@@ -42,7 +51,7 @@ func TestStreamManagerLifecycle(t *testing.T) {
 		Channels:    2,
 		Bitrate:     "128k",
 		Codec:       "opus",
-		RTSPURL:     "rtsp://localhost:8554/test",
+		RTSPURL:     getTestOutputURL(t, "test"),
 		LockDir:     t.TempDir(),
 		FFmpegPath:  findFFmpegOrSkip(t),
 		Backoff:     NewBackoff(1*time.Second, 10*time.Second, 5),
@@ -107,7 +116,7 @@ func TestStreamManagerFailureRestart(t *testing.T) {
 		Channels:   2,
 		Bitrate:    "128k",
 		Codec:      "opus",
-		RTSPURL:    "rtsp://localhost:8554/failing",
+		RTSPURL:    getTestOutputURL(t, "failing"),
 		LockDir:    t.TempDir(),
 		FFmpegPath: findFFmpegOrSkip(t),
 		Backoff:    NewBackoff(100*time.Millisecond, 1*time.Second, 3),
@@ -161,7 +170,7 @@ func TestStreamManagerShortRunRestart(t *testing.T) {
 		Channels:    2,
 		Bitrate:     "128k",
 		Codec:       "opus",
-		RTSPURL:     "rtsp://localhost:8554/short",
+		RTSPURL:     getTestOutputURL(t, "short"),
 		LockDir:     t.TempDir(),
 		FFmpegPath:  findFFmpegOrSkip(t),
 		Backoff:     NewBackoff(100*time.Millisecond, 1*time.Second, 5),
@@ -284,7 +293,7 @@ func TestStreamManagerLockContention(t *testing.T) {
 		Channels:   2,
 		Bitrate:    "128k",
 		Codec:      "opus",
-		RTSPURL:    "rtsp://localhost:8554/locked",
+		RTSPURL:    getTestOutputURL(t, "locked"),
 		LockDir:    lockDir,
 		FFmpegPath: findFFmpegOrSkip(t),
 		Backoff:    NewBackoff(1*time.Second, 10*time.Second, 3),
@@ -298,7 +307,7 @@ func TestStreamManagerLockContention(t *testing.T) {
 		Channels:   2,
 		Bitrate:    "128k",
 		Codec:      "opus",
-		RTSPURL:    "rtsp://localhost:8554/locked",
+		RTSPURL:    getTestOutputURL(t, "locked"),
 		LockDir:    lockDir, // Same lock directory
 		FFmpegPath: findFFmpegOrSkip(t),
 		Backoff:    NewBackoff(1*time.Second, 10*time.Second, 3),
@@ -380,7 +389,7 @@ func TestStreamManagerGracefulShutdown(t *testing.T) {
 				Channels:   2,
 				Bitrate:    "128k",
 				Codec:      "opus",
-				RTSPURL:    "rtsp://localhost:8554/shutdown",
+				RTSPURL:    getTestOutputURL(t, "shutdown"),
 				LockDir:    t.TempDir(),
 				FFmpegPath: findFFmpegOrSkip(t),
 				Backoff:    NewBackoff(1*time.Second, 10*time.Second, 3),
@@ -438,7 +447,7 @@ func TestStreamManagerFFmpegCommandGeneration(t *testing.T) {
 				Channels:   2,
 				Bitrate:    "192k",
 				Codec:      "opus",
-				RTSPURL:    "rtsp://localhost:8554/test",
+				RTSPURL:    getTestOutputURL(t, "test"),
 			},
 			wantArgs: []string{
 				"-f", "alsa",
@@ -457,7 +466,7 @@ func TestStreamManagerFFmpegCommandGeneration(t *testing.T) {
 				Channels:   1,
 				Bitrate:    "128k",
 				Codec:      "aac",
-				RTSPURL:    "rtsp://localhost:8554/mono",
+				RTSPURL:    getTestOutputURL(t, "mono"),
 			},
 			wantArgs: []string{
 				"-f", "alsa",
@@ -541,18 +550,18 @@ func TestStreamManagerMetrics(t *testing.T) {
 	device, inputFormat := getTestAudioDevice(t)
 
 	cfg := &ManagerConfig{
-		DeviceName: "metrics_device",
+		DeviceName:  "metrics_device",
 		ALSADevice:  device,
 		InputFormat: inputFormat,
-		StreamName: "metrics",
-		SampleRate: 48000,
-		Channels:   2,
-		Bitrate:    "128k",
-		Codec:      "opus",
-		RTSPURL:    "rtsp://localhost:8554/metrics",
-		LockDir:    t.TempDir(),
-		FFmpegPath: findFFmpegOrSkip(t),
-		Backoff:    NewBackoff(1*time.Second, 10*time.Second, 3),
+		StreamName:  "metrics",
+		SampleRate:  48000,
+		Channels:    2,
+		Bitrate:     "128k",
+		Codec:       "opus",
+		RTSPURL:     getTestOutputURL(t, "metrics"),
+		LockDir:     t.TempDir(),
+		FFmpegPath:  findFFmpegOrSkip(t),
+		Backoff:     NewBackoff(1*time.Second, 10*time.Second, 3),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -636,7 +645,7 @@ func BenchmarkStreamManagerStart(b *testing.B) {
 		Channels:   2,
 		Bitrate:    "128k",
 		Codec:      "opus",
-		RTSPURL:    "rtsp://localhost:8554/bench",
+		RTSPURL:    "pipe:1",
 		LockDir:    b.TempDir(),
 		FFmpegPath: "/usr/bin/ffmpeg",
 		Backoff:    NewBackoff(1*time.Second, 10*time.Second, 3),

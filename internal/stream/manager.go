@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -47,19 +48,20 @@ func (s State) String() string {
 
 // ManagerConfig contains configuration for a stream manager.
 type ManagerConfig struct {
-	DeviceName  string   // Sanitized device name (e.g., "blue_yeti")
-	ALSADevice  string   // ALSA device identifier (e.g., "hw:0,0") or lavfi source
-	InputFormat string   // Input format: "alsa" or "lavfi" (default: "alsa")
-	StreamName  string   // Stream name for MediaMTX path
-	SampleRate  int      // Sample rate in Hz
-	Channels    int      // Number of channels
-	Bitrate     string   // Bitrate (e.g., "128k")
-	Codec       string   // Codec ("opus" or "aac")
-	ThreadQueue int      // FFmpeg thread queue size (optional)
-	RTSPURL     string   // Full RTSP URL for output
-	LockDir     string   // Directory for lock files
-	FFmpegPath  string   // Path to ffmpeg binary
-	Backoff     *Backoff // Backoff policy for restarts
+	DeviceName   string   // Sanitized device name (e.g., "blue_yeti")
+	ALSADevice   string   // ALSA device identifier (e.g., "hw:0,0") or lavfi source
+	InputFormat  string   // Input format: "alsa" or "lavfi" (default: "alsa")
+	StreamName   string   // Stream name for MediaMTX path
+	SampleRate   int      // Sample rate in Hz
+	Channels     int      // Number of channels
+	Bitrate      string   // Bitrate (e.g., "128k")
+	Codec        string   // Codec ("opus" or "aac")
+	ThreadQueue  int      // FFmpeg thread queue size (optional)
+	RTSPURL      string   // Full RTSP URL or file path for output
+	OutputFormat string   // Output format: "rtsp", "null", or empty for auto-detect (default: "rtsp")
+	LockDir      string   // Directory for lock files
+	FFmpegPath   string   // Path to ffmpeg binary
+	Backoff      *Backoff // Backoff policy for restarts
 }
 
 // Manager manages a single audio stream's lifecycle.
@@ -443,7 +445,7 @@ func (m *Manager) forceStop() error {
 //	  -ar RATE -ac CHANNELS \
 //	  -c:a CODEC -b:a BITRATE \
 //	  [-thread_queue_size SIZE] \
-//	  -f rtsp RTSP_URL
+//	  -f [rtsp|null] RTSP_URL
 //
 // Parameters:
 //   - cfg: Manager configuration
@@ -480,8 +482,22 @@ func buildFFmpegCommand(cfg *ManagerConfig) *exec.Cmd {
 	// Add bitrate
 	args = append(args, "-b:a", cfg.Bitrate)
 
+	// Determine output format (default to rtsp for backward compatibility)
+	outputFormat := cfg.OutputFormat
+	if outputFormat == "" {
+		// Auto-detect from URL
+		if strings.HasPrefix(cfg.RTSPURL, "rtsp://") {
+			outputFormat = "rtsp"
+		} else if strings.HasPrefix(cfg.RTSPURL, "pipe:") {
+			outputFormat = "null"
+		} else {
+			// Default to rtsp
+			outputFormat = "rtsp"
+		}
+	}
+
 	// Output format and URL
-	args = append(args, "-f", "rtsp", cfg.RTSPURL)
+	args = append(args, "-f", outputFormat, cfg.RTSPURL)
 
 	// #nosec G204 - FFmpegPath is from validated configuration, not user input
 	cmd := exec.Command(cfg.FFmpegPath, args...)

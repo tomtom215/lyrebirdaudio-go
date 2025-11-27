@@ -310,7 +310,7 @@ func runMigrate(args []string) error {
 	}
 
 	// Create directory if needed
-// #nosec G301 - Config directory needs 0755 for system access
+	// #nosec G301 - Config directory needs 0755 for system access
 	if err := os.MkdirAll(filepath.Dir(toPath), 0755); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}

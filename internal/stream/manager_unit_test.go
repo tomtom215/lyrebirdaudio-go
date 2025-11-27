@@ -355,6 +355,58 @@ func TestBuildFFmpegCommandInputFormat(t *testing.T) {
 	}
 }
 
+// TestBuildFFmpegCommandOutputFormat verifies output format handling.
+func TestBuildFFmpegCommandOutputFormat(t *testing.T) {
+	tests := []struct {
+		name         string
+		rtspURL      string
+		outputFormat string
+		wantFormat   string
+	}{
+		{"rtsp URL auto-detect", "rtsp://localhost:8554/test", "", "rtsp"},
+		{"pipe URL auto-detect", "pipe:1", "", "null"},
+		{"explicit rtsp format", "rtsp://localhost:8554/test", "rtsp", "rtsp"},
+		{"explicit null format", "pipe:1", "null", "null"},
+		{"file URL defaults to rtsp", "/tmp/test.opus", "", "rtsp"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &ManagerConfig{
+				ALSADevice:   "hw:0,0",
+				SampleRate:   48000,
+				Channels:     2,
+				Bitrate:      "128k",
+				Codec:        "opus",
+				RTSPURL:      tt.rtspURL,
+				OutputFormat: tt.outputFormat,
+			}
+
+			cmd := buildFFmpegCommand(cfg)
+
+			// Find the output format in args
+			foundFormat := false
+			for i := len(cmd.Args) - 3; i >= 0; i-- {
+				if cmd.Args[i] == "-f" && i+1 < len(cmd.Args) {
+					// Check if this is the output format (not input format)
+					if i+2 < len(cmd.Args) && cmd.Args[i+2] == tt.rtspURL {
+						if cmd.Args[i+1] == tt.wantFormat {
+							foundFormat = true
+						} else {
+							t.Errorf("output format = %q, want %q", cmd.Args[i+1], tt.wantFormat)
+						}
+						break
+					}
+				}
+			}
+
+			if !foundFormat {
+				t.Errorf("output format %q not found in command", tt.wantFormat)
+			}
+		})
+	}
+}
+
 // TestManagerMetricsInitialState verifies initial metrics state.
 func TestManagerMetricsInitialState(t *testing.T) {
 	cfg := &ManagerConfig{
