@@ -491,14 +491,23 @@ func buildFFmpegCommand(cfg *ManagerConfig) *exec.Cmd {
 		} else if cfg.RTSPURL == "-" || cfg.RTSPURL == "/dev/null" || strings.HasPrefix(cfg.RTSPURL, "pipe:") {
 			// Use null format for stdout/pipe/devnull (testing)
 			outputFormat = "null"
+		} else if strings.Contains(cfg.RTSPURL, "/") {
+			// File path - let FFmpeg auto-detect format from extension
+			// Don't specify -f flag
+			outputFormat = ""
 		} else {
-			// Default to rtsp
+			// Default to rtsp for backward compatibility
 			outputFormat = "rtsp"
 		}
 	}
 
 	// Output format and URL
-	args = append(args, "-f", outputFormat, cfg.RTSPURL)
+	if outputFormat != "" {
+		args = append(args, "-f", outputFormat, cfg.RTSPURL)
+	} else {
+		// No format specified - let FFmpeg auto-detect
+		args = append(args, cfg.RTSPURL)
+	}
 
 	// #nosec G204 - FFmpegPath is from validated configuration, not user input
 	cmd := exec.Command(cfg.FFmpegPath, args...)

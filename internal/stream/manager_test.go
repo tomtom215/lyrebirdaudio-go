@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -26,12 +27,13 @@ func getTestAudioDevice(t *testing.T) (device, inputFormat string) {
 }
 
 // getTestOutputURL returns an appropriate output URL for testing.
-// Uses null output to avoid dependency on MediaMTX server.
+// Uses temporary file output to avoid dependency on MediaMTX server.
 func getTestOutputURL(t *testing.T, name string) string {
 	t.Helper()
-	// Use /dev/null with null format to discard output
-	// This will be paired with -f null in buildFFmpegCommand
-	return "/dev/null"
+	// Use temporary file for output
+	// FFmpeg will write opus/ogg data here which we discard after test
+	tmpFile := filepath.Join(t.TempDir(), name+".opus")
+	return tmpFile
 }
 
 // TestStreamManagerLifecycle verifies basic stream lifecycle management.
