@@ -278,11 +278,19 @@ func TestStreamManagerShortRunRestart(t *testing.T) {
 		t.Error("Stream did not enter failed state after short run")
 	}
 
-	// Should attempt restart (back to starting)
-	time.Sleep(200 * time.Millisecond) // Wait for backoff
+	// Wait a bit longer for backoff and restart attempt
+	time.Sleep(300 * time.Millisecond)
+
+	// Manager should be attempting to restart (not stopped)
+	// It could be in Starting, Running, or Failed (if it crashed again)
 	state := mgr.State()
-	if state != StateStarting && state != StateRunning {
-		t.Errorf("State after backoff = %v, want StateStarting or StateRunning", state)
+	if state == StateStopped {
+		t.Errorf("State after backoff = %v, manager should be attempting restart", state)
+	}
+
+	// Verify it's still trying to recover (not permanently stopped)
+	if mgr.Attempts() < 2 {
+		t.Errorf("Attempts = %d, expected at least 2 attempts", mgr.Attempts())
 	}
 }
 

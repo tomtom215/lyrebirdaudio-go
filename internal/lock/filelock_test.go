@@ -393,7 +393,6 @@ func TestFileLockErrorPaths(t *testing.T) {
 	})
 }
 
-
 // BenchmarkFileLockAcquireRelease measures lock acquisition performance.
 func BenchmarkFileLockAcquireRelease(b *testing.B) {
 	lockPath := filepath.Join(b.TempDir(), "bench.lock")
