@@ -47,6 +47,36 @@ func TestRun(t *testing.T) {
 			wantErr: true,
 			errMsg:  "--from path is required",
 		},
+		{
+			name:    "devices command",
+			args:    []string{"devices"},
+			wantErr: true, // Will fail because /proc/asound doesn't exist in test
+		},
+		{
+			name:    "detect command",
+			args:    []string{"detect"},
+			wantErr: true, // Will fail because /proc/asound doesn't exist in test
+		},
+		{
+			name:    "status command (stub)",
+			args:    []string{"status"},
+			wantErr: false, // Stub command doesn't error
+		},
+		{
+			name:    "test command (stub)",
+			args:    []string{"test"},
+			wantErr: false, // Stub command doesn't error
+		},
+		{
+			name:    "diagnose command (stub)",
+			args:    []string{"diagnose"},
+			wantErr: false, // Stub command doesn't error
+		},
+		{
+			name:    "check-system command (stub)",
+			args:    []string{"check-system"},
+			wantErr: false, // Stub command doesn't error
+		},
 	}
 
 	for _, tt := range tests {
@@ -346,20 +376,170 @@ func TestStubCommands(t *testing.T) {
 	}
 }
 
-// TestRunDevicesNoDevices verifies devices command with no devices.
-func TestRunDevicesNoDevices(t *testing.T) {
-	// This will likely fail in test environment without /proc/asound
-	err := runDevices([]string{})
-	// May error if /proc/asound doesn't exist, which is expected in test env
-	_ = err
+// TestRunDevicesWithTestFixtures verifies devices command with test fixtures.
+func TestRunDevicesWithTestFixtures(t *testing.T) {
+	// Use test fixtures
+	asoundPath := filepath.Join("..", "..", "testdata", "proc", "asound")
+
+	// Check if test data exists
+	if _, err := os.Stat(asoundPath); os.IsNotExist(err) {
+		t.Skip("Test data not available")
+	}
+
+	err := runDevicesWithPath(asoundPath, []string{})
+	if err != nil {
+		t.Errorf("runDevicesWithPath() unexpected error: %v", err)
+	}
 }
 
-// TestRunDetectNoDevices verifies detect command with no devices.
-func TestRunDetectNoDevices(t *testing.T) {
-	// This will likely fail in test environment without /proc/asound
-	err := runDetect([]string{})
-	// May error if /proc/asound doesn't exist, which is expected in test env
-	_ = err
+// TestRunDevicesWithPathEmpty verifies devices command with empty directory.
+func TestRunDevicesWithPathEmpty(t *testing.T) {
+	tmpDir := t.TempDir()
+	emptyAsound := filepath.Join(tmpDir, "asound")
+	if err := os.MkdirAll(emptyAsound, 0755); err != nil {
+		t.Fatalf("Failed to create test directory: %v", err)
+	}
+
+	err := runDevicesWithPath(emptyAsound, []string{})
+	if err != nil {
+		t.Errorf("runDevicesWithPath() with empty dir unexpected error: %v", err)
+	}
+}
+
+// TestRunDevicesWithPathNonexistent verifies devices command with nonexistent directory.
+func TestRunDevicesWithPathNonexistent(t *testing.T) {
+	err := runDevicesWithPath("/nonexistent/asound", []string{})
+	if err == nil {
+		t.Error("runDevicesWithPath() with nonexistent path expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to scan devices") {
+		t.Errorf("runDevicesWithPath() error = %q, want 'failed to scan devices'", err.Error())
+	}
+}
+
+// TestRunDetectWithTestFixtures verifies detect command with test fixtures.
+func TestRunDetectWithTestFixtures(t *testing.T) {
+	// Use test fixtures
+	asoundPath := filepath.Join("..", "..", "testdata", "proc", "asound")
+
+	// Check if test data exists
+	if _, err := os.Stat(asoundPath); os.IsNotExist(err) {
+		t.Skip("Test data not available")
+	}
+
+	err := runDetectWithPath(asoundPath, []string{})
+	if err != nil {
+		t.Errorf("runDetectWithPath() unexpected error: %v", err)
+	}
+}
+
+// TestRunDetectWithPathEmpty verifies detect command with empty directory.
+func TestRunDetectWithPathEmpty(t *testing.T) {
+	tmpDir := t.TempDir()
+	emptyAsound := filepath.Join(tmpDir, "asound")
+	if err := os.MkdirAll(emptyAsound, 0755); err != nil {
+		t.Fatalf("Failed to create test directory: %v", err)
+	}
+
+	err := runDetectWithPath(emptyAsound, []string{})
+	if err != nil {
+		t.Errorf("runDetectWithPath() with empty dir unexpected error: %v", err)
+	}
+}
+
+// TestRunDetectWithPathNonexistent verifies detect command with nonexistent directory.
+func TestRunDetectWithPathNonexistent(t *testing.T) {
+	err := runDetectWithPath("/nonexistent/asound", []string{})
+	if err == nil {
+		t.Error("runDetectWithPath() with nonexistent path expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to scan devices") {
+		t.Errorf("runDetectWithPath() error = %q, want 'failed to scan devices'", err.Error())
+	}
+}
+
+// TestRunUSBMapWithPathTestFixtures verifies usb-map with test fixtures.
+func TestRunUSBMapWithPathTestFixtures(t *testing.T) {
+	// Use test fixtures
+	asoundPath := filepath.Join("..", "..", "testdata", "proc", "asound")
+
+	// Check if test data exists
+	if _, err := os.Stat(asoundPath); os.IsNotExist(err) {
+		t.Skip("Test data not available")
+	}
+
+	// Test with --dry-run flag
+	args := []string{"--dry-run"}
+	err := runUSBMapWithPath(asoundPath, args)
+	if err != nil {
+		t.Errorf("runUSBMapWithPath() unexpected error: %v", err)
+	}
+}
+
+// TestRunUSBMapWithPathEmpty verifies usb-map with empty directory.
+func TestRunUSBMapWithPathEmpty(t *testing.T) {
+	tmpDir := t.TempDir()
+	emptyAsound := filepath.Join(tmpDir, "asound")
+	if err := os.MkdirAll(emptyAsound, 0755); err != nil {
+		t.Fatalf("Failed to create test directory: %v", err)
+	}
+
+	args := []string{"--dry-run"}
+	err := runUSBMapWithPath(emptyAsound, args)
+	if err != nil {
+		t.Errorf("runUSBMapWithPath() with empty dir unexpected error: %v", err)
+	}
+}
+
+// TestRunUSBMapWithPathNonDryRun verifies usb-map without --dry-run.
+func TestRunUSBMapWithPathNonDryRun(t *testing.T) {
+	// Use test fixtures
+	asoundPath := filepath.Join("..", "..", "testdata", "proc", "asound")
+
+	// Check if test data exists
+	if _, err := os.Stat(asoundPath); os.IsNotExist(err) {
+		t.Skip("Test data not available")
+	}
+
+	// Without --dry-run, should print stub message
+	err := runUSBMapWithPath(asoundPath, []string{})
+	if err != nil {
+		t.Errorf("runUSBMapWithPath() without dry-run unexpected error: %v", err)
+	}
+}
+
+// TestRunUSBMapWithPathOutputFlag verifies usb-map --output flag.
+func TestRunUSBMapWithPathOutputFlag(t *testing.T) {
+	// Use test fixtures
+	asoundPath := filepath.Join("..", "..", "testdata", "proc", "asound")
+
+	// Check if test data exists
+	if _, err := os.Stat(asoundPath); os.IsNotExist(err) {
+		t.Skip("Test data not available")
+	}
+
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{
+			name: "output with equals",
+			args: []string{"--dry-run", "--output=/tmp/test-rules"},
+		},
+		{
+			name: "output with space",
+			args: []string{"--dry-run", "--output", "/tmp/test-rules"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := runUSBMapWithPath(asoundPath, tt.args)
+			if err != nil {
+				t.Errorf("runUSBMapWithPath() unexpected error: %v", err)
+			}
+		})
+	}
 }
 
 // TestSetupSignalHandler verifies signal handler setup.

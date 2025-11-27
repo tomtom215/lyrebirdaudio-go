@@ -134,8 +134,14 @@ func runVersion() error {
 
 // runDevices lists detected USB audio devices.
 func runDevices(args []string) error {
+	return runDevicesWithPath("/proc/asound", args)
+}
+
+// runDevicesWithPath lists detected USB audio devices from the specified path.
+// Extracted for testability.
+func runDevicesWithPath(asoundPath string, args []string) error {
 	// Scan for USB audio devices
-	devices, err := audio.DetectDevices("/proc/asound")
+	devices, err := audio.DetectDevices(asoundPath)
 	if err != nil {
 		return fmt.Errorf("failed to scan devices: %w", err)
 	}
@@ -165,8 +171,14 @@ func runDevices(args []string) error {
 
 // runDetect detects device capabilities and recommends settings.
 func runDetect(args []string) error {
+	return runDetectWithPath("/proc/asound", args)
+}
+
+// runDetectWithPath detects device capabilities from the specified path.
+// Extracted for testability.
+func runDetectWithPath(asoundPath string, args []string) error {
 	// Scan for USB audio devices
-	devices, err := audio.DetectDevices("/proc/asound")
+	devices, err := audio.DetectDevices(asoundPath)
 	if err != nil {
 		return fmt.Errorf("failed to scan devices: %w", err)
 	}
@@ -198,7 +210,12 @@ func runUSBMap(args []string) error {
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("usb-map requires root privileges (run with sudo)")
 	}
+	return runUSBMapWithPath("/proc/asound", args)
+}
 
+// runUSBMapWithPath creates udev rules from the specified path.
+// Extracted for testability.
+func runUSBMapWithPath(asoundPath string, args []string) error {
 	// Parse flags
 	dryRun := false
 	outputPath := udev.RulesFilePath
@@ -215,7 +232,7 @@ func runUSBMap(args []string) error {
 	}
 
 	// Detect USB audio devices
-	devices, err := audio.DetectDevices("/proc/asound")
+	devices, err := audio.DetectDevices(asoundPath)
 	if err != nil {
 		return fmt.Errorf("failed to detect devices: %w", err)
 	}
