@@ -16,15 +16,17 @@ import (
 func TestFFmpegDiagnostic(t *testing.T) {
 	ffmpegPath := findFFmpegOrSkip(t)
 	device, inputFormat := getTestAudioDevice(t)
-	outputFile := getTestOutputURL(t, "diagnostic")
 
-	// Build exact command we're using in tests
+	// Try AAC codec first (built into FFmpeg, no external libs needed)
+	outputFile := filepath.Join(t.TempDir(), "diagnostic.m4a")
+
+	// Build command with AAC codec
 	args := []string{
 		"-f", inputFormat,
 		"-i", device,
 		"-ar", "48000",
 		"-ac", "2",
-		"-c:a", "libopus",
+		"-c:a", "aac",
 		"-b:a", "128k",
 		outputFile,
 	}
@@ -89,9 +91,9 @@ func getTestAudioDevice(t *testing.T) (device, inputFormat string) {
 // Uses temporary file output to avoid dependency on MediaMTX server.
 func getTestOutputURL(t *testing.T, name string) string {
 	t.Helper()
-	// Use temporary file for output with .ogg extension
-	// Ogg is the standard container for Opus codec
-	tmpFile := filepath.Join(t.TempDir(), name+".ogg")
+	// Use temporary file for output with .m4a extension
+	// M4A is the standard container for AAC codec
+	tmpFile := filepath.Join(t.TempDir(), name+".m4a")
 	return tmpFile
 }
 
@@ -111,7 +113,7 @@ func TestStreamManagerLifecycle(t *testing.T) {
 		SampleRate:  48000,
 		Channels:    2,
 		Bitrate:     "128k",
-		Codec:       "opus",
+		Codec:       "aac",
 		RTSPURL:     getTestOutputURL(t, "test"),
 		LockDir:     t.TempDir(),
 		FFmpegPath:  findFFmpegOrSkip(t),
@@ -176,7 +178,7 @@ func TestStreamManagerFailureRestart(t *testing.T) {
 		SampleRate: 48000,
 		Channels:   2,
 		Bitrate:    "128k",
-		Codec:      "opus",
+		Codec:      "aac",
 		RTSPURL:    getTestOutputURL(t, "failing"),
 		LockDir:    t.TempDir(),
 		FFmpegPath: findFFmpegOrSkip(t),
@@ -230,7 +232,7 @@ func TestStreamManagerShortRunRestart(t *testing.T) {
 		SampleRate:  48000,
 		Channels:    2,
 		Bitrate:     "128k",
-		Codec:       "opus",
+		Codec:       "aac",
 		RTSPURL:     getTestOutputURL(t, "short"),
 		LockDir:     t.TempDir(),
 		FFmpegPath:  findFFmpegOrSkip(t),
@@ -292,7 +294,7 @@ func TestStreamManagerConcurrentStreams(t *testing.T) {
 			SampleRate: 48000,
 			Channels:   2,
 			Bitrate:    "128k",
-			Codec:      "opus",
+			Codec:      "aac",
 			RTSPURL:    fmt.Sprintf("rtsp://localhost:8554/stream_%d", i),
 			LockDir:    t.TempDir(),
 			FFmpegPath: findFFmpegOrSkip(t),
@@ -353,7 +355,7 @@ func TestStreamManagerLockContention(t *testing.T) {
 		SampleRate: 48000,
 		Channels:   2,
 		Bitrate:    "128k",
-		Codec:      "opus",
+		Codec:      "aac",
 		RTSPURL:    getTestOutputURL(t, "locked"),
 		LockDir:    lockDir,
 		FFmpegPath: findFFmpegOrSkip(t),
@@ -367,7 +369,7 @@ func TestStreamManagerLockContention(t *testing.T) {
 		SampleRate: 48000,
 		Channels:   2,
 		Bitrate:    "128k",
-		Codec:      "opus",
+		Codec:      "aac",
 		RTSPURL:    getTestOutputURL(t, "locked"),
 		LockDir:    lockDir, // Same lock directory
 		FFmpegPath: findFFmpegOrSkip(t),
@@ -449,7 +451,7 @@ func TestStreamManagerGracefulShutdown(t *testing.T) {
 				SampleRate: 48000,
 				Channels:   2,
 				Bitrate:    "128k",
-				Codec:      "opus",
+				Codec:      "aac",
 				RTSPURL:    getTestOutputURL(t, "shutdown"),
 				LockDir:    t.TempDir(),
 				FFmpegPath: findFFmpegOrSkip(t),
@@ -507,7 +509,7 @@ func TestStreamManagerFFmpegCommandGeneration(t *testing.T) {
 				SampleRate: 48000,
 				Channels:   2,
 				Bitrate:    "192k",
-				Codec:      "opus",
+				Codec:      "aac",
 				RTSPURL:    getTestOutputURL(t, "test"),
 			},
 			wantArgs: []string{
@@ -618,7 +620,7 @@ func TestStreamManagerMetrics(t *testing.T) {
 		SampleRate:  48000,
 		Channels:    2,
 		Bitrate:     "128k",
-		Codec:       "opus",
+		Codec:       "aac",
 		RTSPURL:     getTestOutputURL(t, "metrics"),
 		LockDir:     t.TempDir(),
 		FFmpegPath:  findFFmpegOrSkip(t),
@@ -705,7 +707,7 @@ func BenchmarkStreamManagerStart(b *testing.B) {
 		SampleRate: 48000,
 		Channels:   2,
 		Bitrate:    "128k",
-		Codec:      "opus",
+		Codec:      "aac",
 		RTSPURL:    "/dev/null",
 		LockDir:    b.TempDir(),
 		FFmpegPath: "/usr/bin/ffmpeg",
