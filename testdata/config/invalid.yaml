@@ -1,0 +1,5 @@
+# Invalid YAML - missing closing bracket
+devices:
+  test_device:
+    sample_rate: 48000
+    channels: [1, 2, 3

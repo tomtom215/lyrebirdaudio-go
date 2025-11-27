@@ -1,0 +1,41 @@
+# Device-specific configuration
+devices:
+  blue_yeti:
+    sample_rate: 48000
+    channels: 2
+    bitrate: 192k
+    codec: opus
+    thread_queue: 8192
+
+  usb_audio_1:
+    sample_rate: 44100
+    channels: 1
+    bitrate: 128k
+    codec: opus
+
+# Global defaults (used when device-specific config not found)
+default:
+  sample_rate: 48000
+  channels: 2
+  bitrate: 128k
+  codec: opus
+  thread_queue: 8192
+
+# Stream manager settings
+stream:
+  initial_restart_delay: 10s    # First restart delay
+  max_restart_delay: 300s       # Maximum backoff delay
+  max_restart_attempts: 50      # Max attempts before giving up
+  usb_stabilization_delay: 5s   # Wait after USB changes
+
+# MediaMTX integration
+mediamtx:
+  api_url: http://localhost:9997
+  rtsp_url: rtsp://localhost:8554
+  config_path: /etc/mediamtx/mediamtx.yml
+
+# Monitoring
+monitor:
+  enabled: true
+  interval: 5m              # Health check interval
+  restart_unhealthy: true   # Auto-restart failed streams
