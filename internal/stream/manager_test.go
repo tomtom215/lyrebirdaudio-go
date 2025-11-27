@@ -21,17 +21,17 @@ func getTestAudioDevice(t *testing.T) (device, inputFormat string) {
 	}
 
 	// Fall back to lavfi virtual audio (null audio source)
-	// This generates silence for testing
-	return "anullsrc=r=48000:cl=stereo", "lavfi"
+	// This generates silence for testing with 600 second duration
+	return "anullsrc=r=48000:cl=stereo:d=600", "lavfi"
 }
 
 // getTestOutputURL returns an appropriate output URL for testing.
 // Uses null output to avoid dependency on MediaMTX server.
 func getTestOutputURL(t *testing.T, name string) string {
 	t.Helper()
-	// Use "-" (stdout) with null format to discard output
+	// Use /dev/null with null format to discard output
 	// This will be paired with -f null in buildFFmpegCommand
-	return "-"
+	return "/dev/null"
 }
 
 // TestStreamManagerLifecycle verifies basic stream lifecycle management.
@@ -645,7 +645,7 @@ func BenchmarkStreamManagerStart(b *testing.B) {
 		Channels:   2,
 		Bitrate:    "128k",
 		Codec:      "opus",
-		RTSPURL:    "-",
+		RTSPURL:    "/dev/null",
 		LockDir:    b.TempDir(),
 		FFmpegPath: "/usr/bin/ffmpeg",
 		Backoff:    NewBackoff(1*time.Second, 10*time.Second, 3),

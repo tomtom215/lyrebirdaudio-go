@@ -366,8 +366,9 @@ func TestBuildFFmpegCommandOutputFormat(t *testing.T) {
 		{"rtsp URL auto-detect", "rtsp://localhost:8554/test", "", "rtsp"},
 		{"pipe URL auto-detect", "pipe:1", "", "null"},
 		{"stdout auto-detect", "-", "", "null"},
+		{"devnull auto-detect", "/dev/null", "", "null"},
 		{"explicit rtsp format", "rtsp://localhost:8554/test", "rtsp", "rtsp"},
-		{"explicit null format", "-", "null", "null"},
+		{"explicit null format", "/dev/null", "null", "null"},
 		{"file URL defaults to rtsp", "/tmp/test.opus", "", "rtsp"},
 	}
 

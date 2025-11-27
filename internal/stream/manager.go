@@ -488,8 +488,8 @@ func buildFFmpegCommand(cfg *ManagerConfig) *exec.Cmd {
 		// Auto-detect from URL
 		if strings.HasPrefix(cfg.RTSPURL, "rtsp://") {
 			outputFormat = "rtsp"
-		} else if cfg.RTSPURL == "-" || strings.HasPrefix(cfg.RTSPURL, "pipe:") {
-			// Use null format for stdout/pipe (testing)
+		} else if cfg.RTSPURL == "-" || cfg.RTSPURL == "/dev/null" || strings.HasPrefix(cfg.RTSPURL, "pipe:") {
+			// Use null format for stdout/pipe/devnull (testing)
 			outputFormat = "null"
 		} else {
 			// Default to rtsp
