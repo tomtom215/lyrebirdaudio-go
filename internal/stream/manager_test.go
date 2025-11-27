@@ -26,12 +26,12 @@ func getTestAudioDevice(t *testing.T) (device, inputFormat string) {
 }
 
 // getTestOutputURL returns an appropriate output URL for testing.
-// Uses pipe output to avoid dependency on MediaMTX server.
+// Uses null output to avoid dependency on MediaMTX server.
 func getTestOutputURL(t *testing.T, name string) string {
 	t.Helper()
-	// Use pipe:1 (stdout) which FFmpeg can write to without errors
-	// The output will be discarded
-	return "pipe:1"
+	// Use "-" (stdout) with null format to discard output
+	// This will be paired with -f null in buildFFmpegCommand
+	return "-"
 }
 
 // TestStreamManagerLifecycle verifies basic stream lifecycle management.
@@ -645,7 +645,7 @@ func BenchmarkStreamManagerStart(b *testing.B) {
 		Channels:   2,
 		Bitrate:    "128k",
 		Codec:      "opus",
-		RTSPURL:    "pipe:1",
+		RTSPURL:    "-",
 		LockDir:    b.TempDir(),
 		FFmpegPath: "/usr/bin/ffmpeg",
 		Backoff:    NewBackoff(1*time.Second, 10*time.Second, 3),
