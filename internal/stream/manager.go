@@ -3,6 +3,7 @@ package stream
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -48,20 +49,21 @@ func (s State) String() string {
 
 // ManagerConfig contains configuration for a stream manager.
 type ManagerConfig struct {
-	DeviceName   string   // Sanitized device name (e.g., "blue_yeti")
-	ALSADevice   string   // ALSA device identifier (e.g., "hw:0,0") or lavfi source
-	InputFormat  string   // Input format: "alsa" or "lavfi" (default: "alsa")
-	StreamName   string   // Stream name for MediaMTX path
-	SampleRate   int      // Sample rate in Hz
-	Channels     int      // Number of channels
-	Bitrate      string   // Bitrate (e.g., "128k")
-	Codec        string   // Codec ("opus" or "aac")
-	ThreadQueue  int      // FFmpeg thread queue size (optional)
-	RTSPURL      string   // Full RTSP URL or file path for output
-	OutputFormat string   // Output format: "rtsp", "null", or empty for auto-detect (default: "rtsp")
-	LockDir      string   // Directory for lock files
-	FFmpegPath   string   // Path to ffmpeg binary
-	Backoff      *Backoff // Backoff policy for restarts
+	DeviceName   string    // Sanitized device name (e.g., "blue_yeti")
+	ALSADevice   string    // ALSA device identifier (e.g., "hw:0,0") or lavfi source
+	InputFormat  string    // Input format: "alsa" or "lavfi" (default: "alsa")
+	StreamName   string    // Stream name for MediaMTX path
+	SampleRate   int       // Sample rate in Hz
+	Channels     int       // Number of channels
+	Bitrate      string    // Bitrate (e.g., "128k")
+	Codec        string    // Codec ("opus" or "aac")
+	ThreadQueue  int       // FFmpeg thread queue size (optional)
+	RTSPURL      string    // Full RTSP URL or file path for output
+	OutputFormat string    // Output format: "rtsp", "null", or empty for auto-detect (default: "rtsp")
+	LockDir      string    // Directory for lock files
+	FFmpegPath   string    // Path to ffmpeg binary
+	Backoff      *Backoff  // Backoff policy for restarts
+	Logger       io.Writer // Optional logger for debug output (nil = no logging)
 }
 
 // Manager manages a single audio stream's lifecycle.
@@ -155,6 +157,13 @@ func NewManager(cfg *ManagerConfig) (*Manager, error) {
 	return mgr, nil
 }
 
+// logf writes a formatted log message if Logger is configured.
+func (m *Manager) logf(format string, args ...interface{}) {
+	if m.cfg.Logger != nil {
+		fmt.Fprintf(m.cfg.Logger, "[Manager %s] "+format+"\n", append([]interface{}{m.cfg.DeviceName}, args...)...)
+	}
+}
+
 // Run starts the stream manager's main loop.
 //
 // This function:
@@ -191,9 +200,11 @@ func NewManager(cfg *ManagerConfig) (*Manager, error) {
 func (m *Manager) Run(ctx context.Context) error {
 	// Acquire lock
 	if err := m.acquireLock(); err != nil {
+		m.logf("Failed to acquire lock: %v", err)
 		return fmt.Errorf("failed to acquire lock: %w", err)
 	}
 	defer m.releaseLock()
+	m.logf("Lock acquired, starting main loop")
 
 	// Main restart loop
 	for {
@@ -214,14 +225,17 @@ func (m *Manager) Run(ctx context.Context) error {
 		// Start stream
 		m.setState(StateStarting)
 		m.attempts.Add(1)
+		m.logf("Attempt %d: Starting FFmpeg", m.attempts.Load())
 
 		startTime := time.Now()
 		err := m.startFFmpeg(ctx)
 		runTime := time.Since(startTime)
+		m.logf("FFmpeg exited after %v (err=%v)", runTime, err)
 
 		// Handle result
 		if err != nil {
 			if err == context.Canceled {
+				m.logf("Context cancelled, stopping")
 				m.setState(StateStopped)
 				return err
 			}
@@ -230,6 +244,7 @@ func (m *Manager) Run(ctx context.Context) error {
 			m.failures.Add(1)
 			m.setState(StateFailed)
 			m.backoff.RecordFailure()
+			m.logf("FFmpeg failed: %v (failures=%d, backoff=%v)", err, m.failures.Load(), m.backoff.Current())
 
 			// Wait for backoff (or context cancellation)
 			if err := m.backoff.WaitContext(ctx); err != nil {
@@ -248,6 +263,7 @@ func (m *Manager) Run(ctx context.Context) error {
 			m.backoff.RecordSuccess(runTime)
 
 			m.setState(StateFailed)
+			m.logf("FFmpeg ran for %v (< 300s threshold), treating as failure", runTime)
 
 			// Wait for backoff
 			if err := m.backoff.WaitContext(ctx); err != nil {
@@ -258,6 +274,8 @@ func (m *Manager) Run(ctx context.Context) error {
 			// Continue to retry
 			continue
 		}
+
+		m.logf("FFmpeg ran successfully for %v", runTime)
 
 		// Long successful run - reset backoff
 		m.backoff.RecordSuccess(runTime)

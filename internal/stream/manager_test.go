@@ -11,6 +11,16 @@ import (
 	"time"
 )
 
+// testLogger wraps *testing.T to implement io.Writer for logging.
+type testLogger struct {
+	t *testing.T
+}
+
+func (tl *testLogger) Write(p []byte) (n int, err error) {
+	tl.t.Log(string(p))
+	return len(p), nil
+}
+
 // TestFFmpegDiagnostic is a diagnostic test to see FFmpeg's actual error output.
 // This helps debug why the integration tests are failing.
 func TestFFmpegDiagnostic(t *testing.T) {
@@ -119,6 +129,7 @@ func TestStreamManagerLifecycle(t *testing.T) {
 		LockDir:     t.TempDir(),
 		FFmpegPath:  findFFmpegOrSkip(t),
 		Backoff:     NewBackoff(1*time.Second, 10*time.Second, 5),
+		Logger:      &testLogger{t: t},
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
