@@ -456,18 +456,20 @@ func TestStreamManagerGracefulShutdown(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			device, inputFormat := getTestAudioDevice(t)
 			cfg := &ManagerConfig{
-				DeviceName: "shutdown_test",
-				ALSADevice: "hw:0,0",
-				StreamName: "shutdown",
-				SampleRate: 48000,
-				Channels:   2,
-				Bitrate:    "128k",
-				Codec:      "aac",
-				RTSPURL:    getTestOutputURL(t, "shutdown"),
-				LockDir:    t.TempDir(),
-				FFmpegPath: findFFmpegOrSkip(t),
-				Backoff:    NewBackoff(1*time.Second, 10*time.Second, 3),
+				DeviceName:  "shutdown_test",
+				ALSADevice:  device,
+				InputFormat: inputFormat,
+				StreamName:  "shutdown",
+				SampleRate:  48000,
+				Channels:    2,
+				Bitrate:     "128k",
+				Codec:       "aac",
+				RTSPURL:     getTestOutputURL(t, "shutdown"),
+				LockDir:     t.TempDir(),
+				FFmpegPath:  findFFmpegOrSkip(t),
+				Backoff:     NewBackoff(1*time.Second, 10*time.Second, 3),
 			}
 
 			ctx, cancel := context.WithCancel(context.Background())

@@ -432,11 +432,14 @@ func (m *Manager) stop() {
 		// Send SIGINT for graceful shutdown
 		_ = cmd.Process.Signal(os.Interrupt)
 
-		// Wait up to 5 seconds for graceful shutdown
-		time.Sleep(5 * time.Second)
-
-		// Force kill if still running
-		_ = cmd.Process.Kill()
+		// Give process a brief moment to handle SIGINT gracefully
+		// Then force kill if still running
+		go func() {
+			time.Sleep(2 * time.Second)
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+			}
+		}()
 	}
 }
 
