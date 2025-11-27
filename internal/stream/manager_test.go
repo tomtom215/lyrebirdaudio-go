@@ -64,8 +64,9 @@ func TestFFmpegDiagnostic(t *testing.T) {
 		}
 
 	case <-time.After(3 * time.Second):
-		// FFmpeg is running - kill it
+		// FFmpeg is running - kill it and wait for exit
 		_ = cmd.Process.Kill()
+		<-done // Wait for process to fully exit
 		t.Logf("FFmpeg is running successfully after 3 seconds")
 		t.Logf("FFmpeg stderr so far:\n%s", stderr.String())
 	}
@@ -503,7 +504,7 @@ func TestStreamManagerFFmpegCommandGeneration(t *testing.T) {
 		wantNotIn []string
 	}{
 		{
-			name: "opus codec",
+			name: "aac codec stereo",
 			cfg: &ManagerConfig{
 				ALSADevice: "hw:0,0",
 				SampleRate: 48000,
@@ -517,12 +518,12 @@ func TestStreamManagerFFmpegCommandGeneration(t *testing.T) {
 				"-i", "hw:0,0",
 				"-ar", "48000",
 				"-ac", "2",
-				"-c:a", "libopus",
+				"-c:a", "aac",
 				"-b:a", "192k",
 			},
 		},
 		{
-			name: "aac codec",
+			name: "aac codec mono",
 			cfg: &ManagerConfig{
 				ALSADevice: "hw:1,0",
 				SampleRate: 44100,
