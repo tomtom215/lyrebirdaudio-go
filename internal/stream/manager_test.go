@@ -482,8 +482,17 @@ func TestStreamManagerGracefulShutdown(t *testing.T) {
 				errCh <- mgr.Run(ctx)
 			}()
 
-			// Wait for desired state
-			time.Sleep(tt.waitTime)
+			// Wait for desired state (with timeout)
+			if tt.shutdownAt != StateStarting {
+				// For states other than starting, wait for that state
+				if !waitForState(t, mgr, tt.shutdownAt, 10*time.Second) {
+					cancel()
+					t.Fatalf("Failed to reach state %v before shutdown", tt.shutdownAt)
+				}
+			} else {
+				// For starting state, just wait briefly as it transitions quickly
+				time.Sleep(tt.waitTime)
+			}
 
 			// Cancel context
 			cancel()
@@ -688,6 +697,12 @@ func waitForState(t *testing.T, mgr *Manager, want State, timeout time.Duration)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+
+	// Check one final time after timeout (state might have changed during sleep)
+	if mgr.State() == want {
+		return true
+	}
+
 	t.Logf("Timeout waiting for state %v, current state: %v", want, mgr.State())
 	return false
 }
