@@ -1,7 +1,10 @@
 package stream
 
 import (
+	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -471,6 +474,181 @@ func TestManagerMetricsInitialState(t *testing.T) {
 
 	if metrics.Failures != 0 {
 		t.Errorf("Metrics.Failures = %d, want 0", metrics.Failures)
+	}
+}
+
+// TestManagerLogf verifies logging functionality.
+func TestManagerLogf(t *testing.T) {
+	tests := []struct {
+		name       string
+		hasLogger  bool
+		format     string
+		args       []interface{}
+		wantOutput string
+	}{
+		{
+			name:       "with logger",
+			hasLogger:  true,
+			format:     "test message %d",
+			args:       []interface{}{42},
+			wantOutput: "[Manager test] test message 42\n",
+		},
+		{
+			name:       "with logger no args",
+			hasLogger:  true,
+			format:     "simple message",
+			args:       []interface{}{},
+			wantOutput: "[Manager test] simple message\n",
+		},
+		{
+			name:       "without logger",
+			hasLogger:  false,
+			format:     "test message",
+			args:       []interface{}{},
+			wantOutput: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create a buffer to capture log output
+			var buf bytes.Buffer
+
+			cfg := &ManagerConfig{
+				DeviceName: "test",
+				ALSADevice: "hw:0,0",
+				StreamName: "stream",
+				SampleRate: 48000,
+				Channels:   2,
+				Bitrate:    "128k",
+				Codec:      "opus",
+				RTSPURL:    "rtsp://localhost:8554/test",
+				LockDir:    "/tmp",
+				FFmpegPath: "/usr/bin/ffmpeg",
+				Backoff:    NewBackoff(1*time.Second, 10*time.Second, 5),
+			}
+
+			if tt.hasLogger {
+				cfg.Logger = &buf
+			}
+
+			mgr, err := NewManager(cfg)
+			if err != nil {
+				t.Fatalf("NewManager() error = %v", err)
+			}
+
+			mgr.logf(tt.format, tt.args...)
+
+			got := buf.String()
+			if got != tt.wantOutput {
+				t.Errorf("logf() output = %q, want %q", got, tt.wantOutput)
+			}
+		})
+	}
+}
+
+// TestManagerAcquireLock verifies lock acquisition and release.
+func TestManagerAcquireLock(t *testing.T) {
+	lockDir := t.TempDir()
+
+	cfg := &ManagerConfig{
+		DeviceName: "test_lock",
+		ALSADevice: "hw:0,0",
+		StreamName: "stream",
+		SampleRate: 48000,
+		Channels:   2,
+		Bitrate:    "128k",
+		Codec:      "opus",
+		RTSPURL:    "rtsp://localhost:8554/test",
+		LockDir:    lockDir,
+		FFmpegPath: "/usr/bin/ffmpeg",
+		Backoff:    NewBackoff(1*time.Second, 10*time.Second, 5),
+	}
+
+	mgr, err := NewManager(cfg)
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+
+	// Test acquire lock
+	err = mgr.acquireLock()
+	if err != nil {
+		t.Fatalf("acquireLock() error = %v", err)
+	}
+
+	// Verify lock file exists
+	lockPath := filepath.Join(lockDir, "test_lock.lock")
+	if _, err := os.Stat(lockPath); os.IsNotExist(err) {
+		t.Errorf("Lock file was not created at %s", lockPath)
+	}
+
+	// Test release lock
+	mgr.releaseLock()
+
+	// Verify lock is released (file may still exist but should be unlockable)
+	// We can verify by trying to acquire again
+	err = mgr.acquireLock()
+	if err != nil {
+		t.Errorf("Failed to re-acquire lock after release: %v", err)
+	}
+	mgr.releaseLock()
+}
+
+// TestManagerStop verifies stop behavior.
+func TestManagerStop(t *testing.T) {
+	cfg := &ManagerConfig{
+		DeviceName: "test_stop",
+		ALSADevice: "hw:0,0",
+		StreamName: "stream",
+		SampleRate: 48000,
+		Channels:   2,
+		Bitrate:    "128k",
+		Codec:      "opus",
+		RTSPURL:    "rtsp://localhost:8554/test",
+		LockDir:    t.TempDir(),
+		FFmpegPath: "/usr/bin/ffmpeg",
+		Backoff:    NewBackoff(1*time.Second, 10*time.Second, 5),
+	}
+
+	mgr, err := NewManager(cfg)
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+
+	// Call stop() when no process is running - should not panic
+	mgr.stop()
+
+	// Verify state changed to stopping
+	if mgr.State() != StateStopping {
+		t.Errorf("State after stop() = %v, want StateStopping", mgr.State())
+	}
+}
+
+// TestManagerForceStop verifies forceStop behavior.
+func TestManagerForceStop(t *testing.T) {
+	cfg := &ManagerConfig{
+		DeviceName: "test_force_stop",
+		ALSADevice: "hw:0,0",
+		StreamName: "stream",
+		SampleRate: 48000,
+		Channels:   2,
+		Bitrate:    "128k",
+		Codec:      "opus",
+		RTSPURL:    "rtsp://localhost:8554/test",
+		LockDir:    t.TempDir(),
+		FFmpegPath: "/usr/bin/ffmpeg",
+		Backoff:    NewBackoff(1*time.Second, 10*time.Second, 5),
+	}
+
+	mgr, err := NewManager(cfg)
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+
+	// Call forceStop() when no process is running - should return error
+	err = mgr.forceStop()
+	if err == nil {
+		t.Error("forceStop() with no process should return error")
 	}
 }
 

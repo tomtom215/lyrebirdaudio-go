@@ -156,13 +156,13 @@ func TestGenerateRulesFile(t *testing.T) {
 	}
 }
 
-// TestWriteRulesFile verifies file writing with proper permissions.
+// TestRulesFileConstants verifies file writing with proper permissions.
 //
 // udev rules files must be:
 // - Owned by root:root (0:0)
 // - Mode 0644 (readable by all, writable by root)
 // - Located at /etc/udev/rules.d/99-usb-soundcards.rules
-func TestWriteRulesFile(t *testing.T) {
+func TestRulesFileConstants(t *testing.T) {
 	// This is a unit test - we test the generation logic, not actual file writing
 	// Actual file writing is tested in integration tests
 
@@ -257,6 +257,92 @@ func TestDeviceInfo(t *testing.T) {
 
 	if rule != expected {
 		t.Errorf("DeviceInfo.GenerateRule() mismatch:\ngot:  %q\nwant: %q", rule, expected)
+	}
+}
+
+// TestWriteRulesFile verifies WriteRulesFile validation and error handling.
+func TestWriteRulesFile(t *testing.T) {
+	tests := []struct {
+		name    string
+		devices []*DeviceInfo
+		reload  bool
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name: "valid devices",
+			devices: []*DeviceInfo{
+				{PortPath: "1-1.4", BusNum: 1, DevNum: 5},
+				{PortPath: "1-1.5", BusNum: 1, DevNum: 6},
+			},
+			reload:  true,
+			wantErr: true,
+			errMsg:  "WriteRulesFile not yet implemented - requires elevated privileges",
+		},
+		{
+			name: "single valid device",
+			devices: []*DeviceInfo{
+				{PortPath: "1-1", BusNum: 1, DevNum: 3},
+			},
+			reload:  false,
+			wantErr: true,
+			errMsg:  "WriteRulesFile not yet implemented - requires elevated privileges",
+		},
+		{
+			name: "invalid port path",
+			devices: []*DeviceInfo{
+				{PortPath: "invalid", BusNum: 1, DevNum: 5},
+			},
+			reload:  true,
+			wantErr: true,
+			errMsg:  "invalid device 0: invalid USB port path: invalid",
+		},
+		{
+			name: "invalid bus number",
+			devices: []*DeviceInfo{
+				{PortPath: "1-1.4", BusNum: -1, DevNum: 5},
+			},
+			reload:  true,
+			wantErr: true,
+			errMsg:  "invalid device 0: invalid bus number: -1 (must be positive)",
+		},
+		{
+			name: "invalid dev number",
+			devices: []*DeviceInfo{
+				{PortPath: "1-1.4", BusNum: 1, DevNum: -1},
+			},
+			reload:  true,
+			wantErr: true,
+			errMsg:  "invalid device 0: invalid dev number: -1 (must be positive)",
+		},
+		{
+			name: "multiple devices with one invalid",
+			devices: []*DeviceInfo{
+				{PortPath: "1-1.4", BusNum: 1, DevNum: 5},
+				{PortPath: "invalid", BusNum: 1, DevNum: 6},
+			},
+			reload:  true,
+			wantErr: true,
+			errMsg:  "invalid device 1: invalid USB port path: invalid",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := WriteRulesFile(tt.devices, tt.reload)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Error("WriteRulesFile() expected error, got nil")
+				} else if tt.errMsg != "" && err.Error() != tt.errMsg {
+					t.Errorf("WriteRulesFile() error = %q, want %q", err.Error(), tt.errMsg)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("WriteRulesFile() unexpected error: %v", err)
+				}
+			}
+		})
 	}
 }
 

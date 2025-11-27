@@ -451,6 +451,111 @@ func BenchmarkLoadConfig(b *testing.B) {
 	}
 }
 
+// TestDeviceConfigValidatePartial verifies partial validation of device configs.
+func TestDeviceConfigValidatePartial(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     DeviceConfig
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name: "valid config",
+			cfg: DeviceConfig{
+				SampleRate: 48000,
+				Channels:   2,
+				Codec:      "opus",
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid with aac codec",
+			cfg: DeviceConfig{
+				SampleRate: 44100,
+				Channels:   1,
+				Codec:      "aac",
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid with empty codec",
+			cfg: DeviceConfig{
+				SampleRate: 48000,
+				Channels:   2,
+				Codec:      "",
+			},
+			wantErr: false,
+		},
+		{
+			name: "negative sample rate",
+			cfg: DeviceConfig{
+				SampleRate: -1,
+				Channels:   2,
+				Codec:      "opus",
+			},
+			wantErr: true,
+			errMsg:  "sample_rate must be positive",
+		},
+		{
+			name: "negative channels",
+			cfg: DeviceConfig{
+				SampleRate: 48000,
+				Channels:   -1,
+				Codec:      "opus",
+			},
+			wantErr: true,
+			errMsg:  "channels must be positive",
+		},
+		{
+			name: "too many channels",
+			cfg: DeviceConfig{
+				SampleRate: 48000,
+				Channels:   33,
+				Codec:      "opus",
+			},
+			wantErr: true,
+			errMsg:  "channels must be between 1 and 32",
+		},
+		{
+			name: "invalid codec",
+			cfg: DeviceConfig{
+				SampleRate: 48000,
+				Channels:   2,
+				Codec:      "mp3",
+			},
+			wantErr: true,
+			errMsg:  "codec must be opus or aac",
+		},
+		{
+			name: "zero values allowed (partial config)",
+			cfg: DeviceConfig{
+				SampleRate: 0,
+				Channels:   0,
+				Codec:      "",
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.cfg.ValidatePartial()
+
+			if tt.wantErr {
+				if err == nil {
+					t.Error("ValidatePartial() expected error, got nil")
+				} else if tt.errMsg != "" && err.Error() != tt.errMsg {
+					t.Errorf("ValidatePartial() error = %q, want %q", err.Error(), tt.errMsg)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("ValidatePartial() unexpected error: %v", err)
+				}
+			}
+		})
+	}
+}
+
 // BenchmarkGetDeviceConfig measures device lookup performance.
 func BenchmarkGetDeviceConfig(b *testing.B) {
 	configPath := filepath.Join("..", "..", "testdata", "config", "valid.yaml")
