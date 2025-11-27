@@ -117,9 +117,9 @@ func TestGetUSBPhysicalPortNoBusDevMismatch(t *testing.T) {
 // TestParseUSBPortPath verifies port path pattern matching.
 func TestParseUSBPortPath(t *testing.T) {
 	tests := []struct {
-		name    string
-		input   string
-		wantOK  bool
+		name   string
+		input  string
+		wantOK bool
 	}{
 		{"simple port", "1-1", true},
 		{"nested port", "1-1.4", true},

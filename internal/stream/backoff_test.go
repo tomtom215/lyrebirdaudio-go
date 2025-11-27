@@ -34,9 +34,9 @@ func TestBackoffExponentialIncrease(t *testing.T) {
 	backoff := NewBackoff(10*time.Second, 300*time.Second, 50)
 
 	tests := []struct {
-		attempt     int
-		wantDelay   time.Duration
-		wantCapped  bool
+		attempt    int
+		wantDelay  time.Duration
+		wantCapped bool
 	}{
 		{1, 10 * time.Second, false},  // Initial
 		{2, 20 * time.Second, false},  // 10 * 2
