@@ -61,10 +61,10 @@ func TestFFmpegDiagnostic(t *testing.T) {
 			t.Logf("FFmpeg completed successfully")
 		}
 
-	case <-time.After(10 * time.Second):
+	case <-time.After(3 * time.Second):
 		// FFmpeg is running - kill it
-		cmd.Process.Kill()
-		t.Logf("FFmpeg is running successfully after 10 seconds")
+		_ = cmd.Process.Kill()
+		t.Logf("FFmpeg is running successfully after 3 seconds")
 		t.Logf("FFmpeg stderr so far:\n%s", stderr.String())
 	}
 }
