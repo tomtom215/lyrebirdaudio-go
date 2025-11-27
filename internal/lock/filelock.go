@@ -53,6 +53,7 @@ func NewFileLock(path string) (*FileLock, error) {
 
 	// Create parent directory if needed
 	dir := filepath.Dir(path)
+// #nosec G301 - Lock directory needs 0755 for multi-user access
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create lock directory: %w", err)
 	}
@@ -87,6 +88,7 @@ func (fl *FileLock) Acquire(timeout time.Duration) error {
 	}
 
 	// Open lock file (create if doesn't exist)
+// #nosec G302 - Lock file needs 0644 for multi-process coordination
 	file, err := os.OpenFile(fl.path, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
 		return fmt.Errorf("failed to open lock file: %w", err)
@@ -195,6 +197,7 @@ func isLockStale(lockPath string, threshold time.Duration) (bool, error) {
 	}
 
 	// Read PID from lock file
+// #nosec G304 - Lock path is controlled by application configuration
 	data, err := os.ReadFile(lockPath)
 	if err != nil {
 		return true, nil // Can't read = assume stale

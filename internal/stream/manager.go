@@ -483,6 +483,7 @@ func buildFFmpegCommand(cfg *ManagerConfig) *exec.Cmd {
 	// Output format and URL
 	args = append(args, "-f", "rtsp", cfg.RTSPURL)
 
+	// #nosec G204 - FFmpegPath is from validated configuration, not user input
 	cmd := exec.Command(cfg.FFmpegPath, args...)
 
 	// Redirect stderr for logging (optional)

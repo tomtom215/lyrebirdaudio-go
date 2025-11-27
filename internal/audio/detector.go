@@ -147,6 +147,7 @@ func GetDeviceInfo(asoundPath string, cardNumber int) (*Device, error) {
 	}
 
 	// Read USB ID
+// #nosec G304 - Reading from /proc/asound (kernel filesystem)
 	usbIDBytes, err := os.ReadFile(usbIDPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read usbid: %w", err)
@@ -161,6 +162,7 @@ func GetDeviceInfo(asoundPath string, cardNumber int) (*Device, error) {
 
 	// Read device name
 	idPath := filepath.Join(cardDir, "id")
+// #nosec G304 - Reading from /proc/asound (kernel filesystem)
 	nameBytes, err := os.ReadFile(idPath)
 	name := "unknown"
 	if err == nil {

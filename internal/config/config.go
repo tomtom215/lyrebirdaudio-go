@@ -78,6 +78,7 @@ type MonitorConfig struct {
 //	devCfg := cfg.GetDeviceConfig("blue_yeti")
 func LoadConfig(path string) (*Config, error) {
 	// Read file
+	// #nosec G304 - Config path is from administrator-controlled configuration
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
@@ -117,6 +118,7 @@ func (c *Config) Save(path string) error {
 	}
 
 	// Write file with 0644 permissions (readable by all, writable by owner)
+	// #nosec G306 - Config file should be world-readable (0644 is appropriate)
 	if err := os.WriteFile(path, data, 0644); err != nil {
 		return fmt.Errorf("failed to write config file: %w", err)
 	}

@@ -86,11 +86,13 @@ func GetUSBPhysicalPort(sysfsPath string, busNum, devNum int) (portPath, product
 			portPath = basename
 
 			// Read optional product name
+// #nosec G304 - Reading from /sys/bus/usb (kernel filesystem)
 			if productBytes, err := os.ReadFile(filepath.Join(devicePath, "product")); err == nil {
 				product = strings.TrimSpace(string(productBytes))
 			}
 
 			// Read optional serial number
+// #nosec G304 - Reading from /sys/bus/usb (kernel filesystem)
 			if serialBytes, err := os.ReadFile(filepath.Join(devicePath, "serial")); err == nil {
 				serial = strings.TrimSpace(string(serialBytes))
 			}
@@ -167,6 +169,7 @@ func SafeBase10(s string) (int, error) {
 //   - error: if files don't exist or can't be parsed
 func readBusDevNum(devicePath string) (busNum, devNum int, err error) {
 	// Read busnum file
+// #nosec G304 - Reading from /sys/bus/usb (kernel filesystem)
 	busBytes, err := os.ReadFile(filepath.Join(devicePath, "busnum"))
 	if err != nil {
 		return 0, 0, fmt.Errorf("failed to read busnum: %w", err)
@@ -178,6 +181,7 @@ func readBusDevNum(devicePath string) (busNum, devNum int, err error) {
 	}
 
 	// Read devnum file
+// #nosec G304 - Reading from /sys/bus/usb (kernel filesystem)
 	devBytes, err := os.ReadFile(filepath.Join(devicePath, "devnum"))
 	if err != nil {
 		return 0, 0, fmt.Errorf("failed to read devnum: %w", err)
