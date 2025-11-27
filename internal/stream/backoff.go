@@ -145,6 +145,13 @@ func (b *Backoff) Attempts() int {
 	return b.attempts
 }
 
+// MaxAttempts returns the maximum number of attempts allowed.
+func (b *Backoff) MaxAttempts() int {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.maxAttempts
+}
+
 // ConsecutiveFailures returns the number of consecutive failures.
 func (b *Backoff) ConsecutiveFailures() int {
 	b.mu.RLock()
