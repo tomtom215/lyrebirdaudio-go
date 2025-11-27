@@ -299,6 +299,101 @@ func TestFileLockRaceDetector(t *testing.T) {
 	wg.Wait()
 }
 
+// TestFileLockErrorPaths tests error conditions.
+func TestFileLockErrorPaths(t *testing.T) {
+	t.Run("empty path", func(t *testing.T) {
+		_, err := NewFileLock("")
+		if err == nil {
+			t.Error("NewFileLock(\"\") should return error")
+		}
+		if err != nil && err.Error() != "lock path cannot be empty" {
+			t.Errorf("Error message = %q, want \"lock path cannot be empty\"", err.Error())
+		}
+	})
+
+	t.Run("release without acquire", func(t *testing.T) {
+		lockPath := filepath.Join(t.TempDir(), "test.lock")
+		lock, err := NewFileLock(lockPath)
+		if err != nil {
+			t.Fatalf("NewFileLock() error = %v", err)
+		}
+
+		// Release without acquiring should return error
+		err = lock.Release()
+		if err == nil {
+			t.Error("Release() without acquire should return error")
+		}
+	})
+
+	t.Run("double release", func(t *testing.T) {
+		lockPath := filepath.Join(t.TempDir(), "test.lock")
+		lock, err := NewFileLock(lockPath)
+		if err != nil {
+			t.Fatalf("NewFileLock() error = %v", err)
+		}
+
+		err = lock.Acquire(1 * time.Second)
+		if err != nil {
+			t.Fatalf("Acquire() error = %v", err)
+		}
+
+		// First release
+		err = lock.Release()
+		if err != nil {
+			t.Errorf("First Release() error = %v", err)
+		}
+
+		// Second release should return error (lock not held)
+		err = lock.Release()
+		if err == nil {
+			t.Error("Second Release() should return error")
+		}
+	})
+
+	t.Run("close without acquire", func(t *testing.T) {
+		lockPath := filepath.Join(t.TempDir(), "test.lock")
+		lock, err := NewFileLock(lockPath)
+		if err != nil {
+			t.Fatalf("NewFileLock() error = %v", err)
+		}
+
+		err = lock.Close()
+		if err != nil {
+			t.Errorf("Close() without acquire error = %v", err)
+		}
+	})
+
+	t.Run("acquire timeout", func(t *testing.T) {
+		lockPath := filepath.Join(t.TempDir(), "test.lock")
+
+		lock1, err := NewFileLock(lockPath)
+		if err != nil {
+			t.Fatalf("NewFileLock(1) error = %v", err)
+		}
+		defer func() { _ = lock1.Close() }()
+
+		// Acquire lock with first instance
+		err = lock1.Acquire(1 * time.Second)
+		if err != nil {
+			t.Fatalf("Acquire(1) error = %v", err)
+		}
+		defer func() { _ = lock1.Release() }()
+
+		// Try to acquire with second instance - should timeout
+		lock2, err := NewFileLock(lockPath)
+		if err != nil {
+			t.Fatalf("NewFileLock(2) error = %v", err)
+		}
+		defer func() { _ = lock2.Close() }()
+
+		err = lock2.Acquire(100 * time.Millisecond)
+		if err == nil {
+			t.Error("Acquire(2) should timeout when lock is held")
+		}
+	})
+}
+
+
 // BenchmarkFileLockAcquireRelease measures lock acquisition performance.
 func BenchmarkFileLockAcquireRelease(b *testing.B) {
 	lockPath := filepath.Join(b.TempDir(), "bench.lock")

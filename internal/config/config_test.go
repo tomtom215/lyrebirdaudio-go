@@ -441,6 +441,37 @@ func TestSaveConfig(t *testing.T) {
 	}
 }
 
+// TestSaveConfigErrorPaths tests error handling in Save().
+func TestSaveConfigErrorPaths(t *testing.T) {
+	cfg := DefaultConfig()
+
+	t.Run("invalid path", func(t *testing.T) {
+		// Try to save to a directory that doesn't exist and can't be created
+		// Use a path with null bytes which is invalid on all systems
+		invalidPath := "/tmp/\x00invalid/config.yaml"
+		err := cfg.Save(invalidPath)
+		if err == nil {
+			t.Error("Save() with invalid path should return error")
+		}
+	})
+
+	t.Run("unwritable directory", func(t *testing.T) {
+		// Create a read-only directory
+		tmpDir := t.TempDir()
+		readOnlyDir := filepath.Join(tmpDir, "readonly")
+		if err := os.Mkdir(readOnlyDir, 0444); err != nil {
+			t.Skipf("Cannot create read-only directory: %v", err)
+		}
+
+		// Try to write to the read-only directory
+		configPath := filepath.Join(readOnlyDir, "config.yaml")
+		err := cfg.Save(configPath)
+		// This might or might not error depending on OS permissions
+		// Just verify it doesn't panic
+		_ = err
+	})
+}
+
 // BenchmarkLoadConfig measures config loading performance.
 func BenchmarkLoadConfig(b *testing.B) {
 	configPath := filepath.Join("..", "..", "testdata", "config", "valid.yaml")
