@@ -378,11 +378,8 @@ func (m *Manager) releaseLock() {
 //   - nil: if FFmpeg exited cleanly
 //   - error: if FFmpeg failed or context cancelled
 func (m *Manager) startFFmpeg(ctx context.Context) error {
-	// Build command
-	cmd := buildFFmpegCommand(m.cfg)
-	cmd.Cancel = func() error {
-		return cmd.Process.Signal(os.Interrupt)
-	}
+	// Build command with context for automatic cancellation
+	cmd := buildFFmpegCommand(ctx, m.cfg)
 
 	m.mu.Lock()
 	m.cmd = cmd
@@ -470,7 +467,7 @@ func (m *Manager) forceStop() error {
 //
 // Returns:
 //   - *exec.Cmd: Configured FFmpeg command
-func buildFFmpegCommand(cfg *ManagerConfig) *exec.Cmd {
+func buildFFmpegCommand(ctx context.Context, cfg *ManagerConfig) *exec.Cmd {
 	// Determine input format (default to alsa for backward compatibility)
 	inputFormat := cfg.InputFormat
 	if inputFormat == "" {
@@ -528,7 +525,7 @@ func buildFFmpegCommand(cfg *ManagerConfig) *exec.Cmd {
 	}
 
 	// #nosec G204 - FFmpegPath is from validated configuration, not user input
-	cmd := exec.Command(cfg.FFmpegPath, args...)
+	cmd := exec.CommandContext(ctx, cfg.FFmpegPath, args...)
 
 	// Redirect stderr for logging (optional)
 	// cmd.Stderr = os.Stderr

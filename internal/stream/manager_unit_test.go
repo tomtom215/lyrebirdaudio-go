@@ -1,6 +1,7 @@
 package stream
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -292,7 +293,7 @@ func TestBuildFFmpegCommandThreadQueue(t *testing.T) {
 				RTSPURL:     "rtsp://localhost:8554/test",
 			}
 
-			cmd := buildFFmpegCommand(cfg)
+			cmd := buildFFmpegCommand(context.Background(), cfg)
 
 			hasThreadQueue := false
 			for _, arg := range cmd.Args {
@@ -333,7 +334,7 @@ func TestBuildFFmpegCommandInputFormat(t *testing.T) {
 				RTSPURL:     "rtsp://localhost:8554/test",
 			}
 
-			cmd := buildFFmpegCommand(cfg)
+			cmd := buildFFmpegCommand(context.Background(), cfg)
 
 			// Find -f flag
 			foundFormat := false
@@ -384,7 +385,7 @@ func TestBuildFFmpegCommandOutputFormat(t *testing.T) {
 				OutputFormat: tt.outputFormat,
 			}
 
-			cmd := buildFFmpegCommand(cfg)
+			cmd := buildFFmpegCommand(context.Background(), cfg)
 
 			if tt.wantFormat == "" {
 				// Verify no -f flag before the URL (auto-detect)
@@ -509,6 +510,6 @@ func BenchmarkBuildFFmpegCommand(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = buildFFmpegCommand(cfg)
+		_ = buildFFmpegCommand(context.Background(), cfg)
 	}
 }

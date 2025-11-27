@@ -557,7 +557,7 @@ func TestStreamManagerFFmpegCommandGeneration(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cmd := buildFFmpegCommand(tt.cfg)
+			cmd := buildFFmpegCommand(context.Background(), tt.cfg)
 
 			// Verify all expected args present
 			for _, want := range tt.wantArgs {
