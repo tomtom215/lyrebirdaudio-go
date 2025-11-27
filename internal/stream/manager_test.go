@@ -30,9 +30,9 @@ func getTestAudioDevice(t *testing.T) (device, inputFormat string) {
 // Uses temporary file output to avoid dependency on MediaMTX server.
 func getTestOutputURL(t *testing.T, name string) string {
 	t.Helper()
-	// Use temporary file for output
-	// FFmpeg will write opus/ogg data here which we discard after test
-	tmpFile := filepath.Join(t.TempDir(), name+".opus")
+	// Use temporary file for output with .ogg extension
+	// Ogg is the standard container for Opus codec
+	tmpFile := filepath.Join(t.TempDir(), name+".ogg")
 	return tmpFile
 }
 

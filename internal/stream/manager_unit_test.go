@@ -369,7 +369,7 @@ func TestBuildFFmpegCommandOutputFormat(t *testing.T) {
 		{"devnull auto-detect", "/dev/null", "", "null"},
 		{"explicit rtsp format", "rtsp://localhost:8554/test", "rtsp", "rtsp"},
 		{"explicit null format", "/dev/null", "null", "null"},
-		{"file URL defaults to rtsp", "/tmp/test.opus", "", "rtsp"},
+		{"file path auto-detect", "/tmp/test.ogg", "", ""},
 	}
 
 	for _, tt := range tests {
@@ -386,24 +386,36 @@ func TestBuildFFmpegCommandOutputFormat(t *testing.T) {
 
 			cmd := buildFFmpegCommand(cfg)
 
-			// Find the output format in args
-			foundFormat := false
-			for i := len(cmd.Args) - 3; i >= 0; i-- {
-				if cmd.Args[i] == "-f" && i+1 < len(cmd.Args) {
-					// Check if this is the output format (not input format)
-					if i+2 < len(cmd.Args) && cmd.Args[i+2] == tt.rtspURL {
-						if cmd.Args[i+1] == tt.wantFormat {
-							foundFormat = true
-						} else {
-							t.Errorf("output format = %q, want %q", cmd.Args[i+1], tt.wantFormat)
+			if tt.wantFormat == "" {
+				// Verify no -f flag before the URL (auto-detect)
+				// The URL should be the last argument
+				if cmd.Args[len(cmd.Args)-1] != tt.rtspURL {
+					t.Errorf("expected URL %q as last arg, got %q", tt.rtspURL, cmd.Args[len(cmd.Args)-1])
+				}
+				// Verify no -f immediately before URL
+				if len(cmd.Args) >= 2 && cmd.Args[len(cmd.Args)-2] == "-f" {
+					t.Error("expected no -f flag for file path (auto-detect)")
+				}
+			} else {
+				// Find the output format in args
+				foundFormat := false
+				for i := len(cmd.Args) - 3; i >= 0; i-- {
+					if cmd.Args[i] == "-f" && i+1 < len(cmd.Args) {
+						// Check if this is the output format (not input format)
+						if i+2 < len(cmd.Args) && cmd.Args[i+2] == tt.rtspURL {
+							if cmd.Args[i+1] == tt.wantFormat {
+								foundFormat = true
+							} else {
+								t.Errorf("output format = %q, want %q", cmd.Args[i+1], tt.wantFormat)
+							}
+							break
 						}
-						break
 					}
 				}
-			}
 
-			if !foundFormat {
-				t.Errorf("output format %q not found in command", tt.wantFormat)
+				if !foundFormat {
+					t.Errorf("output format %q not found in command", tt.wantFormat)
+				}
 			}
 		})
 	}
