@@ -1,6 +1,7 @@
 package stream
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -9,6 +10,64 @@ import (
 	"testing"
 	"time"
 )
+
+// TestFFmpegDiagnostic is a diagnostic test to see FFmpeg's actual error output.
+// This helps debug why the integration tests are failing.
+func TestFFmpegDiagnostic(t *testing.T) {
+	ffmpegPath := findFFmpegOrSkip(t)
+	device, inputFormat := getTestAudioDevice(t)
+	outputFile := getTestOutputURL(t, "diagnostic")
+
+	// Build exact command we're using in tests
+	args := []string{
+		"-f", inputFormat,
+		"-i", device,
+		"-ar", "48000",
+		"-ac", "2",
+		"-c:a", "libopus",
+		"-b:a", "128k",
+		outputFile,
+	}
+
+	cmd := exec.Command(ffmpegPath, args...)
+
+	// Capture stderr
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	t.Logf("Running FFmpeg with command: %s %v", ffmpegPath, args)
+
+	// Start FFmpeg
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Failed to start FFmpeg: %v", err)
+	}
+
+	// Wait for it to either succeed or fail
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+
+	select {
+	case err := <-done:
+		// FFmpeg exited
+		stderrOutput := stderr.String()
+		t.Logf("FFmpeg stderr:\n%s", stderrOutput)
+
+		if err != nil {
+			t.Logf("FFmpeg exited with error: %v", err)
+			t.Logf("This explains why integration tests are failing!")
+		} else {
+			t.Logf("FFmpeg completed successfully")
+		}
+
+	case <-time.After(10 * time.Second):
+		// FFmpeg is running - kill it
+		cmd.Process.Kill()
+		t.Logf("FFmpeg is running successfully after 10 seconds")
+		t.Logf("FFmpeg stderr so far:\n%s", stderr.String())
+	}
+}
 
 // getTestAudioDevice returns an appropriate audio device for testing.
 // In CI environments without ALSA, it returns a lavfi virtual audio source.
