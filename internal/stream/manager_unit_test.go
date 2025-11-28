@@ -3,8 +3,10 @@ package stream
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -571,7 +573,7 @@ func TestManagerAcquireLock(t *testing.T) {
 	}
 
 	// Test acquire lock
-	err = mgr.acquireLock()
+	err = mgr.acquireLock(context.Background())
 	if err != nil {
 		t.Fatalf("acquireLock() error = %v", err)
 	}
@@ -587,7 +589,7 @@ func TestManagerAcquireLock(t *testing.T) {
 
 	// Verify lock is released (file may still exist but should be unlockable)
 	// We can verify by trying to acquire again
-	err = mgr.acquireLock()
+	err = mgr.acquireLock(context.Background())
 	if err != nil {
 		t.Errorf("Failed to re-acquire lock after release: %v", err)
 	}
@@ -690,4 +692,667 @@ func BenchmarkBuildFFmpegCommand(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		_ = buildFFmpegCommand(context.Background(), cfg)
 	}
+}
+
+// TestManagerRunLockAcquisitionFailure verifies behavior when lock acquisition fails.
+// With context-aware lock acquisition, this test completes quickly (< 1 second).
+func TestManagerRunLockAcquisitionFailure(t *testing.T) {
+	// Create a lock dir and pre-acquire a lock to force second acquisition to fail
+	lockDir := t.TempDir()
+
+	cfg := &ManagerConfig{
+		DeviceName:   "test",
+		ALSADevice:   "1",
+		StreamName:   "test",
+		SampleRate:   48000,
+		Channels:     2,
+		Bitrate:      "128k",
+		Codec:        "opus",
+		RTSPURL:      "/dev/null",
+		OutputFormat: "null",
+		LockDir:      lockDir,
+		FFmpegPath:   "/bin/sleep",
+		Backoff:      NewBackoff(100*time.Millisecond, 1*time.Second, 3),
+	}
+
+	// First manager acquires the lock
+	mgr1, err := NewManager(cfg)
+	if err != nil {
+		t.Fatalf("NewManager(1) error = %v", err)
+	}
+
+	if err := mgr1.acquireLock(context.Background()); err != nil {
+		t.Fatalf("First lock acquisition should succeed: %v", err)
+	}
+	defer mgr1.releaseLock()
+
+	// Second manager should fail quickly when context is cancelled
+	mgr2, err := NewManager(cfg)
+	if err != nil {
+		t.Fatalf("NewManager(2) error = %v", err)
+	}
+
+	// Use a cancelled context - lock acquisition should fail immediately
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
+
+	start := time.Now()
+	err = mgr2.Run(ctx)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("Run() should fail when context is cancelled")
+	}
+
+	// Should fail quickly (< 1 second) due to context cancellation
+	if elapsed > 1*time.Second {
+		t.Errorf("Lock acquisition took %v, expected < 1s with cancelled context", elapsed)
+	}
+
+	if !strings.Contains(err.Error(), "failed to acquire lock") {
+		t.Errorf("Run() error = %q, want error containing 'failed to acquire lock'", err.Error())
+	}
+
+	// Should still be in idle state (never got past lock acquisition)
+	state := mgr2.State()
+	if state != StateIdle {
+		t.Errorf("State after lock failure = %v, expected Idle", state)
+	}
+}
+
+// TestManagerRunContextCancelledImmediately verifies graceful shutdown when context cancelled immediately.
+// With context-aware lock acquisition, this fails during lock acquisition (before starting).
+func TestManagerRunContextCancelledImmediately(t *testing.T) {
+	lockDir := t.TempDir()
+
+	cfg := &ManagerConfig{
+		DeviceName:   "test",
+		ALSADevice:   "10", // Numeric argument for sleep
+		StreamName:   "test",
+		SampleRate:   48000,
+		Channels:     2,
+		Bitrate:      "128k",
+		Codec:        "opus",
+		RTSPURL:      "/dev/null",
+		OutputFormat: "null",
+		LockDir:      lockDir,
+		FFmpegPath:   "/bin/sleep",
+		Backoff:      NewBackoff(100*time.Millisecond, 1*time.Second, 3),
+	}
+
+	mgr, err := NewManager(cfg)
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+
+	// Cancel context immediately
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err = mgr.Run(ctx)
+
+	// Should fail during lock acquisition with wrapped context.Canceled error
+	if err == nil {
+		t.Fatal("Run() should fail with cancelled context")
+	}
+
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("Run() error = %v, want error wrapping context.Canceled", err)
+	}
+
+	// Should remain in idle state (never got past lock acquisition)
+	if mgr.State() != StateIdle {
+		t.Errorf("State after immediate cancel = %v, want StateIdle", mgr.State())
+	}
+}
+
+// TestManagerRunContextCancelledDuringRun verifies graceful shutdown during execution.
+func TestManagerRunContextCancelledDuringRun(t *testing.T) {
+	lockDir := t.TempDir()
+
+	// Create a script that sleeps ignoring all arguments
+	scriptPath := filepath.Join(lockDir, "mock_ffmpeg.sh")
+	scriptContent := "#!/bin/sh\nsleep 10\n"
+	if err := os.WriteFile(scriptPath, []byte(scriptContent), 0755); err != nil {
+		t.Fatalf("Failed to create mock script: %v", err)
+	}
+
+	var logBuf bytes.Buffer
+	cfg := &ManagerConfig{
+		DeviceName:   "test",
+		ALSADevice:   "dummy", // Arguments don't matter - script ignores them
+		StreamName:   "test",
+		SampleRate:   48000,
+		Channels:     2,
+		Bitrate:      "128k",
+		Codec:        "opus",
+		RTSPURL:      "/dev/null",
+		OutputFormat: "null",
+		LockDir:      lockDir,
+		FFmpegPath:   scriptPath,
+		Backoff:      NewBackoff(100*time.Millisecond, 1*time.Second, 3),
+		Logger:       &logBuf,
+	}
+
+	mgr, err := NewManager(cfg)
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Run in goroutine
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- mgr.Run(ctx)
+	}()
+
+	// Wait for manager to start
+	time.Sleep(200 * time.Millisecond)
+
+	// Verify it's running
+	if mgr.State() != StateRunning {
+		t.Logf("Log output:\n%s", logBuf.String())
+		t.Errorf("State before cancel = %v, want StateRunning", mgr.State())
+	}
+
+	// Cancel context
+	cancel()
+
+	// Wait for Run to complete
+	select {
+	case err := <-errCh:
+		if err != context.Canceled {
+			t.Errorf("Run() error = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run() did not complete within timeout")
+	}
+
+	// Should be in stopped state
+	if mgr.State() != StateStopped {
+		t.Errorf("State after cancel = %v, want StateStopped", mgr.State())
+	}
+}
+
+// TestManagerRunMaxAttemptsExceeded verifies behavior when max restart attempts exceeded.
+func TestManagerRunMaxAttemptsExceeded(t *testing.T) {
+	lockDir := t.TempDir()
+
+	var logBuf bytes.Buffer
+	cfg := &ManagerConfig{
+		DeviceName:   "test",
+		ALSADevice:   "dummy", // Argument doesn't matter for /bin/false
+		StreamName:   "test",
+		SampleRate:   48000,
+		Channels:     2,
+		Bitrate:      "128k",
+		Codec:        "opus",
+		RTSPURL:      "/dev/null",
+		OutputFormat: "null",
+		LockDir:      lockDir,
+		FFmpegPath:   "/bin/false", // Always fails immediately
+		Backoff:      NewBackoff(10*time.Millisecond, 50*time.Millisecond, 3),
+		Logger:       &logBuf,
+	}
+
+	mgr, err := NewManager(cfg)
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+
+	ctx := context.Background()
+	err = mgr.Run(ctx)
+
+	if err == nil {
+		t.Fatal("Run() should fail when max attempts exceeded")
+	}
+
+	if !strings.Contains(err.Error(), "max restart attempts") {
+		t.Errorf("Run() error = %q, want error containing 'max restart attempts'", err.Error())
+	}
+
+	// Should be in failed state
+	if mgr.State() != StateFailed {
+		t.Errorf("State after max attempts = %v, want StateFailed", mgr.State())
+	}
+
+	// Verify attempts counter
+	if mgr.Attempts() < 3 {
+		t.Errorf("Attempts = %d, want >= 3", mgr.Attempts())
+	}
+
+	// Verify failures counter
+	if mgr.Failures() < 3 {
+		t.Errorf("Failures = %d, want >= 3", mgr.Failures())
+	}
+}
+
+// TestManagerRunShortRunTreatedAsFailure verifies FFmpeg runs < 300s are treated as failures.
+func TestManagerRunShortRunTreatedAsFailure(t *testing.T) {
+	lockDir := t.TempDir()
+
+	var logBuf bytes.Buffer
+	cfg := &ManagerConfig{
+		DeviceName:   "test",
+		ALSADevice:   "0.1", // Argument to sleep
+		StreamName:   "test",
+		SampleRate:   48000,
+		Channels:     2,
+		Bitrate:      "128k",
+		Codec:        "opus",
+		RTSPURL:      "/dev/null",
+		OutputFormat: "null",
+		LockDir:      lockDir,
+		FFmpegPath:   "/bin/sleep", // Sleep for short duration
+		Backoff:      NewBackoff(10*time.Millisecond, 50*time.Millisecond, 2),
+		Logger:       &logBuf,
+	}
+
+	mgr, err := NewManager(cfg)
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	err = mgr.Run(ctx)
+
+	// Should timeout or hit max attempts
+	if err == nil {
+		t.Fatal("Run() should fail for short runs")
+	}
+
+	// Verify failures were recorded
+	if mgr.Failures() == 0 {
+		t.Logf("Log output:\n%s", logBuf.String())
+		t.Error("Failures = 0, want > 0 for short runs")
+	}
+}
+
+// TestManagerRunContextCancelledDuringBackoff verifies context cancellation during backoff wait.
+func TestManagerRunContextCancelledDuringBackoff(t *testing.T) {
+	lockDir := t.TempDir()
+
+	var logBuf bytes.Buffer
+	cfg := &ManagerConfig{
+		DeviceName:   "test",
+		ALSADevice:   "dummy", // Argument doesn't matter for /bin/false
+		StreamName:   "test",
+		SampleRate:   48000,
+		Channels:     2,
+		Bitrate:      "128k",
+		Codec:        "opus",
+		RTSPURL:      "/dev/null",
+		OutputFormat: "null",
+		LockDir:      lockDir,
+		FFmpegPath:   "/bin/false",                                  // Always fails
+		Backoff:      NewBackoff(5*time.Second, 10*time.Second, 10), // Long backoff
+		Logger:       &logBuf,
+	}
+
+	mgr, err := NewManager(cfg)
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Run in goroutine
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- mgr.Run(ctx)
+	}()
+
+	// Wait for first failure and backoff to start
+	time.Sleep(200 * time.Millisecond)
+
+	// Verify state is failed (in backoff)
+	if mgr.State() != StateFailed {
+		t.Logf("Log output:\n%s", logBuf.String())
+		t.Errorf("State during backoff = %v, want StateFailed", mgr.State())
+	}
+
+	// Cancel during backoff
+	cancel()
+
+	// Should complete quickly (not wait full backoff)
+	select {
+	case err := <-errCh:
+		if err != context.Canceled {
+			t.Errorf("Run() error = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run() did not complete quickly after cancel during backoff")
+	}
+
+	// Should be in stopped state
+	if mgr.State() != StateStopped {
+		t.Errorf("State after cancel during backoff = %v, want StateStopped", mgr.State())
+	}
+}
+
+// TestManagerRunMetricsUpdate verifies metrics are updated correctly.
+func TestManagerRunMetricsUpdate(t *testing.T) {
+	lockDir := t.TempDir()
+
+	cfg := &ManagerConfig{
+		DeviceName:   "test",
+		ALSADevice:   "0.05", // Short sleep
+		StreamName:   "test",
+		SampleRate:   48000,
+		Channels:     2,
+		Bitrate:      "128k",
+		Codec:        "opus",
+		RTSPURL:      "/dev/null",
+		OutputFormat: "null",
+		LockDir:      lockDir,
+		FFmpegPath:   "/bin/sleep",
+		Backoff:      NewBackoff(10*time.Millisecond, 50*time.Millisecond, 3),
+	}
+
+	mgr, err := NewManager(cfg)
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+
+	// Initial metrics
+	initialMetrics := mgr.Metrics()
+	if initialMetrics.Attempts != 0 {
+		t.Errorf("Initial attempts = %d, want 0", initialMetrics.Attempts)
+	}
+	if initialMetrics.Failures != 0 {
+		t.Errorf("Initial failures = %d, want 0", initialMetrics.Failures)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	_ = mgr.Run(ctx)
+
+	// Verify metrics were updated
+	finalMetrics := mgr.Metrics()
+	if finalMetrics.Attempts == 0 {
+		t.Error("Attempts should be > 0 after Run()")
+	}
+	if finalMetrics.Failures == 0 {
+		t.Error("Failures should be > 0 after short runs")
+	}
+
+	// Verify device and stream names in metrics
+	if finalMetrics.DeviceName != "test" {
+		t.Errorf("Metrics.DeviceName = %q, want \"test\"", finalMetrics.DeviceName)
+	}
+	if finalMetrics.StreamName != "test" {
+		t.Errorf("Metrics.StreamName = %q, want \"test\"", finalMetrics.StreamName)
+	}
+}
+
+// TestManagerRunResourceCleanup verifies lock is released on all exit paths.
+func TestManagerRunResourceCleanup(t *testing.T) {
+	lockDir := t.TempDir()
+
+	tests := []struct {
+		name        string
+		setupCtx    func() (context.Context, context.CancelFunc)
+		ffmpegPath  string
+		maxAttempts int
+	}{
+		{
+			name: "immediate cancel",
+			setupCtx: func() (context.Context, context.CancelFunc) {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel() // Cancel immediately
+				return ctx, cancel
+			},
+			ffmpegPath:  "/bin/sleep",
+			maxAttempts: 3,
+		},
+		{
+			name: "cancel during run",
+			setupCtx: func() (context.Context, context.CancelFunc) {
+				return context.WithTimeout(context.Background(), 200*time.Millisecond)
+			},
+			ffmpegPath:  "/bin/sleep",
+			maxAttempts: 10,
+		},
+		{
+			name: "max attempts exceeded",
+			setupCtx: func() (context.Context, context.CancelFunc) {
+				return context.WithTimeout(context.Background(), 1*time.Second)
+			},
+			ffmpegPath:  "/bin/false",
+			maxAttempts: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &ManagerConfig{
+				DeviceName:   "test_" + tt.name,
+				ALSADevice:   "1",
+				StreamName:   "test",
+				SampleRate:   48000,
+				Channels:     2,
+				Bitrate:      "128k",
+				Codec:        "opus",
+				RTSPURL:      "/dev/null",
+				OutputFormat: "null",
+				LockDir:      lockDir,
+				FFmpegPath:   tt.ffmpegPath,
+				Backoff:      NewBackoff(10*time.Millisecond, 50*time.Millisecond, tt.maxAttempts),
+			}
+
+			mgr, err := NewManager(cfg)
+			if err != nil {
+				t.Fatalf("NewManager() error = %v", err)
+			}
+
+			ctx, cancel := tt.setupCtx()
+			defer cancel()
+
+			_ = mgr.Run(ctx)
+
+			// Verify lock was released by trying to acquire it again
+			mgr2, err := NewManager(cfg)
+			if err != nil {
+				t.Fatalf("NewManager() for second instance error = %v", err)
+			}
+
+			err = mgr2.acquireLock(context.Background())
+			if err != nil {
+				t.Errorf("Lock was not released after Run(): %v", err)
+			}
+			mgr2.releaseLock()
+		})
+	}
+}
+
+// TestManagerRunStateTransitions verifies correct state transitions.
+func TestManagerRunStateTransitions(t *testing.T) {
+	lockDir := t.TempDir()
+
+	// Create a script that sleeps ignoring all arguments
+	scriptPath := filepath.Join(lockDir, "mock_ffmpeg.sh")
+	scriptContent := "#!/bin/sh\nsleep 10\n"
+	if err := os.WriteFile(scriptPath, []byte(scriptContent), 0755); err != nil {
+		t.Fatalf("Failed to create mock script: %v", err)
+	}
+
+	var logBuf bytes.Buffer
+	cfg := &ManagerConfig{
+		DeviceName:   "test",
+		ALSADevice:   "dummy", // Arguments don't matter - script ignores them
+		StreamName:   "test",
+		SampleRate:   48000,
+		Channels:     2,
+		Bitrate:      "128k",
+		Codec:        "opus",
+		RTSPURL:      "/dev/null",
+		OutputFormat: "null",
+		LockDir:      lockDir,
+		FFmpegPath:   scriptPath,
+		Backoff:      NewBackoff(10*time.Millisecond, 50*time.Millisecond, 5),
+		Logger:       &logBuf,
+	}
+
+	mgr, err := NewManager(cfg)
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+
+	// Should start in idle
+	if mgr.State() != StateIdle {
+		t.Errorf("Initial state = %v, want StateIdle", mgr.State())
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Run in goroutine
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- mgr.Run(ctx)
+	}()
+
+	// Wait for starting/running transition
+	time.Sleep(100 * time.Millisecond)
+
+	state := mgr.State()
+	if state != StateStarting && state != StateRunning {
+		t.Logf("Log output:\n%s", logBuf.String())
+		t.Errorf("State during execution = %v, want StateStarting or StateRunning", state)
+	}
+
+	// Cancel and wait
+	cancel()
+	<-errCh
+
+	// Should end in stopped
+	if mgr.State() != StateStopped {
+		t.Errorf("Final state = %v, want StateStopped", mgr.State())
+	}
+}
+
+// TestManagerRunWithPanicsInFFmpeg verifies recovery from command panics.
+func TestManagerRunWithPanicsInFFmpeg(t *testing.T) {
+	lockDir := t.TempDir()
+
+	// Create a shell script that exits immediately (simulating crash)
+	scriptPath := filepath.Join(lockDir, "crash.sh")
+	scriptContent := "#!/bin/sh\nexit 1\n"
+	if err := os.WriteFile(scriptPath, []byte(scriptContent), 0755); err != nil {
+		t.Fatalf("Failed to create crash script: %v", err)
+	}
+
+	var logBuf bytes.Buffer
+	cfg := &ManagerConfig{
+		DeviceName:   "test",
+		ALSADevice:   "dummy",
+		StreamName:   "test",
+		SampleRate:   48000,
+		Channels:     2,
+		Bitrate:      "128k",
+		Codec:        "opus",
+		RTSPURL:      "/dev/null",
+		OutputFormat: "null",
+		LockDir:      lockDir,
+		FFmpegPath:   scriptPath,
+		Backoff:      NewBackoff(10*time.Millisecond, 50*time.Millisecond, 2),
+		Logger:       &logBuf,
+	}
+
+	mgr, err := NewManager(cfg)
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	err = mgr.Run(ctx)
+
+	// Should eventually fail or timeout
+	if err == nil {
+		t.Fatal("Run() should fail when command keeps crashing")
+	}
+
+	// Should have recorded failures
+	if mgr.Failures() == 0 {
+		t.Error("Failures = 0, want > 0 when command crashes")
+	}
+}
+
+// TestManagerRunConcurrentCalls verifies behavior when Run() is called multiple times.
+func TestManagerRunConcurrentCalls(t *testing.T) {
+	lockDir := t.TempDir()
+
+	// Create a script that sleeps ignoring all arguments
+	scriptPath := filepath.Join(lockDir, "mock_ffmpeg.sh")
+	scriptContent := "#!/bin/sh\nsleep 60\n" // Long sleep to ensure lock is held
+	if err := os.WriteFile(scriptPath, []byte(scriptContent), 0755); err != nil {
+		t.Fatalf("Failed to create mock script: %v", err)
+	}
+
+	cfg := &ManagerConfig{
+		DeviceName:   "test_concurrent",
+		ALSADevice:   "dummy", // Arguments don't matter - script ignores them
+		StreamName:   "test",
+		SampleRate:   48000,
+		Channels:     2,
+		Bitrate:      "128k",
+		Codec:        "opus",
+		RTSPURL:      "/dev/null",
+		OutputFormat: "null",
+		LockDir:      lockDir,
+		FFmpegPath:   scriptPath,
+		Backoff:      NewBackoff(10*time.Millisecond, 50*time.Millisecond, 5),
+	}
+
+	mgr1, err := NewManager(cfg)
+	if err != nil {
+		t.Fatalf("NewManager(1) error = %v", err)
+	}
+
+	mgr2, err := NewManager(cfg)
+	if err != nil {
+		t.Fatalf("NewManager(2) error = %v", err)
+	}
+
+	// First manager runs for 5 seconds (long enough to hold lock)
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel1()
+
+	// Second manager tries immediately with short timeout
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel2()
+
+	// Start first manager
+	errCh1 := make(chan error, 1)
+	go func() {
+		errCh1 <- mgr1.Run(ctx1)
+	}()
+
+	// Wait for first to acquire lock and start running
+	time.Sleep(200 * time.Millisecond)
+
+	// Try to start second manager - should fail to acquire lock after 2s timeout
+	start := time.Now()
+	err2 := mgr2.Run(ctx2)
+	elapsed := time.Since(start)
+
+	if err2 == nil {
+		t.Fatal("Second Run() should fail due to lock or timeout")
+	}
+
+	// Should fail relatively quickly (within context timeout + a bit)
+	if elapsed > 35*time.Second {
+		t.Errorf("Second Run() took %v, expected < 35s (lock timeout is 30s)", elapsed)
+	}
+
+	// Cancel first manager
+	cancel1()
+
+	// Wait for first to complete
+	<-errCh1
 }
