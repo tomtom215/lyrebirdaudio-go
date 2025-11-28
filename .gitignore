@@ -1,2 +1,5 @@
 coverage.out
+coverage-*.out
+coverage-*.txt
 /lyrebird
+/bin/
