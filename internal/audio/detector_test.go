@@ -336,6 +336,265 @@ func TestDeviceFullDeviceID(t *testing.T) {
 	}
 }
 
+// TestGetDeviceInfoMissingUSBID tests handling of missing usbid file.
+func TestGetDeviceInfoMissingUSBID(t *testing.T) {
+	testDir := t.TempDir()
+	cardDir := filepath.Join(testDir, "card0")
+	if err := mkdir(cardDir); err != nil {
+		t.Fatalf("Failed to create card directory: %v", err)
+	}
+
+	// Create id file but NOT usbid file
+	idPath := filepath.Join(cardDir, "id")
+	if err := writeFile(idPath, "SomeDevice"); err != nil {
+		t.Fatalf("Failed to write id file: %v", err)
+	}
+
+	// Should return error (not a USB device)
+	_, err := GetDeviceInfo(testDir, 0)
+	if err == nil {
+		t.Error("GetDeviceInfo() should return error for card without usbid")
+	}
+}
+
+// TestGetDeviceInfoMalformedUSBID tests handling of invalid USB ID format.
+func TestGetDeviceInfoMalformedUSBID(t *testing.T) {
+	tests := []struct {
+		name  string
+		usbid string
+	}{
+		{"no colon", "0d8c0014"},
+		{"too short vendor", "0d8:0014"},
+		{"too short product", "0d8c:014"},
+		{"too long vendor", "0d8c1:0014"},
+		{"too long product", "0d8c:00145"},
+		{"multiple colons", "0d8c:00:14"},
+		{"empty", ""},
+		{"only colon", ":"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testDir := t.TempDir()
+			cardDir := filepath.Join(testDir, "card0")
+			if err := mkdir(cardDir); err != nil {
+				t.Fatalf("Failed to create card directory: %v", err)
+			}
+
+			// Write malformed usbid
+			usbidPath := filepath.Join(cardDir, "usbid")
+			if err := writeFile(usbidPath, tt.usbid); err != nil {
+				t.Fatalf("Failed to write usbid: %v", err)
+			}
+
+			// Write valid id
+			idPath := filepath.Join(cardDir, "id")
+			if err := writeFile(idPath, "TestDevice"); err != nil {
+				t.Fatalf("Failed to write id: %v", err)
+			}
+
+			// Should return error for malformed USB ID
+			_, err := GetDeviceInfo(testDir, 0)
+			if err == nil {
+				t.Errorf("GetDeviceInfo() should return error for malformed USB ID %q", tt.usbid)
+			}
+		})
+	}
+}
+
+// TestGetDeviceInfoEmptyName tests handling of empty device name.
+func TestGetDeviceInfoEmptyName(t *testing.T) {
+	testDir := t.TempDir()
+	cardDir := filepath.Join(testDir, "card5")
+	if err := mkdir(cardDir); err != nil {
+		t.Fatalf("Failed to create card directory: %v", err)
+	}
+
+	// Write valid usbid
+	usbidPath := filepath.Join(cardDir, "usbid")
+	if err := writeFile(usbidPath, "1234:5678"); err != nil {
+		t.Fatalf("Failed to write usbid: %v", err)
+	}
+
+	// Write EMPTY id file
+	idPath := filepath.Join(cardDir, "id")
+	if err := writeFile(idPath, ""); err != nil {
+		t.Fatalf("Failed to write id: %v", err)
+	}
+
+	dev, err := GetDeviceInfo(testDir, 5)
+	if err != nil {
+		t.Fatalf("GetDeviceInfo() error = %v", err)
+	}
+
+	// Should fallback to "card5"
+	if dev.Name != "card5" {
+		t.Errorf("Name = %q, want %q (fallback to card number)", dev.Name, "card5")
+	}
+}
+
+// TestGetDeviceInfoMissingIDFile tests handling of missing id file.
+func TestGetDeviceInfoMissingIDFile(t *testing.T) {
+	testDir := t.TempDir()
+	cardDir := filepath.Join(testDir, "card3")
+	if err := mkdir(cardDir); err != nil {
+		t.Fatalf("Failed to create card directory: %v", err)
+	}
+
+	// Write valid usbid but NO id file
+	usbidPath := filepath.Join(cardDir, "usbid")
+	if err := writeFile(usbidPath, "abcd:ef01"); err != nil {
+		t.Fatalf("Failed to write usbid: %v", err)
+	}
+
+	dev, err := GetDeviceInfo(testDir, 3)
+	if err != nil {
+		t.Fatalf("GetDeviceInfo() error = %v", err)
+	}
+
+	// Should use "unknown" as fallback
+	if dev.Name != "unknown" {
+		t.Errorf("Name = %q, want \"unknown\" (fallback for missing id)", dev.Name)
+	}
+}
+
+// TestDetectDevicesGlobError tests handling when glob fails.
+func TestDetectDevicesGlobError(t *testing.T) {
+	// This is hard to test since filepath.Glob rarely fails
+	// But we can at least call it and ensure it doesn't panic
+	testDir := t.TempDir()
+
+	devices, err := DetectDevices(testDir)
+	if err != nil {
+		t.Fatalf("DetectDevices() error = %v", err)
+	}
+
+	// Empty directory should return empty slice
+	if len(devices) != 0 {
+		t.Errorf("DetectDevices() found %d devices in empty dir, want 0", len(devices))
+	}
+}
+
+// TestDetectDevicesSkipsInvalidCards tests that invalid card dirs are skipped.
+func TestDetectDevicesSkipsInvalidCards(t *testing.T) {
+	testDir := t.TempDir()
+
+	// Create valid USB card
+	cardDir0 := filepath.Join(testDir, "card0")
+	if err := mkdir(cardDir0); err != nil {
+		t.Fatalf("Failed to create card0: %v", err)
+	}
+	if err := writeFile(filepath.Join(cardDir0, "usbid"), "1234:5678"); err != nil {
+		t.Fatalf("Failed to write usbid: %v", err)
+	}
+	if err := writeFile(filepath.Join(cardDir0, "id"), "ValidUSB"); err != nil {
+		t.Fatalf("Failed to write id: %v", err)
+	}
+
+	// Create card with invalid usbid (should be skipped)
+	cardDir1 := filepath.Join(testDir, "card1")
+	if err := mkdir(cardDir1); err != nil {
+		t.Fatalf("Failed to create card1: %v", err)
+	}
+	if err := writeFile(filepath.Join(cardDir1, "usbid"), "invalid"); err != nil {
+		t.Fatalf("Failed to write bad usbid: %v", err)
+	}
+	if err := writeFile(filepath.Join(cardDir1, "id"), "InvalidUSB"); err != nil {
+		t.Fatalf("Failed to write id: %v", err)
+	}
+
+	// Create non-USB card (should be skipped)
+	cardDir2 := filepath.Join(testDir, "card2")
+	if err := mkdir(cardDir2); err != nil {
+		t.Fatalf("Failed to create card2: %v", err)
+	}
+	if err := writeFile(filepath.Join(cardDir2, "id"), "OnboardAudio"); err != nil {
+		t.Fatalf("Failed to write id: %v", err)
+	}
+	// No usbid file
+
+	// Create invalid card directory name (should be skipped)
+	cardDirInvalid := filepath.Join(testDir, "cardXYZ")
+	if err := mkdir(cardDirInvalid); err != nil {
+		t.Fatalf("Failed to create cardXYZ: %v", err)
+	}
+
+	devices, err := DetectDevices(testDir)
+	if err != nil {
+		t.Fatalf("DetectDevices() error = %v", err)
+	}
+
+	// Should only find card0 (valid USB device)
+	if len(devices) != 1 {
+		t.Errorf("DetectDevices() found %d devices, want 1 (only valid USB)", len(devices))
+	}
+
+	if len(devices) > 0 && devices[0].CardNumber != 0 {
+		t.Errorf("First device CardNumber = %d, want 0", devices[0].CardNumber)
+	}
+}
+
+// TestParseUSBIDWhitespace tests handling of whitespace in USB IDs.
+func TestParseUSBIDWhitespace(t *testing.T) {
+	tests := []struct {
+		name        string
+		usbID       string
+		wantVendor  string
+		wantProduct string
+	}{
+		{"leading spaces", "  0d8c:0014", "0d8c", "0014"},
+		{"trailing spaces", "0d8c:0014  ", "0d8c", "0014"},
+		{"spaces around colon", "0d8c : 0014", "0d8c", "0014"},
+		{"tab characters", "0d8c\t:\t0014", "0d8c", "0014"},
+		{"newline at end", "0d8c:0014\n", "0d8c", "0014"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			vendor, product, err := ParseUSBID(tt.usbID)
+			if err != nil {
+				t.Fatalf("ParseUSBID() error = %v", err)
+			}
+
+			if vendor != tt.wantVendor {
+				t.Errorf("vendor = %q, want %q", vendor, tt.wantVendor)
+			}
+			if product != tt.wantProduct {
+				t.Errorf("product = %q, want %q", product, tt.wantProduct)
+			}
+		})
+	}
+}
+
+// TestParseUSBIDEdgeCases tests edge cases in USB ID parsing.
+func TestParseUSBIDEdgeCases(t *testing.T) {
+	tests := []struct {
+		name    string
+		usbID   string
+		wantErr bool
+	}{
+		{"multiple colons", "0d8c:0014:extra", true},
+		{"no colon", "0d8c0014", true},
+		{"five digit vendor", "0d8c1:0014", true},
+		{"five digit product", "0d8c:00145", true},
+		{"three digit vendor", "d8c:0014", true},
+		{"three digit product", "0d8c:014", true},
+		{"empty after colon", "0d8c:", true},
+		{"empty before colon", ":0014", true},
+		{"only whitespace", "   ", true},
+		{"just colon", ":", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, err := ParseUSBID(tt.usbID)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ParseUSBID() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 // Helper functions for tests
 func mkdir(path string) error {
 	return os.MkdirAll(path, 0755)

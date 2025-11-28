@@ -65,6 +65,89 @@ LyreBirdAudio captures audio from USB microphones and streams them via RTSP usin
 
 ---
 
+## ⚠️ CRITICAL: Strict Test-Driven Development (TDD)
+
+**This project follows STRICT Test-Driven Development practices. This is NON-NEGOTIABLE.**
+
+### Reliability Requirements
+
+LyreBirdAudio must achieve **industrial control system (RTOS) level reliability** for 24/7/365 unattended operation. The original bash version has been field-tested by real users running continuously for years. This Go port must be **AT LEAST as stable** and should aim for:
+
+- Zero unexpected crashes or panics
+- Graceful degradation under all failure scenarios
+- Recovery from every conceivable edge case
+- Deterministic behavior under all conditions
+- Defense against operator error and environmental disruption
+
+### TDD Workflow - MANDATORY
+
+**Every single line of production code MUST have corresponding tests written FIRST.**
+
+1. **Write the test first** - Before any implementation
+   - Cover the happy path
+   - Cover all error paths
+   - Cover boundary conditions
+   - Cover edge cases (even "impossible" ones)
+   - Cover race conditions and timing issues
+
+2. **Watch it fail** - Verify the test fails for the right reason
+
+3. **Write minimal code** - Just enough to make the test pass
+
+4. **Refactor** - Improve code while keeping tests green
+
+5. **Repeat** - For every feature, bug fix, or change
+
+### Coverage Requirements
+
+- **Minimum**: 80% (enforced by CI)
+- **Target**: 95%+ for all packages
+- **Critical components** (stream manager, lock, config): 100% of realistic paths
+- **Error paths**: Every error return must have a test that triggers it
+- **Panic recovery**: Every potential panic must be tested
+- **Concurrent code**: Must pass `go test -race` with zero warnings
+
+### What Must Be Tested
+
+1. **Happy paths** - Normal operation
+2. **Error paths** - Every `if err != nil` branch
+3. **Boundary conditions** - Empty inputs, max values, zero values
+4. **Invalid inputs** - Malformed data, wrong types, nil pointers
+5. **File system failures** - Missing files, permission denied, disk full, read-only FS
+6. **Process failures** - Command not found, command crashes, signals
+7. **Network failures** - Connection refused, timeouts, DNS failures
+8. **Concurrent access** - Race conditions, deadlocks, data corruption
+9. **Resource exhaustion** - Out of memory, file descriptors, disk space
+10. **Signal handling** - SIGINT, SIGTERM, SIGHUP during various states
+11. **State transitions** - Every valid and invalid state change
+12. **Time-based behavior** - Timeouts, delays, backoff, expiration
+13. **Platform differences** - Different kernels, filesystems, architectures
+
+### Test Quality Standards
+
+- Use table-driven tests for comprehensive coverage
+- Test names must clearly describe the scenario
+- Tests must be deterministic (no flaky tests)
+- Tests must be fast (< 100ms for unit tests)
+- Tests must be isolated (no shared state)
+- Tests must clean up resources (files, goroutines)
+- Mock external dependencies (ffmpeg, udev, MediaMTX)
+- Use `t.TempDir()` for file operations
+- Check error messages, not just error existence
+
+### Forbidden Practices
+
+- ❌ Writing code without tests first
+- ❌ Skipping tests for "simple" code
+- ❌ Testing only happy paths
+- ❌ Ignoring race detector warnings
+- ❌ Committing code with failing tests
+- ❌ Lowering coverage thresholds
+- ❌ Using `// TODO: add tests`
+- ❌ Mocking time.Sleep() without testing backoff logic
+
+---
+
 ## Codebase Structure
 
 ```

@@ -1,6 +1,7 @@
 package udev
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -208,6 +209,233 @@ func TestGetUSBPhysicalPortEdgeCases(t *testing.T) {
 			t.Error("Expected error for nonexistent path")
 		}
 	})
+}
+
+// TestGetUSBPhysicalPortNotFound tests device not found error.
+func TestGetUSBPhysicalPortNotFound(t *testing.T) {
+	sysfsPath := filepath.Join("..", "..", "testdata", "sys", "bus", "usb", "devices")
+
+	// Try to find non-existent device
+	_, _, _, err := GetUSBPhysicalPort(sysfsPath, 99, 99)
+	if err == nil {
+		t.Error("Expected error for non-existent device (bus=99, dev=99)")
+	}
+}
+
+// TestReadBusDevNumErrors tests error handling in readBusDevNum.
+func TestReadBusDevNumErrors(t *testing.T) {
+	t.Run("missing busnum file", func(t *testing.T) {
+		testDir := t.TempDir()
+		// Don't create busnum file
+		_, _, err := readBusDevNum(testDir)
+		if err == nil {
+			t.Error("Expected error when busnum file missing")
+		}
+	})
+
+	t.Run("missing devnum file", func(t *testing.T) {
+		testDir := t.TempDir()
+		// Create busnum but not devnum
+		busnumPath := filepath.Join(testDir, "busnum")
+		if err := os.WriteFile(busnumPath, []byte("1\n"), 0644); err != nil {
+			t.Fatalf("Failed to write busnum: %v", err)
+		}
+
+		_, _, err := readBusDevNum(testDir)
+		if err == nil {
+			t.Error("Expected error when devnum file missing")
+		}
+	})
+
+	t.Run("invalid busnum format", func(t *testing.T) {
+		testDir := t.TempDir()
+		busnumPath := filepath.Join(testDir, "busnum")
+		devnumPath := filepath.Join(testDir, "devnum")
+
+		// Write invalid busnum (non-numeric)
+		if err := os.WriteFile(busnumPath, []byte("invalid\n"), 0644); err != nil {
+			t.Fatalf("Failed to write busnum: %v", err)
+		}
+		if err := os.WriteFile(devnumPath, []byte("5\n"), 0644); err != nil {
+			t.Fatalf("Failed to write devnum: %v", err)
+		}
+
+		_, _, err := readBusDevNum(testDir)
+		if err == nil {
+			t.Error("Expected error for invalid busnum format")
+		}
+	})
+
+	t.Run("invalid devnum format", func(t *testing.T) {
+		testDir := t.TempDir()
+		busnumPath := filepath.Join(testDir, "busnum")
+		devnumPath := filepath.Join(testDir, "devnum")
+
+		if err := os.WriteFile(busnumPath, []byte("1\n"), 0644); err != nil {
+			t.Fatalf("Failed to write busnum: %v", err)
+		}
+		// Write invalid devnum (non-numeric)
+		if err := os.WriteFile(devnumPath, []byte("notanumber\n"), 0644); err != nil {
+			t.Fatalf("Failed to write devnum: %v", err)
+		}
+
+		_, _, err := readBusDevNum(testDir)
+		if err == nil {
+			t.Error("Expected error for invalid devnum format")
+		}
+	})
+
+	t.Run("negative busnum", func(t *testing.T) {
+		testDir := t.TempDir()
+		busnumPath := filepath.Join(testDir, "busnum")
+		devnumPath := filepath.Join(testDir, "devnum")
+
+		if err := os.WriteFile(busnumPath, []byte("-1\n"), 0644); err != nil {
+			t.Fatalf("Failed to write busnum: %v", err)
+		}
+		if err := os.WriteFile(devnumPath, []byte("5\n"), 0644); err != nil {
+			t.Fatalf("Failed to write devnum: %v", err)
+		}
+
+		_, _, err := readBusDevNum(testDir)
+		// SafeBase10 should reject negative numbers
+		if err == nil {
+			t.Error("Expected error for negative busnum")
+		}
+	})
+
+	t.Run("empty files", func(t *testing.T) {
+		testDir := t.TempDir()
+		busnumPath := filepath.Join(testDir, "busnum")
+		devnumPath := filepath.Join(testDir, "devnum")
+
+		// Write empty files
+		if err := os.WriteFile(busnumPath, []byte(""), 0644); err != nil {
+			t.Fatalf("Failed to write busnum: %v", err)
+		}
+		if err := os.WriteFile(devnumPath, []byte(""), 0644); err != nil {
+			t.Fatalf("Failed to write devnum: %v", err)
+		}
+
+		_, _, err := readBusDevNum(testDir)
+		if err == nil {
+			t.Error("Expected error for empty busnum/devnum files")
+		}
+	})
+}
+
+// TestReadBusDevNumSuccess tests successful reads with various formats.
+func TestReadBusDevNumSuccess(t *testing.T) {
+	tests := []struct {
+		name       string
+		busnum     string
+		devnum     string
+		wantBus    int
+		wantDev    int
+	}{
+		{"simple", "1", "5", 1, 5},
+		{"with newline", "1\n", "5\n", 1, 5},
+		{"with leading zeros", "001", "005", 1, 5},
+		{"with whitespace", " 1 \n", " 5 \n", 1, 5},
+		{"zero values", "0", "0", 0, 0},
+		{"large values", "255", "127", 255, 127},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testDir := t.TempDir()
+			busnumPath := filepath.Join(testDir, "busnum")
+			devnumPath := filepath.Join(testDir, "devnum")
+
+			if err := os.WriteFile(busnumPath, []byte(tt.busnum), 0644); err != nil {
+				t.Fatalf("Failed to write busnum: %v", err)
+			}
+			if err := os.WriteFile(devnumPath, []byte(tt.devnum), 0644); err != nil {
+				t.Fatalf("Failed to write devnum: %v", err)
+			}
+
+			bus, dev, err := readBusDevNum(testDir)
+			if err != nil {
+				t.Fatalf("readBusDevNum() error = %v", err)
+			}
+
+			if bus != tt.wantBus {
+				t.Errorf("busnum = %d, want %d", bus, tt.wantBus)
+			}
+			if dev != tt.wantDev {
+				t.Errorf("devnum = %d, want %d", dev, tt.wantDev)
+			}
+		})
+	}
+}
+
+// TestSafeBase10EdgeCases tests additional edge cases for SafeBase10.
+func TestSafeBase10EdgeCases(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		wantErr bool
+	}{
+		{"whitespace only", "   ", true},
+		{"newline only", "\n", true},
+		{"tab character", "\t", true},
+		{"mixed whitespace", " \t \n ", true},
+		{"decimal point", "1.5", true},
+		{"hex notation", "0x10", true},
+		{"octal notation", "010", false}, // Should parse as 10 (decimal), not 8 (octal)
+		{"very large number", "999999999", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := SafeBase10(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("SafeBase10(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestIsValidUSBPortPathEdgeCases tests additional patterns.
+func TestIsValidUSBPortPathEdgeCases(t *testing.T) {
+	tests := []struct {
+		path  string
+		valid bool
+	}{
+		// Valid patterns
+		{"1-1", true},
+		{"1-2.3.4.5.6", true},
+		{"10-100", true},
+		{"999-999.999.999", true},
+
+		// Invalid patterns
+		{"", false},
+		{"1", false},
+		{"-1", false},
+		{"1-", false},
+		{"-", false},
+		{"1.2", false},
+		{"a-b", false},
+		{"1-a", false},
+		{"1-1.", false},
+		{"1-1.2.", false},
+		{"1-1..2", false},
+		{"1--1", false},
+		{"1-1-1", false},
+		{" 1-1", false},
+		{"1-1 ", false},
+		{"1 -1", false},
+		{"1- 1", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			got := IsValidUSBPortPath(tt.path)
+			if got != tt.valid {
+				t.Errorf("IsValidUSBPortPath(%q) = %v, want %v", tt.path, got, tt.valid)
+			}
+		})
+	}
 }
 
 // BenchmarkGetUSBPhysicalPort measures performance of port detection.

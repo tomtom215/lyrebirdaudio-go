@@ -393,6 +393,244 @@ func TestFileLockErrorPaths(t *testing.T) {
 	})
 }
 
+// TestFileLockInvalidPath tests lock creation with invalid paths.
+func TestFileLockInvalidPath(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    string
+		wantErr bool
+	}{
+		{
+			name:    "empty path",
+			path:    "",
+			wantErr: true,
+		},
+		{
+			name:    "valid path",
+			path:    filepath.Join(t.TempDir(), "valid.lock"),
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NewFileLock(tt.path)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("NewFileLock() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestFileLockAcquireZeroTimeout tests immediate lock acquisition attempt.
+func TestFileLockAcquireZeroTimeout(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "test.lock")
+
+	// First lock acquires with zero timeout
+	lock1, err := NewFileLock(lockPath)
+	if err != nil {
+		t.Fatalf("NewFileLock() error = %v", err)
+	}
+	defer func() { _ = lock1.Close() }()
+
+	if err := lock1.Acquire(0); err != nil {
+		t.Fatalf("First lock.Acquire(0) error = %v", err)
+	}
+
+	// Second lock should fail immediately with zero timeout
+	lock2, err := NewFileLock(lockPath)
+	if err != nil {
+		t.Fatalf("NewFileLock() error = %v", err)
+	}
+	defer func() { _ = lock2.Close() }()
+
+	start := time.Now()
+	err = lock2.Acquire(0)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Error("Second lock.Acquire(0) should fail immediately")
+	}
+
+	// Should fail almost immediately (within 200ms to account for retry loop)
+	if elapsed > 200*time.Millisecond {
+		t.Errorf("Acquire(0) took %v, expected immediate failure", elapsed)
+	}
+}
+
+// TestFileLockStaleOldAge tests stale lock detection based on age.
+func TestFileLockStaleOldAge(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "test.lock")
+
+	// Create lock file with our PID (valid process)
+	pid := os.Getpid()
+	if err := os.WriteFile(lockPath, []byte(fmt.Sprintf("%d\n", pid)), 0644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	// Set very old modification time (over threshold)
+	oldTime := time.Now().Add(-400 * time.Second) // Older than 300s threshold
+	if err := os.Chtimes(lockPath, oldTime, oldTime); err != nil {
+		t.Fatalf("Chtimes() error = %v", err)
+	}
+
+	// Lock should be considered stale despite valid PID due to age
+	stale, err := isLockStale(lockPath, 300*time.Second)
+	if err != nil {
+		t.Fatalf("isLockStale() error = %v", err)
+	}
+
+	if !stale {
+		t.Error("Lock should be stale due to old age (>300s)")
+	}
+}
+
+// TestFileLockPIDZero tests handling of PID 0 in lock file.
+func TestFileLockPIDZero(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "test.lock")
+
+	// Create lock file with PID 0
+	if err := os.WriteFile(lockPath, []byte("0\n"), 0644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	// PID 0 doesn't exist as a normal process, should be stale
+	stale, err := isLockStale(lockPath, 300*time.Second)
+	if err != nil {
+		t.Logf("isLockStale() returned error (acceptable): %v", err)
+	}
+
+	// Either stale=true or error is acceptable
+	if !stale && err == nil {
+		t.Error("Lock with PID 0 should be considered stale or return error")
+	}
+}
+
+// TestFileLockMultipleReleases tests calling Release multiple times.
+func TestFileLockMultipleReleases(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "test.lock")
+	lock, err := NewFileLock(lockPath)
+	if err != nil {
+		t.Fatalf("NewFileLock() error = %v", err)
+	}
+
+	// Acquire lock
+	if err := lock.Acquire(1 * time.Second); err != nil {
+		t.Fatalf("Acquire() error = %v", err)
+	}
+
+	// First release should succeed
+	if err := lock.Release(); err != nil {
+		t.Errorf("First Release() error = %v", err)
+	}
+
+	// Second release should fail
+	if err := lock.Release(); err == nil {
+		t.Error("Second Release() should return error")
+	}
+
+	// Third release should also fail
+	if err := lock.Release(); err == nil {
+		t.Error("Third Release() should return error")
+	}
+}
+
+// TestFileLockCloseIdempotent tests that Close() is idempotent.
+func TestFileLockCloseIdempotent(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "test.lock")
+	lock, err := NewFileLock(lockPath)
+	if err != nil {
+		t.Fatalf("NewFileLock() error = %v", err)
+	}
+
+	// Close without acquiring should be OK
+	if err := lock.Close(); err != nil {
+		t.Errorf("Close() without acquire error = %v", err)
+	}
+
+	// Second close should also be OK
+	if err := lock.Close(); err != nil {
+		t.Errorf("Second Close() error = %v", err)
+	}
+}
+
+// TestFileLockAcquireAfterClose tests acquiring after close.
+func TestFileLockAcquireAfterClose(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "test.lock")
+	lock, err := NewFileLock(lockPath)
+	if err != nil {
+		t.Fatalf("NewFileLock() error = %v", err)
+	}
+
+	// Acquire and close
+	if err := lock.Acquire(1 * time.Second); err != nil {
+		t.Fatalf("Acquire() error = %v", err)
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	// Try to acquire again - should fail (lock released)
+	// Create new lock instance to try again
+	lock2, err := NewFileLock(lockPath)
+	if err != nil {
+		t.Fatalf("NewFileLock(2) error = %v", err)
+	}
+	defer func() { _ = lock2.Close() }()
+
+	// Should succeed since first lock was released
+	if err := lock2.Acquire(1 * time.Second); err != nil {
+		t.Errorf("Acquire after close should succeed: %v", err)
+	}
+}
+
+// TestFileLockNegativePID tests handling of negative PID in lock file.
+func TestFileLockNegativePID(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "test.lock")
+
+	// Create lock file with negative PID
+	if err := os.WriteFile(lockPath, []byte("-1\n"), 0644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	// Should be considered stale (invalid PID)
+	stale, err := isLockStale(lockPath, 300*time.Second)
+	if err != nil {
+		t.Logf("isLockStale() returned error (acceptable): %v", err)
+	}
+
+	if !stale && err == nil {
+		t.Error("Lock with negative PID should be stale or error")
+	}
+}
+
+// TestFileLockLargeTimeout tests lock acquisition with very large timeout.
+func TestFileLockLargeTimeout(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test with large timeout in short mode")
+	}
+
+	lockPath := filepath.Join(t.TempDir(), "test.lock")
+	lock, err := NewFileLock(lockPath)
+	if err != nil {
+		t.Fatalf("NewFileLock() error = %v", err)
+	}
+	defer func() { _ = lock.Close() }()
+
+	// Acquire with very large timeout (1 hour)
+	// Should succeed immediately since lock is available
+	start := time.Now()
+	if err := lock.Acquire(1 * time.Hour); err != nil {
+		t.Fatalf("Acquire() error = %v", err)
+	}
+	elapsed := time.Since(start)
+
+	// Should be very fast (< 100ms)
+	if elapsed > 100*time.Millisecond {
+		t.Errorf("Acquire with no contention took %v, expected < 100ms", elapsed)
+	}
+}
+
 // BenchmarkFileLockAcquireRelease measures lock acquisition performance.
 func BenchmarkFileLockAcquireRelease(b *testing.B) {
 	lockPath := filepath.Join(b.TempDir(), "bench.lock")
