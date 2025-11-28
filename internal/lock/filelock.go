@@ -1,6 +1,7 @@
 package lock
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -112,6 +113,97 @@ func (fl *FileLock) Acquire(timeout time.Duration) error {
 
 		// Wait a bit before retrying
 		time.Sleep(100 * time.Millisecond)
+	}
+
+	// Write our PID to lock file
+	if err := file.Truncate(0); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("failed to truncate lock file: %w", err)
+	}
+	if _, err := file.Seek(0, 0); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("failed to seek lock file: %w", err)
+	}
+	if _, err := fmt.Fprintf(file, "%d\n", fl.pid); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("failed to write PID to lock file: %w", err)
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("failed to sync lock file: %w", err)
+	}
+
+	fl.file = file
+	return nil
+}
+
+// AcquireContext attempts to acquire the exclusive lock with context cancellation support.
+//
+// Similar to Acquire() but respects context cancellation. This allows graceful shutdown
+// when the calling goroutine needs to terminate.
+//
+// Acquisition process:
+//  1. Check for stale lock (dead process, old age)
+//  2. Remove stale lock if found
+//  3. Open/create lock file
+//  4. Call flock(2) with timeout, checking context.Done() in loop
+//  5. Write our PID to lock file
+//
+// Parameters:
+//   - ctx: Context for cancellation
+//   - timeout: Maximum time to wait for lock (0 = try once, no wait)
+//
+// Returns:
+//   - nil on success
+//   - context.Canceled if context was cancelled
+//   - context.DeadlineExceeded if timeout expired
+//   - error on other failure
+func (fl *FileLock) AcquireContext(ctx context.Context, timeout time.Duration) error {
+	// Check if context is already cancelled
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
+	// Check for stale lock and remove if found
+	if stale, _ := isLockStale(fl.path, DefaultStaleThreshold); stale {
+		_ = os.Remove(fl.path) // Explicitly ignore error - file might not exist
+	}
+
+	// Open lock file (create if doesn't exist)
+	// #nosec G302 - Lock file needs 0644 for multi-process coordination
+	file, err := os.OpenFile(fl.path, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open lock file: %w", err)
+	}
+
+	// Try to acquire lock with timeout and context cancellation
+	deadline := time.Now().Add(timeout)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		// Try non-blocking flock
+		err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			// Lock acquired!
+			break
+		}
+
+		// Check if context was cancelled
+		select {
+		case <-ctx.Done():
+			_ = file.Close()
+			return ctx.Err()
+		case <-ticker.C:
+			// Check if timeout expired
+			if time.Now().After(deadline) {
+				_ = file.Close()
+				return fmt.Errorf("failed to acquire lock after %v: %w", timeout, err)
+			}
+			// Continue loop to retry
+		}
 	}
 
 	// Write our PID to lock file

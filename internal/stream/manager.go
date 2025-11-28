@@ -198,8 +198,8 @@ func (m *Manager) logf(format string, args ...interface{}) {
 //	cancel() // Trigger graceful shutdown
 //	<-errCh  // Wait for completion
 func (m *Manager) Run(ctx context.Context) error {
-	// Acquire lock
-	if err := m.acquireLock(); err != nil {
+	// Acquire lock (context-aware for graceful shutdown)
+	if err := m.acquireLock(ctx); err != nil {
 		m.logf("Failed to acquire lock: %v", err)
 		return fmt.Errorf("failed to acquire lock: %w", err)
 	}
@@ -335,15 +335,16 @@ func (m *Manager) setState(s State) {
 }
 
 // acquireLock acquires the file lock for this device.
-func (m *Manager) acquireLock() error {
+// Respects context cancellation for graceful shutdown.
+func (m *Manager) acquireLock(ctx context.Context) error {
 	lockPath := filepath.Join(m.cfg.LockDir, m.cfg.DeviceName+".lock")
 	fl, err := lock.NewFileLock(lockPath)
 	if err != nil {
 		return fmt.Errorf("failed to create lock: %w", err)
 	}
 
-	// Try to acquire lock with timeout
-	if err := fl.Acquire(30 * time.Second); err != nil {
+	// Try to acquire lock with timeout (context-aware for graceful shutdown)
+	if err := fl.AcquireContext(ctx, 30*time.Second); err != nil {
 		return fmt.Errorf("failed to acquire lock: %w", err)
 	}
 

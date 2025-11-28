@@ -3,6 +3,7 @@ package stream
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -572,7 +573,7 @@ func TestManagerAcquireLock(t *testing.T) {
 	}
 
 	// Test acquire lock
-	err = mgr.acquireLock()
+	err = mgr.acquireLock(context.Background())
 	if err != nil {
 		t.Fatalf("acquireLock() error = %v", err)
 	}
@@ -588,7 +589,7 @@ func TestManagerAcquireLock(t *testing.T) {
 
 	// Verify lock is released (file may still exist but should be unlockable)
 	// We can verify by trying to acquire again
-	err = mgr.acquireLock()
+	err = mgr.acquireLock(context.Background())
 	if err != nil {
 		t.Errorf("Failed to re-acquire lock after release: %v", err)
 	}
@@ -694,12 +695,8 @@ func BenchmarkBuildFFmpegCommand(b *testing.B) {
 }
 
 // TestManagerRunLockAcquisitionFailure verifies behavior when lock acquisition fails.
-// Note: This test takes 30+ seconds due to lock timeout. Skip in CI with -short flag.
+// With context-aware lock acquisition, this test completes quickly (< 1 second).
 func TestManagerRunLockAcquisitionFailure(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping slow lock acquisition test in short mode")
-	}
-
 	// Create a lock dir and pre-acquire a lock to force second acquisition to fail
 	lockDir := t.TempDir()
 
@@ -724,23 +721,32 @@ func TestManagerRunLockAcquisitionFailure(t *testing.T) {
 		t.Fatalf("NewManager(1) error = %v", err)
 	}
 
-	if err := mgr1.acquireLock(); err != nil {
+	if err := mgr1.acquireLock(context.Background()); err != nil {
 		t.Fatalf("First lock acquisition should succeed: %v", err)
 	}
 	defer mgr1.releaseLock()
 
-	// Second manager should fail to acquire lock after timeout
+	// Second manager should fail quickly when context is cancelled
 	mgr2, err := NewManager(cfg)
 	if err != nil {
 		t.Fatalf("NewManager(2) error = %v", err)
 	}
 
-	// This will block for 30 seconds trying to acquire the lock
-	ctx := context.Background()
+	// Use a cancelled context - lock acquisition should fail immediately
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
+
+	start := time.Now()
 	err = mgr2.Run(ctx)
+	elapsed := time.Since(start)
 
 	if err == nil {
-		t.Fatal("Run() should fail when lock acquisition fails")
+		t.Fatal("Run() should fail when context is cancelled")
+	}
+
+	// Should fail quickly (< 1 second) due to context cancellation
+	if elapsed > 1*time.Second {
+		t.Errorf("Lock acquisition took %v, expected < 1s with cancelled context", elapsed)
 	}
 
 	if !strings.Contains(err.Error(), "failed to acquire lock") {
@@ -755,6 +761,7 @@ func TestManagerRunLockAcquisitionFailure(t *testing.T) {
 }
 
 // TestManagerRunContextCancelledImmediately verifies graceful shutdown when context cancelled immediately.
+// With context-aware lock acquisition, this fails during lock acquisition (before starting).
 func TestManagerRunContextCancelledImmediately(t *testing.T) {
 	lockDir := t.TempDir()
 
@@ -784,13 +791,18 @@ func TestManagerRunContextCancelledImmediately(t *testing.T) {
 
 	err = mgr.Run(ctx)
 
-	if err != context.Canceled {
-		t.Errorf("Run() error = %v, want context.Canceled", err)
+	// Should fail during lock acquisition with wrapped context.Canceled error
+	if err == nil {
+		t.Fatal("Run() should fail with cancelled context")
 	}
 
-	// Should be in stopped state
-	if mgr.State() != StateStopped {
-		t.Errorf("State after immediate cancel = %v, want StateStopped", mgr.State())
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("Run() error = %v, want error wrapping context.Canceled", err)
+	}
+
+	// Should remain in idle state (never got past lock acquisition)
+	if mgr.State() != StateIdle {
+		t.Errorf("State after immediate cancel = %v, want StateIdle", mgr.State())
 	}
 }
 
@@ -1148,7 +1160,7 @@ func TestManagerRunResourceCleanup(t *testing.T) {
 				t.Fatalf("NewManager() for second instance error = %v", err)
 			}
 
-			err = mgr2.acquireLock()
+			err = mgr2.acquireLock(context.Background())
 			if err != nil {
 				t.Errorf("Lock was not released after Run(): %v", err)
 			}
