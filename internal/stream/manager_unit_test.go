@@ -694,23 +694,28 @@ func BenchmarkBuildFFmpegCommand(b *testing.B) {
 }
 
 // TestManagerRunLockAcquisitionFailure verifies behavior when lock acquisition fails.
+// Note: This test takes 30+ seconds due to lock timeout. Skip in CI with -short flag.
 func TestManagerRunLockAcquisitionFailure(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping slow lock acquisition test in short mode")
+	}
+
 	// Create a lock dir and pre-acquire a lock to force second acquisition to fail
 	lockDir := t.TempDir()
 
 	cfg := &ManagerConfig{
-		DeviceName: "test",
-		ALSADevice: "1",
-		StreamName: "test",
-		SampleRate: 48000,
-		Channels:   2,
-		Bitrate:    "128k",
-		Codec:      "opus",
-		RTSPURL:    "/dev/null",
+		DeviceName:   "test",
+		ALSADevice:   "1",
+		StreamName:   "test",
+		SampleRate:   48000,
+		Channels:     2,
+		Bitrate:      "128k",
+		Codec:        "opus",
+		RTSPURL:      "/dev/null",
 		OutputFormat: "null",
-		LockDir:    lockDir,
-		FFmpegPath: "/bin/sleep",
-		Backoff:    NewBackoff(100*time.Millisecond, 1*time.Second, 3),
+		LockDir:      lockDir,
+		FFmpegPath:   "/bin/sleep",
+		Backoff:      NewBackoff(100*time.Millisecond, 1*time.Second, 3),
 	}
 
 	// First manager acquires the lock
@@ -724,12 +729,13 @@ func TestManagerRunLockAcquisitionFailure(t *testing.T) {
 	}
 	defer mgr1.releaseLock()
 
-	// Second manager should fail to acquire lock
+	// Second manager should fail to acquire lock after timeout
 	mgr2, err := NewManager(cfg)
 	if err != nil {
 		t.Fatalf("NewManager(2) error = %v", err)
 	}
 
+	// This will block for 30 seconds trying to acquire the lock
 	ctx := context.Background()
 	err = mgr2.Run(ctx)
 
@@ -753,18 +759,18 @@ func TestManagerRunContextCancelledImmediately(t *testing.T) {
 	lockDir := t.TempDir()
 
 	cfg := &ManagerConfig{
-		DeviceName: "test",
-		ALSADevice: "10", // Numeric argument for sleep
-		StreamName: "test",
-		SampleRate: 48000,
-		Channels:   2,
-		Bitrate:    "128k",
-		Codec:      "opus",
-		RTSPURL:    "/dev/null",
+		DeviceName:   "test",
+		ALSADevice:   "10", // Numeric argument for sleep
+		StreamName:   "test",
+		SampleRate:   48000,
+		Channels:     2,
+		Bitrate:      "128k",
+		Codec:        "opus",
+		RTSPURL:      "/dev/null",
 		OutputFormat: "null",
-		LockDir:    lockDir,
-		FFmpegPath: "/bin/sleep",
-		Backoff:    NewBackoff(100*time.Millisecond, 1*time.Second, 3),
+		LockDir:      lockDir,
+		FFmpegPath:   "/bin/sleep",
+		Backoff:      NewBackoff(100*time.Millisecond, 1*time.Second, 3),
 	}
 
 	mgr, err := NewManager(cfg)
@@ -801,19 +807,19 @@ func TestManagerRunContextCancelledDuringRun(t *testing.T) {
 
 	var logBuf bytes.Buffer
 	cfg := &ManagerConfig{
-		DeviceName: "test",
-		ALSADevice: "dummy", // Arguments don't matter - script ignores them
-		StreamName: "test",
-		SampleRate: 48000,
-		Channels:   2,
-		Bitrate:    "128k",
-		Codec:      "opus",
-		RTSPURL:    "/dev/null",
+		DeviceName:   "test",
+		ALSADevice:   "dummy", // Arguments don't matter - script ignores them
+		StreamName:   "test",
+		SampleRate:   48000,
+		Channels:     2,
+		Bitrate:      "128k",
+		Codec:        "opus",
+		RTSPURL:      "/dev/null",
 		OutputFormat: "null",
-		LockDir:    lockDir,
-		FFmpegPath: scriptPath,
-		Backoff:    NewBackoff(100*time.Millisecond, 1*time.Second, 3),
-		Logger:     &logBuf,
+		LockDir:      lockDir,
+		FFmpegPath:   scriptPath,
+		Backoff:      NewBackoff(100*time.Millisecond, 1*time.Second, 3),
+		Logger:       &logBuf,
 	}
 
 	mgr, err := NewManager(cfg)
@@ -863,19 +869,19 @@ func TestManagerRunMaxAttemptsExceeded(t *testing.T) {
 
 	var logBuf bytes.Buffer
 	cfg := &ManagerConfig{
-		DeviceName: "test",
-		ALSADevice: "dummy", // Argument doesn't matter for /bin/false
-		StreamName: "test",
-		SampleRate: 48000,
-		Channels:   2,
-		Bitrate:    "128k",
-		Codec:      "opus",
-		RTSPURL:    "/dev/null",
+		DeviceName:   "test",
+		ALSADevice:   "dummy", // Argument doesn't matter for /bin/false
+		StreamName:   "test",
+		SampleRate:   48000,
+		Channels:     2,
+		Bitrate:      "128k",
+		Codec:        "opus",
+		RTSPURL:      "/dev/null",
 		OutputFormat: "null",
-		LockDir:    lockDir,
-		FFmpegPath: "/bin/false", // Always fails immediately
-		Backoff:    NewBackoff(10*time.Millisecond, 50*time.Millisecond, 3),
-		Logger:     &logBuf,
+		LockDir:      lockDir,
+		FFmpegPath:   "/bin/false", // Always fails immediately
+		Backoff:      NewBackoff(10*time.Millisecond, 50*time.Millisecond, 3),
+		Logger:       &logBuf,
 	}
 
 	mgr, err := NewManager(cfg)
@@ -916,19 +922,19 @@ func TestManagerRunShortRunTreatedAsFailure(t *testing.T) {
 
 	var logBuf bytes.Buffer
 	cfg := &ManagerConfig{
-		DeviceName: "test",
-		ALSADevice: "0.1", // Argument to sleep
-		StreamName: "test",
-		SampleRate: 48000,
-		Channels:   2,
-		Bitrate:    "128k",
-		Codec:      "opus",
-		RTSPURL:    "/dev/null",
+		DeviceName:   "test",
+		ALSADevice:   "0.1", // Argument to sleep
+		StreamName:   "test",
+		SampleRate:   48000,
+		Channels:     2,
+		Bitrate:      "128k",
+		Codec:        "opus",
+		RTSPURL:      "/dev/null",
 		OutputFormat: "null",
-		LockDir:    lockDir,
-		FFmpegPath: "/bin/sleep", // Sleep for short duration
-		Backoff:    NewBackoff(10*time.Millisecond, 50*time.Millisecond, 2),
-		Logger:     &logBuf,
+		LockDir:      lockDir,
+		FFmpegPath:   "/bin/sleep", // Sleep for short duration
+		Backoff:      NewBackoff(10*time.Millisecond, 50*time.Millisecond, 2),
+		Logger:       &logBuf,
 	}
 
 	mgr, err := NewManager(cfg)
@@ -959,19 +965,19 @@ func TestManagerRunContextCancelledDuringBackoff(t *testing.T) {
 
 	var logBuf bytes.Buffer
 	cfg := &ManagerConfig{
-		DeviceName: "test",
-		ALSADevice: "dummy", // Argument doesn't matter for /bin/false
-		StreamName: "test",
-		SampleRate: 48000,
-		Channels:   2,
-		Bitrate:    "128k",
-		Codec:      "opus",
-		RTSPURL:    "/dev/null",
+		DeviceName:   "test",
+		ALSADevice:   "dummy", // Argument doesn't matter for /bin/false
+		StreamName:   "test",
+		SampleRate:   48000,
+		Channels:     2,
+		Bitrate:      "128k",
+		Codec:        "opus",
+		RTSPURL:      "/dev/null",
 		OutputFormat: "null",
-		LockDir:    lockDir,
-		FFmpegPath: "/bin/false", // Always fails
-		Backoff:    NewBackoff(5*time.Second, 10*time.Second, 10), // Long backoff
-		Logger:     &logBuf,
+		LockDir:      lockDir,
+		FFmpegPath:   "/bin/false",                                  // Always fails
+		Backoff:      NewBackoff(5*time.Second, 10*time.Second, 10), // Long backoff
+		Logger:       &logBuf,
 	}
 
 	mgr, err := NewManager(cfg)
@@ -1020,18 +1026,18 @@ func TestManagerRunMetricsUpdate(t *testing.T) {
 	lockDir := t.TempDir()
 
 	cfg := &ManagerConfig{
-		DeviceName: "test",
-		ALSADevice: "0.05", // Short sleep
-		StreamName: "test",
-		SampleRate: 48000,
-		Channels:   2,
-		Bitrate:    "128k",
-		Codec:      "opus",
-		RTSPURL:    "/dev/null",
+		DeviceName:   "test",
+		ALSADevice:   "0.05", // Short sleep
+		StreamName:   "test",
+		SampleRate:   48000,
+		Channels:     2,
+		Bitrate:      "128k",
+		Codec:        "opus",
+		RTSPURL:      "/dev/null",
 		OutputFormat: "null",
-		LockDir:    lockDir,
-		FFmpegPath: "/bin/sleep",
-		Backoff:    NewBackoff(10*time.Millisecond, 50*time.Millisecond, 3),
+		LockDir:      lockDir,
+		FFmpegPath:   "/bin/sleep",
+		Backoff:      NewBackoff(10*time.Millisecond, 50*time.Millisecond, 3),
 	}
 
 	mgr, err := NewManager(cfg)
@@ -1076,9 +1082,9 @@ func TestManagerRunResourceCleanup(t *testing.T) {
 	lockDir := t.TempDir()
 
 	tests := []struct {
-		name       string
-		setupCtx   func() (context.Context, context.CancelFunc)
-		ffmpegPath string
+		name        string
+		setupCtx    func() (context.Context, context.CancelFunc)
+		ffmpegPath  string
 		maxAttempts int
 	}{
 		{
@@ -1088,7 +1094,7 @@ func TestManagerRunResourceCleanup(t *testing.T) {
 				cancel() // Cancel immediately
 				return ctx, cancel
 			},
-			ffmpegPath: "/bin/sleep",
+			ffmpegPath:  "/bin/sleep",
 			maxAttempts: 3,
 		},
 		{
@@ -1096,7 +1102,7 @@ func TestManagerRunResourceCleanup(t *testing.T) {
 			setupCtx: func() (context.Context, context.CancelFunc) {
 				return context.WithTimeout(context.Background(), 200*time.Millisecond)
 			},
-			ffmpegPath: "/bin/sleep",
+			ffmpegPath:  "/bin/sleep",
 			maxAttempts: 10,
 		},
 		{
@@ -1104,7 +1110,7 @@ func TestManagerRunResourceCleanup(t *testing.T) {
 			setupCtx: func() (context.Context, context.CancelFunc) {
 				return context.WithTimeout(context.Background(), 1*time.Second)
 			},
-			ffmpegPath: "/bin/false",
+			ffmpegPath:  "/bin/false",
 			maxAttempts: 2,
 		},
 	}
@@ -1112,18 +1118,18 @@ func TestManagerRunResourceCleanup(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := &ManagerConfig{
-				DeviceName: "test_" + tt.name,
-				ALSADevice: "1",
-				StreamName: "test",
-				SampleRate: 48000,
-				Channels:   2,
-				Bitrate:    "128k",
-				Codec:      "opus",
-				RTSPURL:    "/dev/null",
+				DeviceName:   "test_" + tt.name,
+				ALSADevice:   "1",
+				StreamName:   "test",
+				SampleRate:   48000,
+				Channels:     2,
+				Bitrate:      "128k",
+				Codec:        "opus",
+				RTSPURL:      "/dev/null",
 				OutputFormat: "null",
-				LockDir:    lockDir,
-				FFmpegPath: tt.ffmpegPath,
-				Backoff:    NewBackoff(10*time.Millisecond, 50*time.Millisecond, tt.maxAttempts),
+				LockDir:      lockDir,
+				FFmpegPath:   tt.ffmpegPath,
+				Backoff:      NewBackoff(10*time.Millisecond, 50*time.Millisecond, tt.maxAttempts),
 			}
 
 			mgr, err := NewManager(cfg)
@@ -1164,19 +1170,19 @@ func TestManagerRunStateTransitions(t *testing.T) {
 
 	var logBuf bytes.Buffer
 	cfg := &ManagerConfig{
-		DeviceName: "test",
-		ALSADevice: "dummy", // Arguments don't matter - script ignores them
-		StreamName: "test",
-		SampleRate: 48000,
-		Channels:   2,
-		Bitrate:    "128k",
-		Codec:      "opus",
-		RTSPURL:    "/dev/null",
+		DeviceName:   "test",
+		ALSADevice:   "dummy", // Arguments don't matter - script ignores them
+		StreamName:   "test",
+		SampleRate:   48000,
+		Channels:     2,
+		Bitrate:      "128k",
+		Codec:        "opus",
+		RTSPURL:      "/dev/null",
 		OutputFormat: "null",
-		LockDir:    lockDir,
-		FFmpegPath: scriptPath,
-		Backoff:    NewBackoff(10*time.Millisecond, 50*time.Millisecond, 5),
-		Logger:     &logBuf,
+		LockDir:      lockDir,
+		FFmpegPath:   scriptPath,
+		Backoff:      NewBackoff(10*time.Millisecond, 50*time.Millisecond, 5),
+		Logger:       &logBuf,
 	}
 
 	mgr, err := NewManager(cfg)
@@ -1229,19 +1235,19 @@ func TestManagerRunWithPanicsInFFmpeg(t *testing.T) {
 
 	var logBuf bytes.Buffer
 	cfg := &ManagerConfig{
-		DeviceName: "test",
-		ALSADevice: "dummy",
-		StreamName: "test",
-		SampleRate: 48000,
-		Channels:   2,
-		Bitrate:    "128k",
-		Codec:      "opus",
-		RTSPURL:    "/dev/null",
+		DeviceName:   "test",
+		ALSADevice:   "dummy",
+		StreamName:   "test",
+		SampleRate:   48000,
+		Channels:     2,
+		Bitrate:      "128k",
+		Codec:        "opus",
+		RTSPURL:      "/dev/null",
 		OutputFormat: "null",
-		LockDir:    lockDir,
-		FFmpegPath: scriptPath,
-		Backoff:    NewBackoff(10*time.Millisecond, 50*time.Millisecond, 2),
-		Logger:     &logBuf,
+		LockDir:      lockDir,
+		FFmpegPath:   scriptPath,
+		Backoff:      NewBackoff(10*time.Millisecond, 50*time.Millisecond, 2),
+		Logger:       &logBuf,
 	}
 
 	mgr, err := NewManager(cfg)
@@ -1277,18 +1283,18 @@ func TestManagerRunConcurrentCalls(t *testing.T) {
 	}
 
 	cfg := &ManagerConfig{
-		DeviceName: "test_concurrent",
-		ALSADevice: "dummy", // Arguments don't matter - script ignores them
-		StreamName: "test",
-		SampleRate: 48000,
-		Channels:   2,
-		Bitrate:    "128k",
-		Codec:      "opus",
-		RTSPURL:    "/dev/null",
+		DeviceName:   "test_concurrent",
+		ALSADevice:   "dummy", // Arguments don't matter - script ignores them
+		StreamName:   "test",
+		SampleRate:   48000,
+		Channels:     2,
+		Bitrate:      "128k",
+		Codec:        "opus",
+		RTSPURL:      "/dev/null",
 		OutputFormat: "null",
-		LockDir:    lockDir,
-		FFmpegPath: scriptPath,
-		Backoff:    NewBackoff(10*time.Millisecond, 50*time.Millisecond, 5),
+		LockDir:      lockDir,
+		FFmpegPath:   scriptPath,
+		Backoff:      NewBackoff(10*time.Millisecond, 50*time.Millisecond, 5),
 	}
 
 	mgr1, err := NewManager(cfg)

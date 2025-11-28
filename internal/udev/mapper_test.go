@@ -327,11 +327,11 @@ func TestReadBusDevNumErrors(t *testing.T) {
 // TestReadBusDevNumSuccess tests successful reads with various formats.
 func TestReadBusDevNumSuccess(t *testing.T) {
 	tests := []struct {
-		name       string
-		busnum     string
-		devnum     string
-		wantBus    int
-		wantDev    int
+		name    string
+		busnum  string
+		devnum  string
+		wantBus int
+		wantDev int
 	}{
 		{"simple", "1", "5", 1, 5},
 		{"with newline", "1\n", "5\n", 1, 5},

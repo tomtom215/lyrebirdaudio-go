@@ -10,9 +10,9 @@ import (
 //
 // This is CRITICAL for 24/7 unattended operation. Any panic in a goroutine
 // would normally crash the entire application. SafeGo ensures panics are:
-//   1. Logged with stack traces for debugging
-//   2. Recovered to prevent application crash
-//   3. Optionally reported to a callback for monitoring
+//  1. Logged with stack traces for debugging
+//  2. Recovered to prevent application crash
+//  3. Optionally reported to a callback for monitoring
 //
 // Example:
 //
