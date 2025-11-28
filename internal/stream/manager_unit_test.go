@@ -1,0 +1,693 @@
+package stream
+
+import (
+	"bytes"
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+// TestValidateConfig verifies configuration validation.
+func TestValidateConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     *ManagerConfig
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name: "valid config",
+			cfg: &ManagerConfig{
+				DeviceName: "test",
+				ALSADevice: "hw:0,0",
+				StreamName: "stream",
+				SampleRate: 48000,
+				Channels:   2,
+				Bitrate:    "128k",
+				Codec:      "opus",
+				RTSPURL:    "rtsp://localhost:8554/test",
+				LockDir:    "/tmp",
+				FFmpegPath: "/usr/bin/ffmpeg",
+				Backoff:    NewBackoff(1*time.Second, 10*time.Second, 5),
+			},
+			wantErr: false,
+		},
+		{
+			name: "empty device name",
+			cfg: &ManagerConfig{
+				ALSADevice: "hw:0,0",
+				StreamName: "stream",
+				SampleRate: 48000,
+				Channels:   2,
+				Bitrate:    "128k",
+				Codec:      "opus",
+				RTSPURL:    "rtsp://localhost:8554/test",
+				LockDir:    "/tmp",
+				FFmpegPath: "/usr/bin/ffmpeg",
+				Backoff:    NewBackoff(1*time.Second, 10*time.Second, 5),
+			},
+			wantErr: true,
+			errMsg:  "device name cannot be empty",
+		},
+		{
+			name: "empty ALSA device",
+			cfg: &ManagerConfig{
+				DeviceName: "test",
+				StreamName: "stream",
+				SampleRate: 48000,
+				Channels:   2,
+				Bitrate:    "128k",
+				Codec:      "opus",
+				RTSPURL:    "rtsp://localhost:8554/test",
+				LockDir:    "/tmp",
+				FFmpegPath: "/usr/bin/ffmpeg",
+				Backoff:    NewBackoff(1*time.Second, 10*time.Second, 5),
+			},
+			wantErr: true,
+			errMsg:  "ALSA device cannot be empty",
+		},
+		{
+			name: "invalid sample rate",
+			cfg: &ManagerConfig{
+				DeviceName: "test",
+				ALSADevice: "hw:0,0",
+				StreamName: "stream",
+				SampleRate: -1,
+				Channels:   2,
+				Bitrate:    "128k",
+				Codec:      "opus",
+				RTSPURL:    "rtsp://localhost:8554/test",
+				LockDir:    "/tmp",
+				FFmpegPath: "/usr/bin/ffmpeg",
+				Backoff:    NewBackoff(1*time.Second, 10*time.Second, 5),
+			},
+			wantErr: true,
+			errMsg:  "sample rate must be positive",
+		},
+		{
+			name: "invalid channels - zero",
+			cfg: &ManagerConfig{
+				DeviceName: "test",
+				ALSADevice: "hw:0,0",
+				StreamName: "stream",
+				SampleRate: 48000,
+				Channels:   0,
+				Bitrate:    "128k",
+				Codec:      "opus",
+				RTSPURL:    "rtsp://localhost:8554/test",
+				LockDir:    "/tmp",
+				FFmpegPath: "/usr/bin/ffmpeg",
+				Backoff:    NewBackoff(1*time.Second, 10*time.Second, 5),
+			},
+			wantErr: true,
+			errMsg:  "channels must be between 1 and 32",
+		},
+		{
+			name: "invalid channels - too many",
+			cfg: &ManagerConfig{
+				DeviceName: "test",
+				ALSADevice: "hw:0,0",
+				StreamName: "stream",
+				SampleRate: 48000,
+				Channels:   33,
+				Bitrate:    "128k",
+				Codec:      "opus",
+				RTSPURL:    "rtsp://localhost:8554/test",
+				LockDir:    "/tmp",
+				FFmpegPath: "/usr/bin/ffmpeg",
+				Backoff:    NewBackoff(1*time.Second, 10*time.Second, 5),
+			},
+			wantErr: true,
+			errMsg:  "channels must be between 1 and 32",
+		},
+		{
+			name: "invalid codec",
+			cfg: &ManagerConfig{
+				DeviceName: "test",
+				ALSADevice: "hw:0,0",
+				StreamName: "stream",
+				SampleRate: 48000,
+				Channels:   2,
+				Bitrate:    "128k",
+				Codec:      "mp3",
+				RTSPURL:    "rtsp://localhost:8554/test",
+				LockDir:    "/tmp",
+				FFmpegPath: "/usr/bin/ffmpeg",
+				Backoff:    NewBackoff(1*time.Second, 10*time.Second, 5),
+			},
+			wantErr: true,
+			errMsg:  "codec must be opus or aac",
+		},
+		{
+			name: "missing backoff",
+			cfg: &ManagerConfig{
+				DeviceName: "test",
+				ALSADevice: "hw:0,0",
+				StreamName: "stream",
+				SampleRate: 48000,
+				Channels:   2,
+				Bitrate:    "128k",
+				Codec:      "opus",
+				RTSPURL:    "rtsp://localhost:8554/test",
+				LockDir:    "/tmp",
+				FFmpegPath: "/usr/bin/ffmpeg",
+				Backoff:    nil,
+			},
+			wantErr: true,
+			errMsg:  "backoff policy cannot be nil",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateConfig(tt.cfg)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Error("validateConfig() expected error, got nil")
+				} else if tt.errMsg != "" && err.Error() != tt.errMsg {
+					t.Errorf("validateConfig() error = %q, want %q", err.Error(), tt.errMsg)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("validateConfig() unexpected error: %v", err)
+				}
+			}
+		})
+	}
+}
+
+// TestNewManager verifies manager creation with validation.
+func TestNewManager(t *testing.T) {
+	validCfg := &ManagerConfig{
+		DeviceName: "test",
+		ALSADevice: "hw:0,0",
+		StreamName: "stream",
+		SampleRate: 48000,
+		Channels:   2,
+		Bitrate:    "128k",
+		Codec:      "opus",
+		RTSPURL:    "rtsp://localhost:8554/test",
+		LockDir:    "/tmp",
+		FFmpegPath: "/usr/bin/ffmpeg",
+		Backoff:    NewBackoff(1*time.Second, 10*time.Second, 5),
+	}
+
+	mgr, err := NewManager(validCfg)
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+
+	if mgr == nil {
+		t.Fatal("NewManager() returned nil manager")
+	}
+
+	if mgr.State() != StateIdle {
+		t.Errorf("Initial state = %v, want StateIdle", mgr.State())
+	}
+
+	if mgr.Attempts() != 0 {
+		t.Errorf("Initial attempts = %d, want 0", mgr.Attempts())
+	}
+
+	if mgr.Failures() != 0 {
+		t.Errorf("Initial failures = %d, want 0", mgr.Failures())
+	}
+}
+
+// TestStateString verifies State.String() method.
+func TestStateString(t *testing.T) {
+	tests := []struct {
+		state State
+		want  string
+	}{
+		{StateIdle, "idle"},
+		{StateStarting, "starting"},
+		{StateRunning, "running"},
+		{StateStopping, "stopping"},
+		{StateFailed, "failed"},
+		{StateStopped, "stopped"},
+		{State(999), "unknown(999)"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.want, func(t *testing.T) {
+			got := tt.state.String()
+			if got != tt.want {
+				t.Errorf("State.String() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestManagerSetState verifies state transitions.
+func TestManagerSetState(t *testing.T) {
+	cfg := &ManagerConfig{
+		DeviceName: "test",
+		ALSADevice: "hw:0,0",
+		StreamName: "stream",
+		SampleRate: 48000,
+		Channels:   2,
+		Bitrate:    "128k",
+		Codec:      "opus",
+		RTSPURL:    "rtsp://localhost:8554/test",
+		LockDir:    "/tmp",
+		FFmpegPath: "/usr/bin/ffmpeg",
+		Backoff:    NewBackoff(1*time.Second, 10*time.Second, 5),
+	}
+
+	mgr, err := NewManager(cfg)
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+
+	// Test state transitions
+	states := []State{StateStarting, StateRunning, StateFailed, StateStopped}
+	for _, state := range states {
+		mgr.setState(state)
+		if mgr.State() != state {
+			t.Errorf("setState(%v) failed, got %v", state, mgr.State())
+		}
+	}
+}
+
+// TestBuildFFmpegCommandThreadQueue verifies thread queue handling.
+func TestBuildFFmpegCommandThreadQueue(t *testing.T) {
+	tests := []struct {
+		name        string
+		threadQueue int
+		wantArg     bool
+	}{
+		{"with thread queue", 8192, true},
+		{"without thread queue", 0, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &ManagerConfig{
+				ALSADevice:  "hw:0,0",
+				SampleRate:  48000,
+				Channels:    2,
+				Bitrate:     "128k",
+				Codec:       "opus",
+				ThreadQueue: tt.threadQueue,
+				RTSPURL:     "rtsp://localhost:8554/test",
+			}
+
+			cmd := buildFFmpegCommand(context.Background(), cfg)
+
+			hasThreadQueue := false
+			for _, arg := range cmd.Args {
+				if arg == "-thread_queue_size" {
+					hasThreadQueue = true
+					break
+				}
+			}
+
+			if hasThreadQueue != tt.wantArg {
+				t.Errorf("thread_queue_size in args = %v, want %v", hasThreadQueue, tt.wantArg)
+			}
+		})
+	}
+}
+
+// TestBuildFFmpegCommandInputFormat verifies input format handling.
+func TestBuildFFmpegCommandInputFormat(t *testing.T) {
+	tests := []struct {
+		name        string
+		inputFormat string
+		wantFormat  string
+	}{
+		{"alsa format", "alsa", "alsa"},
+		{"lavfi format", "lavfi", "lavfi"},
+		{"empty defaults to alsa", "", "alsa"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &ManagerConfig{
+				ALSADevice:  "hw:0,0",
+				InputFormat: tt.inputFormat,
+				SampleRate:  48000,
+				Channels:    2,
+				Bitrate:     "128k",
+				Codec:       "opus",
+				RTSPURL:     "rtsp://localhost:8554/test",
+			}
+
+			cmd := buildFFmpegCommand(context.Background(), cfg)
+
+			// Find -f flag
+			foundFormat := false
+			for i, arg := range cmd.Args {
+				if arg == "-f" && i+1 < len(cmd.Args) {
+					if cmd.Args[i+1] == tt.wantFormat {
+						foundFormat = true
+					} else {
+						t.Errorf("input format = %q, want %q", cmd.Args[i+1], tt.wantFormat)
+					}
+					break
+				}
+			}
+
+			if !foundFormat {
+				t.Errorf("input format %q not found in command", tt.wantFormat)
+			}
+		})
+	}
+}
+
+// TestBuildFFmpegCommandOutputFormat verifies output format handling.
+func TestBuildFFmpegCommandOutputFormat(t *testing.T) {
+	tests := []struct {
+		name         string
+		rtspURL      string
+		outputFormat string
+		wantFormat   string
+	}{
+		{"rtsp URL auto-detect", "rtsp://localhost:8554/test", "", "rtsp"},
+		{"pipe URL auto-detect", "pipe:1", "", "null"},
+		{"stdout auto-detect", "-", "", "null"},
+		{"devnull auto-detect", "/dev/null", "", "null"},
+		{"explicit rtsp format", "rtsp://localhost:8554/test", "rtsp", "rtsp"},
+		{"explicit null format", "/dev/null", "null", "null"},
+		{"file path auto-detect", "/tmp/test.ogg", "", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &ManagerConfig{
+				ALSADevice:   "hw:0,0",
+				SampleRate:   48000,
+				Channels:     2,
+				Bitrate:      "128k",
+				Codec:        "opus",
+				RTSPURL:      tt.rtspURL,
+				OutputFormat: tt.outputFormat,
+			}
+
+			cmd := buildFFmpegCommand(context.Background(), cfg)
+
+			if tt.wantFormat == "" {
+				// Verify no -f flag before the URL (auto-detect)
+				// The URL should be the last argument
+				if cmd.Args[len(cmd.Args)-1] != tt.rtspURL {
+					t.Errorf("expected URL %q as last arg, got %q", tt.rtspURL, cmd.Args[len(cmd.Args)-1])
+				}
+				// Verify no -f immediately before URL
+				if len(cmd.Args) >= 2 && cmd.Args[len(cmd.Args)-2] == "-f" {
+					t.Error("expected no -f flag for file path (auto-detect)")
+				}
+			} else {
+				// Find the output format in args
+				foundFormat := false
+				for i := len(cmd.Args) - 3; i >= 0; i-- {
+					if cmd.Args[i] == "-f" && i+1 < len(cmd.Args) {
+						// Check if this is the output format (not input format)
+						if i+2 < len(cmd.Args) && cmd.Args[i+2] == tt.rtspURL {
+							if cmd.Args[i+1] == tt.wantFormat {
+								foundFormat = true
+							} else {
+								t.Errorf("output format = %q, want %q", cmd.Args[i+1], tt.wantFormat)
+							}
+							break
+						}
+					}
+				}
+
+				if !foundFormat {
+					t.Errorf("output format %q not found in command", tt.wantFormat)
+				}
+			}
+		})
+	}
+}
+
+// TestManagerMetricsInitialState verifies initial metrics state.
+func TestManagerMetricsInitialState(t *testing.T) {
+	cfg := &ManagerConfig{
+		DeviceName: "test_device",
+		ALSADevice: "hw:0,0",
+		StreamName: "test_stream",
+		SampleRate: 48000,
+		Channels:   2,
+		Bitrate:    "128k",
+		Codec:      "opus",
+		RTSPURL:    "rtsp://localhost:8554/test",
+		LockDir:    "/tmp",
+		FFmpegPath: "/usr/bin/ffmpeg",
+		Backoff:    NewBackoff(1*time.Second, 10*time.Second, 5),
+	}
+
+	mgr, err := NewManager(cfg)
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+
+	metrics := mgr.Metrics()
+
+	if metrics.DeviceName != "test_device" {
+		t.Errorf("Metrics.DeviceName = %q, want \"test_device\"", metrics.DeviceName)
+	}
+
+	if metrics.StreamName != "test_stream" {
+		t.Errorf("Metrics.StreamName = %q, want \"test_stream\"", metrics.StreamName)
+	}
+
+	if metrics.State != StateIdle {
+		t.Errorf("Metrics.State = %v, want StateIdle", metrics.State)
+	}
+
+	if !metrics.StartTime.IsZero() {
+		t.Error("Metrics.StartTime should be zero initially")
+	}
+
+	if metrics.Uptime != 0 {
+		t.Errorf("Metrics.Uptime = %v, want 0", metrics.Uptime)
+	}
+
+	if metrics.Attempts != 0 {
+		t.Errorf("Metrics.Attempts = %d, want 0", metrics.Attempts)
+	}
+
+	if metrics.Failures != 0 {
+		t.Errorf("Metrics.Failures = %d, want 0", metrics.Failures)
+	}
+}
+
+// TestManagerLogf verifies logging functionality.
+func TestManagerLogf(t *testing.T) {
+	tests := []struct {
+		name       string
+		hasLogger  bool
+		format     string
+		args       []interface{}
+		wantOutput string
+	}{
+		{
+			name:       "with logger",
+			hasLogger:  true,
+			format:     "test message %d",
+			args:       []interface{}{42},
+			wantOutput: "[Manager test] test message 42\n",
+		},
+		{
+			name:       "with logger no args",
+			hasLogger:  true,
+			format:     "simple message",
+			args:       []interface{}{},
+			wantOutput: "[Manager test] simple message\n",
+		},
+		{
+			name:       "without logger",
+			hasLogger:  false,
+			format:     "test message",
+			args:       []interface{}{},
+			wantOutput: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create a buffer to capture log output
+			var buf bytes.Buffer
+
+			cfg := &ManagerConfig{
+				DeviceName: "test",
+				ALSADevice: "hw:0,0",
+				StreamName: "stream",
+				SampleRate: 48000,
+				Channels:   2,
+				Bitrate:    "128k",
+				Codec:      "opus",
+				RTSPURL:    "rtsp://localhost:8554/test",
+				LockDir:    "/tmp",
+				FFmpegPath: "/usr/bin/ffmpeg",
+				Backoff:    NewBackoff(1*time.Second, 10*time.Second, 5),
+			}
+
+			if tt.hasLogger {
+				cfg.Logger = &buf
+			}
+
+			mgr, err := NewManager(cfg)
+			if err != nil {
+				t.Fatalf("NewManager() error = %v", err)
+			}
+
+			mgr.logf(tt.format, tt.args...)
+
+			got := buf.String()
+			if got != tt.wantOutput {
+				t.Errorf("logf() output = %q, want %q", got, tt.wantOutput)
+			}
+		})
+	}
+}
+
+// TestManagerAcquireLock verifies lock acquisition and release.
+func TestManagerAcquireLock(t *testing.T) {
+	lockDir := t.TempDir()
+
+	cfg := &ManagerConfig{
+		DeviceName: "test_lock",
+		ALSADevice: "hw:0,0",
+		StreamName: "stream",
+		SampleRate: 48000,
+		Channels:   2,
+		Bitrate:    "128k",
+		Codec:      "opus",
+		RTSPURL:    "rtsp://localhost:8554/test",
+		LockDir:    lockDir,
+		FFmpegPath: "/usr/bin/ffmpeg",
+		Backoff:    NewBackoff(1*time.Second, 10*time.Second, 5),
+	}
+
+	mgr, err := NewManager(cfg)
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+
+	// Test acquire lock
+	err = mgr.acquireLock()
+	if err != nil {
+		t.Fatalf("acquireLock() error = %v", err)
+	}
+
+	// Verify lock file exists
+	lockPath := filepath.Join(lockDir, "test_lock.lock")
+	if _, err := os.Stat(lockPath); os.IsNotExist(err) {
+		t.Errorf("Lock file was not created at %s", lockPath)
+	}
+
+	// Test release lock
+	mgr.releaseLock()
+
+	// Verify lock is released (file may still exist but should be unlockable)
+	// We can verify by trying to acquire again
+	err = mgr.acquireLock()
+	if err != nil {
+		t.Errorf("Failed to re-acquire lock after release: %v", err)
+	}
+	mgr.releaseLock()
+}
+
+// TestManagerStop verifies stop behavior.
+func TestManagerStop(t *testing.T) {
+	cfg := &ManagerConfig{
+		DeviceName: "test_stop",
+		ALSADevice: "hw:0,0",
+		StreamName: "stream",
+		SampleRate: 48000,
+		Channels:   2,
+		Bitrate:    "128k",
+		Codec:      "opus",
+		RTSPURL:    "rtsp://localhost:8554/test",
+		LockDir:    t.TempDir(),
+		FFmpegPath: "/usr/bin/ffmpeg",
+		Backoff:    NewBackoff(1*time.Second, 10*time.Second, 5),
+	}
+
+	mgr, err := NewManager(cfg)
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+
+	// Call stop() when no process is running - should not panic
+	mgr.stop()
+
+	// Verify state changed to stopping
+	if mgr.State() != StateStopping {
+		t.Errorf("State after stop() = %v, want StateStopping", mgr.State())
+	}
+}
+
+// TestManagerForceStop verifies forceStop behavior.
+func TestManagerForceStop(t *testing.T) {
+	cfg := &ManagerConfig{
+		DeviceName: "test_force_stop",
+		ALSADevice: "hw:0,0",
+		StreamName: "stream",
+		SampleRate: 48000,
+		Channels:   2,
+		Bitrate:    "128k",
+		Codec:      "opus",
+		RTSPURL:    "rtsp://localhost:8554/test",
+		LockDir:    t.TempDir(),
+		FFmpegPath: "/usr/bin/ffmpeg",
+		Backoff:    NewBackoff(1*time.Second, 10*time.Second, 5),
+	}
+
+	mgr, err := NewManager(cfg)
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+
+	// Call forceStop() when no process is running - should return error
+	err = mgr.forceStop()
+	if err == nil {
+		t.Error("forceStop() with no process should return error")
+	}
+}
+
+// BenchmarkNewManager measures manager creation performance.
+func BenchmarkNewManager(b *testing.B) {
+	cfg := &ManagerConfig{
+		DeviceName: "bench",
+		ALSADevice: "hw:0,0",
+		StreamName: "bench",
+		SampleRate: 48000,
+		Channels:   2,
+		Bitrate:    "128k",
+		Codec:      "opus",
+		RTSPURL:    "rtsp://localhost:8554/bench",
+		LockDir:    "/tmp",
+		FFmpegPath: "/usr/bin/ffmpeg",
+		Backoff:    NewBackoff(1*time.Second, 10*time.Second, 5),
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = NewManager(cfg)
+	}
+}
+
+// BenchmarkBuildFFmpegCommand measures command building performance.
+func BenchmarkBuildFFmpegCommand(b *testing.B) {
+	cfg := &ManagerConfig{
+		ALSADevice:  "hw:0,0",
+		SampleRate:  48000,
+		Channels:    2,
+		Bitrate:     "128k",
+		Codec:       "opus",
+		ThreadQueue: 8192,
+		RTSPURL:     "rtsp://localhost:8554/bench",
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = buildFFmpegCommand(context.Background(), cfg)
+	}
+}
