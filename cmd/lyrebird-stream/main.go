@@ -179,10 +179,45 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 
+	// Handle signals in a goroutine
 	go func() {
-		sig := <-sigCh
-		logger.Printf("Received signal %v, initiating shutdown...", sig)
-		cancel()
+		for {
+			sig := <-sigCh
+			switch sig {
+			case syscall.SIGHUP:
+				logger.Println("Received SIGHUP, reloading configuration...")
+				newCfg, err := loadConfiguration(*configPath)
+				if err != nil {
+					logger.Printf("Failed to reload configuration: %v", err)
+					continue
+				}
+				logger.Println("Configuration reloaded successfully")
+
+				// Re-detect devices and update streams
+				newDevices, err := audio.DetectDevices("/proc/asound")
+				if err != nil {
+					logger.Printf("Failed to re-detect devices: %v", err)
+					continue
+				}
+
+				// Log configuration changes (actual stream updates would require
+				// supervisor support for updating running services)
+				for _, dev := range newDevices {
+					devName := audio.SanitizeDeviceName(dev.Name)
+					devCfg := newCfg.GetDeviceConfig(devName)
+					logger.Printf("[SIGHUP] Device %s config: %dHz, %dch, %s, %s",
+						devName, devCfg.SampleRate, devCfg.Channels, devCfg.Codec, devCfg.Bitrate)
+				}
+
+				logger.Println("Note: Stream restart required for config changes to take effect")
+				logger.Println("      Use 'systemctl restart lyrebird-stream' to apply changes")
+
+			case syscall.SIGINT, syscall.SIGTERM:
+				logger.Printf("Received signal %v, initiating shutdown...", sig)
+				cancel()
+				return
+			}
+		}
 	}()
 
 	// Run supervisor (blocks until shutdown)
@@ -269,5 +304,5 @@ func printUsage() {
 	fmt.Println()
 	fmt.Println("Signals:")
 	fmt.Println("  SIGINT, SIGTERM  Graceful shutdown")
-	fmt.Println("  SIGHUP           Reload configuration (planned)")
+	fmt.Println("  SIGHUP           Reload configuration and log new settings")
 }

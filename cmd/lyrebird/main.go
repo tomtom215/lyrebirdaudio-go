@@ -3,12 +3,15 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/tomtom215/lyrebirdaudio-go/internal/audio"
 	"github.com/tomtom215/lyrebirdaudio-go/internal/config"
@@ -1030,9 +1033,17 @@ WantedBy=multi-user.target
 	return nil
 }
 
-// runTest tests configuration without modifying system (stub for now).
+// runTest tests configuration without modifying system.
+//
+// Tests:
+//   1. Config file syntax and validation
+//   2. Device availability
+//   3. FFmpeg command generation
+//   4. MediaMTX connectivity
+//   5. RTSP URL accessibility
 func runTest(args []string) error {
 	configPath := defaultConfigPath
+	verbose := false
 
 	// Parse flags
 	for i := 0; i < len(args); i++ {
@@ -1042,11 +1053,137 @@ func runTest(args []string) error {
 		case args[i] == "--config" && i+1 < len(args):
 			configPath = args[i+1]
 			i++
+		case args[i] == "-v" || args[i] == "--verbose":
+			verbose = true
 		}
 	}
 
-	fmt.Printf("Testing configuration: %s\n", configPath)
-	fmt.Println("Test command not yet implemented")
+	fmt.Printf("Testing configuration: %s\n\n", configPath)
+
+	allPassed := true
+
+	// Test 1: Config syntax and validation
+	fmt.Print("[1/5] Config syntax: ")
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		fmt.Printf("FAILED\n      %v\n", err)
+		allPassed = false
+		// Can't continue without valid config
+		return fmt.Errorf("config test failed: %w", err)
+	}
+	fmt.Println("OK")
+	if verbose {
+		fmt.Printf("      Default: %dHz, %dch, %s, %s\n",
+			cfg.Default.SampleRate, cfg.Default.Channels, cfg.Default.Codec, cfg.Default.Bitrate)
+		if len(cfg.Devices) > 0 {
+			fmt.Printf("      Devices: %d configured\n", len(cfg.Devices))
+		}
+	}
+
+	// Test 2: Device availability
+	fmt.Print("[2/5] Device availability: ")
+	devices, err := audio.DetectDevices("/proc/asound")
+	if err != nil || len(devices) == 0 {
+		fmt.Println("WARNING - No USB audio devices found")
+		if verbose {
+			fmt.Println("      Connect a USB audio device to stream")
+		}
+	} else {
+		fmt.Printf("OK (%d device(s))\n", len(devices))
+		if verbose {
+			for _, d := range devices {
+				devCfg := cfg.GetDeviceConfig(d.FriendlyName())
+				fmt.Printf("      - %s (hw:%d,0) -> %dHz, %dch, %s\n",
+					d.Name, d.CardNumber, devCfg.SampleRate, devCfg.Channels, devCfg.Codec)
+			}
+		}
+	}
+
+	// Test 3: FFmpeg command generation
+	fmt.Print("[3/5] FFmpeg command: ")
+	ffmpegPath, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		fmt.Println("FAILED - FFmpeg not found")
+		allPassed = false
+	} else {
+		// Test that FFmpeg can at least parse a basic command
+		testArgs := []string{
+			"-hide_banner",
+			"-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
+			"-t", "0.1",
+			"-c:a", cfg.Default.Codec,
+			"-b:a", cfg.Default.Bitrate,
+			"-f", "null", "-",
+		}
+		cmd := exec.Command(ffmpegPath, testArgs...)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			fmt.Println("WARNING - FFmpeg test failed")
+			if verbose {
+				fmt.Printf("      %s\n", strings.TrimSpace(string(output)))
+			}
+		} else {
+			fmt.Println("OK")
+			if verbose {
+				fmt.Printf("      Codec: %s, Bitrate: %s\n", cfg.Default.Codec, cfg.Default.Bitrate)
+			}
+		}
+	}
+
+	// Test 4: MediaMTX connectivity
+	fmt.Print("[4/5] MediaMTX API: ")
+	apiURL := cfg.MediaMTX.APIURL
+	if apiURL == "" {
+		apiURL = "http://localhost:9997"
+	}
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(apiURL + "/v3/paths/list")
+	if err != nil {
+		fmt.Println("WARNING - Not reachable")
+		if verbose {
+			fmt.Printf("      URL: %s\n", apiURL)
+			fmt.Printf("      Error: %v\n", err)
+		}
+	} else {
+		resp.Body.Close()
+		if resp.StatusCode == 200 {
+			fmt.Println("OK")
+		} else {
+			fmt.Printf("WARNING - Status %d\n", resp.StatusCode)
+		}
+	}
+
+	// Test 5: RTSP URL accessibility
+	fmt.Print("[5/5] RTSP port: ")
+	rtspURL := cfg.MediaMTX.RTSPURL
+	if rtspURL == "" {
+		rtspURL = "rtsp://localhost:8554"
+	}
+	// Extract host:port from RTSP URL
+	rtspHost := strings.TrimPrefix(rtspURL, "rtsp://")
+	if idx := strings.Index(rtspHost, "/"); idx != -1 {
+		rtspHost = rtspHost[:idx]
+	}
+	conn, err := net.DialTimeout("tcp", rtspHost, 2*time.Second)
+	if err != nil {
+		fmt.Println("WARNING - Not accessible")
+		if verbose {
+			fmt.Printf("      Address: %s\n", rtspHost)
+		}
+	} else {
+		conn.Close()
+		fmt.Println("OK")
+		if verbose {
+			fmt.Printf("      RTSP URL: %s\n", rtspURL)
+		}
+	}
+
+	fmt.Println()
+	if allPassed {
+		fmt.Println("All tests passed!")
+	} else {
+		fmt.Println("Some tests failed. Check the output above for details.")
+	}
+
 	return nil
 }
 
