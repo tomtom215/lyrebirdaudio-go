@@ -1,6 +1,7 @@
 package udev
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -260,40 +261,97 @@ func TestDeviceInfo(t *testing.T) {
 	}
 }
 
-// TestWriteRulesFile verifies WriteRulesFile validation and error handling.
-func TestWriteRulesFile(t *testing.T) {
+// TestWriteRulesFileToPath verifies file writing functionality.
+func TestWriteRulesFileToPath(t *testing.T) {
+	t.Run("valid devices without reload", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		path := tmpDir + "/99-usb-soundcards.rules"
+
+		devices := []*DeviceInfo{
+			{PortPath: "1-1.4", BusNum: 1, DevNum: 5},
+			{PortPath: "1-1.5", BusNum: 1, DevNum: 6},
+		}
+
+		err := WriteRulesFileToPath(devices, path, false)
+		if err != nil {
+			t.Fatalf("WriteRulesFileToPath() unexpected error: %v", err)
+		}
+
+		// Verify file exists and has correct content
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("Failed to read rules file: %v", err)
+		}
+
+		// Verify content contains both rules
+		contentStr := string(content)
+		if !strings.Contains(contentStr, "1-1.4") {
+			t.Error("Content missing rule for 1-1.4")
+		}
+		if !strings.Contains(contentStr, "1-1.5") {
+			t.Error("Content missing rule for 1-1.5")
+		}
+
+		// Verify header comment
+		if !strings.HasPrefix(contentStr, "#") {
+			t.Error("Content should start with header comment")
+		}
+	})
+
+	t.Run("single valid device", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		path := tmpDir + "/rules.test"
+
+		devices := []*DeviceInfo{
+			{PortPath: "1-1", BusNum: 1, DevNum: 3},
+		}
+
+		err := WriteRulesFileToPath(devices, path, false)
+		if err != nil {
+			t.Fatalf("WriteRulesFileToPath() unexpected error: %v", err)
+		}
+
+		// Verify file exists
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			t.Error("Rules file was not created")
+		}
+	})
+
+	t.Run("empty devices list", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		path := tmpDir + "/empty.rules"
+
+		devices := []*DeviceInfo{}
+
+		err := WriteRulesFileToPath(devices, path, false)
+		if err != nil {
+			t.Fatalf("WriteRulesFileToPath() unexpected error: %v", err)
+		}
+
+		// Verify file contains only header
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("Failed to read rules file: %v", err)
+		}
+		if !strings.HasPrefix(string(content), "#") {
+			t.Error("Empty rules file should still have header")
+		}
+	})
+}
+
+// TestWriteRulesFileValidation verifies input validation.
+func TestWriteRulesFileValidation(t *testing.T) {
 	tests := []struct {
 		name    string
 		devices []*DeviceInfo
-		reload  bool
 		wantErr bool
 		errMsg  string
 	}{
-		{
-			name: "valid devices",
-			devices: []*DeviceInfo{
-				{PortPath: "1-1.4", BusNum: 1, DevNum: 5},
-				{PortPath: "1-1.5", BusNum: 1, DevNum: 6},
-			},
-			reload:  true,
-			wantErr: true,
-			errMsg:  "WriteRulesFile not yet implemented - requires elevated privileges",
-		},
-		{
-			name: "single valid device",
-			devices: []*DeviceInfo{
-				{PortPath: "1-1", BusNum: 1, DevNum: 3},
-			},
-			reload:  false,
-			wantErr: true,
-			errMsg:  "WriteRulesFile not yet implemented - requires elevated privileges",
-		},
 		{
 			name: "invalid port path",
 			devices: []*DeviceInfo{
 				{PortPath: "invalid", BusNum: 1, DevNum: 5},
 			},
-			reload:  true,
 			wantErr: true,
 			errMsg:  "invalid device 0: invalid USB port path: invalid",
 		},
@@ -302,7 +360,6 @@ func TestWriteRulesFile(t *testing.T) {
 			devices: []*DeviceInfo{
 				{PortPath: "1-1.4", BusNum: -1, DevNum: 5},
 			},
-			reload:  true,
 			wantErr: true,
 			errMsg:  "invalid device 0: invalid bus number: -1 (must be positive)",
 		},
@@ -311,7 +368,6 @@ func TestWriteRulesFile(t *testing.T) {
 			devices: []*DeviceInfo{
 				{PortPath: "1-1.4", BusNum: 1, DevNum: -1},
 			},
-			reload:  true,
 			wantErr: true,
 			errMsg:  "invalid device 0: invalid dev number: -1 (must be positive)",
 		},
@@ -321,7 +377,6 @@ func TestWriteRulesFile(t *testing.T) {
 				{PortPath: "1-1.4", BusNum: 1, DevNum: 5},
 				{PortPath: "invalid", BusNum: 1, DevNum: 6},
 			},
-			reload:  true,
 			wantErr: true,
 			errMsg:  "invalid device 1: invalid USB port path: invalid",
 		},
@@ -329,20 +384,36 @@ func TestWriteRulesFile(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := WriteRulesFile(tt.devices, tt.reload)
+			tmpDir := t.TempDir()
+			path := tmpDir + "/test.rules"
+
+			err := WriteRulesFileToPath(tt.devices, path, false)
 
 			if tt.wantErr {
 				if err == nil {
-					t.Error("WriteRulesFile() expected error, got nil")
+					t.Error("WriteRulesFileToPath() expected error, got nil")
 				} else if tt.errMsg != "" && err.Error() != tt.errMsg {
-					t.Errorf("WriteRulesFile() error = %q, want %q", err.Error(), tt.errMsg)
+					t.Errorf("WriteRulesFileToPath() error = %q, want %q", err.Error(), tt.errMsg)
 				}
 			} else {
 				if err != nil {
-					t.Errorf("WriteRulesFile() unexpected error: %v", err)
+					t.Errorf("WriteRulesFileToPath() unexpected error: %v", err)
 				}
 			}
 		})
+	}
+}
+
+// TestWriteRulesFilePermissionError verifies error handling for write failures.
+func TestWriteRulesFilePermissionError(t *testing.T) {
+	// Try to write to a non-existent directory
+	devices := []*DeviceInfo{
+		{PortPath: "1-1.4", BusNum: 1, DevNum: 5},
+	}
+
+	err := WriteRulesFileToPath(devices, "/nonexistent/path/rules.test", false)
+	if err == nil {
+		t.Error("WriteRulesFileToPath() expected error for invalid path")
 	}
 }
 

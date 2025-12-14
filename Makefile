@@ -44,8 +44,6 @@ build:
 	@mkdir -p $(BUILD_DIR)
 	CGO_ENABLED=0 go build $(GO_BUILD_FLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/lyrebird
 	CGO_ENABLED=0 go build $(GO_BUILD_FLAGS) -o $(BUILD_DIR)/$(STREAM_BINARY) ./cmd/lyrebird-stream
-	CGO_ENABLED=0 go build $(GO_BUILD_FLAGS) -o $(BUILD_DIR)/$(USB_BINARY) ./cmd/lyrebird-usb
-	CGO_ENABLED=0 go build $(GO_BUILD_FLAGS) -o $(BUILD_DIR)/$(INSTALL_BINARY) ./cmd/lyrebird-install
 	@echo "==> Build complete: $(BUILD_DIR)/"
 	@ls -lh $(BUILD_DIR)/
 
@@ -71,8 +69,6 @@ install: build
 	@echo "==> Installing binaries to /usr/local/bin..."
 	install -m 755 $(BUILD_DIR)/$(BINARY_NAME) /usr/local/bin/
 	install -m 755 $(BUILD_DIR)/$(STREAM_BINARY) /usr/local/bin/
-	install -m 755 $(BUILD_DIR)/$(USB_BINARY) /usr/local/bin/
-	install -m 755 $(BUILD_DIR)/$(INSTALL_BINARY) /usr/local/bin/
 	@echo "==> Installation complete"
 
 ## clean: Remove build artifacts
