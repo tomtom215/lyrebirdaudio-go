@@ -75,7 +75,7 @@ func main() {
 	logger.Printf("lyrebird-stream %s (%s) built %s", Version, Commit, BuildTime)
 
 	// Create lock directory if it doesn't exist
-	if err := os.MkdirAll(*lockDir, 0755); err != nil {
+	if err := os.MkdirAll(*lockDir, 0750); err != nil { //nolint:gosec // Lock directory needs group read for service monitoring
 		logger.Fatalf("Failed to create lock directory: %v", err)
 	}
 

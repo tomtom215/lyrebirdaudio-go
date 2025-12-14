@@ -579,7 +579,7 @@ func getServiceStatus(serviceName string) string {
 
 // readLockPID reads the PID from a lock file.
 func readLockPID(lockFile string) (int, error) {
-	data, err := os.ReadFile(lockFile)
+	data, err := os.ReadFile(lockFile) // #nosec G304 -- lock files are in controlled directory
 	if err != nil {
 		return 0, err
 	}
@@ -734,7 +734,7 @@ func runSetup(args []string) error {
 			}
 
 			// Ensure directory exists
-			if err := os.MkdirAll(filepath.Dir(defaultConfigPath), 0755); err != nil {
+			if err := os.MkdirAll(filepath.Dir(defaultConfigPath), 0750); err != nil { // #nosec G301 -- config dir needs to be readable
 				fmt.Printf("  [!] Failed to create config directory: %v\n", err)
 			} else if err := cfg.Save(defaultConfigPath); err != nil {
 				fmt.Printf("  [!] Failed to save configuration: %v\n", err)
@@ -836,11 +836,11 @@ func runInstallMediaMTX(args []string) error {
 	// Parse flags
 	version := "v1.9.3" // Known stable version
 	installService := true
-	for i := 0; i < len(args); i++ {
+	for _, arg := range args {
 		switch {
-		case strings.HasPrefix(args[i], "--version="):
-			version = strings.TrimPrefix(args[i], "--version=")
-		case args[i] == "--no-service":
+		case strings.HasPrefix(arg, "--version="):
+			version = strings.TrimPrefix(arg, "--version=")
+		case arg == "--no-service":
 			installService = false
 		}
 	}
@@ -862,7 +862,7 @@ func runInstallMediaMTX(args []string) error {
 		fmt.Printf("MediaMTX already installed at: %s\n", existingPath)
 		fmt.Print("Reinstall? [y/N]: ")
 		var response string
-		fmt.Scanln(&response)
+		_, _ = fmt.Scanln(&response)
 		if strings.ToLower(response) != "y" {
 			fmt.Println("Installation cancelled.")
 			return nil
@@ -897,7 +897,7 @@ func runInstallMediaMTX(args []string) error {
 
 	// Extract
 	fmt.Println("Extracting...")
-	extractCmd := exec.Command("tar", "-xzf", tarPath, "-C", tmpDir)
+	extractCmd := exec.Command("tar", "-xzf", tarPath, "-C", tmpDir) // #nosec G204 -- tarPath and tmpDir are controlled
 	if output, err := extractCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("extraction failed: %w: %s", err, string(output))
 	}
@@ -909,7 +909,7 @@ func runInstallMediaMTX(args []string) error {
 	}
 
 	fmt.Println("Installing to /usr/local/bin/mediamtx...")
-	installCmd := exec.Command("install", "-m", "755", binaryPath, "/usr/local/bin/mediamtx")
+	installCmd := exec.Command("install", "-m", "755", binaryPath, "/usr/local/bin/mediamtx") // #nosec G204 -- binaryPath is from controlled tmpDir
 	if output, err := installCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("installation failed: %w: %s", err, string(output))
 	}
@@ -919,10 +919,10 @@ func runInstallMediaMTX(args []string) error {
 	configDst := "/etc/mediamtx/mediamtx.yml"
 	if _, err := os.Stat(configDst); os.IsNotExist(err) {
 		fmt.Printf("Installing default config to %s...\n", configDst)
-		if err := os.MkdirAll("/etc/mediamtx", 0755); err != nil {
+		if err := os.MkdirAll("/etc/mediamtx", 0750); err != nil { // #nosec G301 -- config dir needs to be readable
 			fmt.Printf("Warning: failed to create config directory: %v\n", err)
 		} else if _, err := os.Stat(configSrc); err == nil {
-			copyCmd := exec.Command("cp", configSrc, configDst)
+			copyCmd := exec.Command("cp", configSrc, configDst) // #nosec G204 -- paths are from controlled tmpDir
 			if output, err := copyCmd.CombinedOutput(); err != nil {
 				fmt.Printf("Warning: failed to copy config: %v: %s\n", err, string(output))
 			}
@@ -1066,7 +1066,7 @@ func runDiagnose(args []string) error {
 		issues++
 	} else {
 		// Get version
-		cmd := exec.Command(ffmpegPath, "-version")
+		cmd := exec.Command(ffmpegPath, "-version") // #nosec G204 -- ffmpegPath is from exec.LookPath
 		output, _ := cmd.Output()
 		lines := strings.Split(string(output), "\n")
 		if len(lines) > 0 {
