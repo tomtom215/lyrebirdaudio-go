@@ -1044,11 +1044,11 @@ WantedBy=multi-user.target
 // runTest tests configuration without modifying system.
 //
 // Tests:
-//   1. Config file syntax and validation
-//   2. Device availability
-//   3. FFmpeg command generation
-//   4. MediaMTX connectivity
-//   5. RTSP URL accessibility
+//  1. Config file syntax and validation
+//  2. Device availability
+//  3. FFmpeg command generation
+//  4. MediaMTX connectivity
+//  5. RTSP URL accessibility
 func runTest(args []string) error {
 	configPath := defaultConfigPath
 	verbose := false
@@ -1123,6 +1123,7 @@ func runTest(args []string) error {
 			"-b:a", cfg.Default.Bitrate,
 			"-f", "null", "-",
 		}
+		// #nosec G204 -- ffmpegPath is from exec.LookPath, not user input
 		cmd := exec.Command(ffmpegPath, testArgs...)
 		if output, err := cmd.CombinedOutput(); err != nil {
 			fmt.Println("WARNING - FFmpeg test failed")
@@ -1152,7 +1153,7 @@ func runTest(args []string) error {
 			fmt.Printf("      Error: %v\n", err)
 		}
 	} else {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if resp.StatusCode == 200 {
 			fmt.Println("OK")
 		} else {
@@ -1178,7 +1179,7 @@ func runTest(args []string) error {
 			fmt.Printf("      Address: %s\n", rtspHost)
 		}
 	} else {
-		conn.Close()
+		_ = conn.Close()
 		fmt.Println("OK")
 		if verbose {
 			fmt.Printf("      RTSP URL: %s\n", rtspURL)

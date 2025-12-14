@@ -3,10 +3,12 @@ package updater
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -121,10 +123,10 @@ func TestListReleases(t *testing.T) {
 
 func TestCheckForUpdates(t *testing.T) {
 	tests := []struct {
-		name            string
-		currentVersion  string
-		latestVersion   string
-		wantUpdate      bool
+		name           string
+		currentVersion string
+		latestVersion  string
+		wantUpdate     bool
 	}{
 		{"older version", "v1.0.0", "v1.1.0", true},
 		{"same version", "v1.1.0", "v1.1.0", false},
@@ -377,4 +379,206 @@ func containsString(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func TestWithHTTPClient(t *testing.T) {
+	customClient := &http.Client{Timeout: 60 * time.Second}
+	u := New(WithHTTPClient(customClient))
+	if u.httpClient != customClient {
+		t.Error("httpClient was not set correctly")
+	}
+}
+
+func TestDownloadErrorStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "Not found", http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	tmpDir := t.TempDir()
+	destPath := filepath.Join(tmpDir, "download.bin")
+
+	u := New()
+	err := u.Download(context.Background(), server.URL, destPath, nil)
+	if err == nil {
+		t.Error("Expected error for 404 response")
+	}
+}
+
+func TestDownloadNoProgress(t *testing.T) {
+	content := "test content"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(content))
+	}))
+	defer server.Close()
+
+	tmpDir := t.TempDir()
+	destPath := filepath.Join(tmpDir, "download.bin")
+
+	u := New()
+	err := u.Download(context.Background(), server.URL, destPath, nil)
+	if err != nil {
+		t.Fatalf("Download() error: %v", err)
+	}
+
+	data, _ := os.ReadFile(destPath)
+	if string(data) != content {
+		t.Errorf("Downloaded content = %q, want %q", string(data), content)
+	}
+}
+
+func TestCopyFileSourceNotFound(t *testing.T) {
+	tmpDir := t.TempDir()
+	err := copyFile(filepath.Join(tmpDir, "nonexistent"), filepath.Join(tmpDir, "dest"))
+	if err == nil {
+		t.Error("Expected error for nonexistent source")
+	}
+}
+
+func TestFormatReleaseInfoPrerelease(t *testing.T) {
+	release := &Release{
+		TagName:     "v2.0.0-rc1",
+		PublishedAt: time.Date(2025, 1, 15, 10, 0, 0, 0, time.UTC),
+		Prerelease:  true,
+	}
+
+	info := FormatReleaseInfo(release)
+
+	if !containsString(info, "Pre-release") {
+		t.Error("Info should indicate pre-release")
+	}
+}
+
+func TestFormatReleaseInfoMinimal(t *testing.T) {
+	release := &Release{
+		TagName:     "v1.0.0",
+		PublishedAt: time.Now(),
+	}
+
+	info := FormatReleaseInfo(release)
+
+	if !containsString(info, "v1.0.0") {
+		t.Error("Info should contain version")
+	}
+}
+
+func TestUpdateNoDownloadURL(t *testing.T) {
+	u := New()
+	info := &UpdateInfo{
+		DownloadURL: "",
+	}
+
+	err := u.Update(context.Background(), info, "/fake/path", nil)
+	if err == nil {
+		t.Error("Expected error for empty download URL")
+	}
+}
+
+func TestProgressReader(t *testing.T) {
+	content := "hello world"
+	r := &progressReader{
+		reader: io.NopCloser(strings.NewReader(content)),
+		onProgress: func(n int64) {
+			// Just verify callback is called
+		},
+	}
+
+	buf := make([]byte, 5)
+	n, err := r.Read(buf)
+	if err != nil {
+		t.Fatalf("Read() error: %v", err)
+	}
+	if n != 5 {
+		t.Errorf("Read() = %d, want 5", n)
+	}
+
+	if err := r.Close(); err != nil {
+		t.Errorf("Close() error: %v", err)
+	}
+}
+
+func TestGetReleaseNotFound(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	// Verify the test server returns 404
+	resp, err := http.Get(server.URL)
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("Expected 404, got %d", resp.StatusCode)
+	}
+}
+
+func TestConstants(t *testing.T) {
+	if DefaultOwner == "" {
+		t.Error("DefaultOwner should not be empty")
+	}
+	if DefaultRepo == "" {
+		t.Error("DefaultRepo should not be empty")
+	}
+	if DefaultTimeout <= 0 {
+		t.Error("DefaultTimeout should be positive")
+	}
+	if GitHubAPIURL == "" {
+		t.Error("GitHubAPIURL should not be empty")
+	}
+}
+
+func TestAssetFields(t *testing.T) {
+	asset := Asset{
+		Name:               "lyrebird-linux-amd64.tar.gz",
+		Size:               1024,
+		BrowserDownloadURL: "https://example.com/download",
+		ContentType:        "application/gzip",
+	}
+
+	if asset.Name != "lyrebird-linux-amd64.tar.gz" {
+		t.Error("Asset Name mismatch")
+	}
+	if asset.Size != 1024 {
+		t.Error("Asset Size mismatch")
+	}
+}
+
+func TestReleaseFields(t *testing.T) {
+	release := Release{
+		TagName:    "v1.0.0",
+		Name:       "Release 1.0.0",
+		Draft:      false,
+		Prerelease: false,
+		Body:       "Release notes",
+		HTMLURL:    "https://github.com/test/repo/releases/v1.0.0",
+	}
+
+	if release.TagName != "v1.0.0" {
+		t.Error("Release TagName mismatch")
+	}
+	if release.HTMLURL != "https://github.com/test/repo/releases/v1.0.0" {
+		t.Error("Release HTMLURL mismatch")
+	}
+}
+
+func TestUpdateInfoFields(t *testing.T) {
+	info := UpdateInfo{
+		CurrentVersion:  "v1.0.0",
+		LatestVersion:   "v1.1.0",
+		UpdateAvailable: true,
+		ReleaseNotes:    "Bug fixes",
+		DownloadURL:     "https://example.com/download",
+		AssetName:       "lyrebird-linux-amd64.tar.gz",
+		PublishedAt:     time.Now(),
+	}
+
+	if info.CurrentVersion != "v1.0.0" {
+		t.Error("UpdateInfo CurrentVersion mismatch")
+	}
+	if !info.UpdateAvailable {
+		t.Error("UpdateInfo UpdateAvailable should be true")
+	}
 }

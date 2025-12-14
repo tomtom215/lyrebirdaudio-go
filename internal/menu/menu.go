@@ -19,12 +19,12 @@ import (
 
 // MenuItem represents a single menu option.
 type MenuItem struct {
-	Key         string                          // Key to press (e.g., "1", "q")
-	Label       string                          // Display label
-	Description string                          // Optional description
-	Action      func() error                    // Action to execute
-	SubMenu     *Menu                           // Optional submenu
-	Hidden      bool                            // If true, not displayed but still accessible
+	Key         string       // Key to press (e.g., "1", "q")
+	Label       string       // Display label
+	Description string       // Optional description
+	Action      func() error // Action to execute
+	SubMenu     *Menu        // Optional submenu
+	Hidden      bool         // If true, not displayed but still accessible
 }
 
 // Menu represents a menu with multiple items.

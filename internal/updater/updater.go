@@ -59,20 +59,20 @@ type Asset struct {
 
 // UpdateInfo contains information about an available update.
 type UpdateInfo struct {
-	CurrentVersion string
-	LatestVersion  string
+	CurrentVersion  string
+	LatestVersion   string
 	UpdateAvailable bool
-	ReleaseNotes   string
-	DownloadURL    string
-	AssetName      string
-	PublishedAt    time.Time
+	ReleaseNotes    string
+	DownloadURL     string
+	AssetName       string
+	PublishedAt     time.Time
 }
 
 // Updater handles version checking and updates.
 type Updater struct {
-	owner      string
-	repo       string
-	httpClient *http.Client
+	owner          string
+	repo           string
+	httpClient     *http.Client
 	currentVersion string
 }
 
@@ -277,6 +277,7 @@ func (u *Updater) Download(ctx context.Context, url, destPath string, progress f
 	}
 
 	// Create destination file
+	// #nosec G304 -- destPath is from controlled temp directory
 	out, err := os.Create(destPath)
 	if err != nil {
 		return fmt.Errorf("failed to create file: %w", err)
@@ -346,6 +347,7 @@ func (u *Updater) Update(ctx context.Context, info *UpdateInfo, binaryPath strin
 	}
 
 	// Make executable
+	// #nosec G302 -- binary must be executable
 	if err := os.Chmod(newBinaryPath, 0755); err != nil {
 		return fmt.Errorf("failed to make executable: %w", err)
 	}
@@ -359,9 +361,9 @@ func (u *Updater) Update(ctx context.Context, info *UpdateInfo, binaryPath strin
 		defer func() {
 			// Restore backup if update failed
 			if err != nil {
-				os.Rename(backupPath, binaryPath)
+				_ = os.Rename(backupPath, binaryPath)
 			} else {
-				os.Remove(backupPath)
+				_ = os.Remove(backupPath)
 			}
 		}()
 	}
@@ -452,6 +454,7 @@ func getAssetName() string {
 
 // extractBinaryFromTarGz extracts the binary from a tar.gz archive.
 func extractBinaryFromTarGz(archivePath, destDir string) (string, error) {
+	// #nosec G304 -- archivePath is from controlled temp directory
 	file, err := os.Open(archivePath)
 	if err != nil {
 		return "", err
@@ -465,6 +468,9 @@ func extractBinaryFromTarGz(archivePath, destDir string) (string, error) {
 	defer gzReader.Close()
 
 	tarReader := tar.NewReader(gzReader)
+
+	// Maximum binary size: 100MB (protection against decompression bombs)
+	const maxBinarySize = 100 * 1024 * 1024
 
 	var binaryPath string
 	for {
@@ -480,16 +486,21 @@ func extractBinaryFromTarGz(archivePath, destDir string) (string, error) {
 		name := filepath.Base(header.Name)
 		if name == "lyrebird" || name == "lyrebird-stream" {
 			destPath := filepath.Join(destDir, name)
+			// #nosec G304 -- destPath is constructed from controlled destDir
 			outFile, err := os.Create(destPath)
 			if err != nil {
 				return "", err
 			}
 
-			if _, err := io.Copy(outFile, tarReader); err != nil {
-				outFile.Close()
+			// Limit copy size to prevent decompression bombs
+			limitReader := io.LimitReader(tarReader, maxBinarySize)
+			if _, err := io.Copy(outFile, limitReader); err != nil {
+				_ = outFile.Close()
 				return "", err
 			}
-			outFile.Close()
+			if err := outFile.Close(); err != nil {
+				return "", err
+			}
 
 			if name == "lyrebird" {
 				binaryPath = destPath
@@ -506,6 +517,7 @@ func extractBinaryFromTarGz(archivePath, destDir string) (string, error) {
 
 // copyFile copies a file from src to dst.
 func copyFile(src, dst string) error {
+	// #nosec G304 -- src is from controlled paths (binary backup/restore)
 	source, err := os.Open(src)
 	if err != nil {
 		return err
@@ -518,6 +530,7 @@ func copyFile(src, dst string) error {
 		return err
 	}
 
+	// #nosec G304 -- dst is from controlled paths (binary backup/restore)
 	dest, err := os.OpenFile(dst, os.O_RDWR|os.O_CREATE|os.O_TRUNC, info.Mode())
 	if err != nil {
 		return err

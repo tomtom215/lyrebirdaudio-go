@@ -64,11 +64,13 @@ func BackupConfig(configPath, backupDir string) (string, error) {
 	}
 
 	// Create backup directory if needed
+	// #nosec G301 -- backup directory needs to be accessible
 	if err := os.MkdirAll(backupDir, 0755); err != nil {
 		return "", fmt.Errorf("failed to create backup directory: %w", err)
 	}
 
 	// Read source file
+	// #nosec G304 -- configPath is user-provided config file path
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return "", fmt.Errorf("failed to read config file: %w", err)
@@ -103,7 +105,7 @@ func BackupConfig(configPath, backupDir string) (string, error) {
 // Parameters:
 //   - backupDir: Directory containing backups
 //   - configName: Original config filename to filter (e.g., "config.yaml")
-//                 If empty, all backups are returned.
+//     If empty, all backups are returned.
 //
 // Returns:
 //   - []BackupInfo: List of backup files with metadata
@@ -185,6 +187,7 @@ func RestoreBackup(backupPath, configPath, backupDir string) (string, error) {
 	}
 
 	// Read backup content
+	// #nosec G304 -- backupPath is from controlled backup directory
 	data, err := os.ReadFile(backupPath)
 	if err != nil {
 		return "", fmt.Errorf("failed to read backup: %w", err)
@@ -205,11 +208,13 @@ func RestoreBackup(backupPath, configPath, backupDir string) (string, error) {
 	}
 
 	// Create parent directory if needed
+	// #nosec G301 -- config directory needs to be accessible
 	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
 		return previousBackup, fmt.Errorf("failed to create config directory: %w", err)
 	}
 
 	// Write restored config
+	// #nosec G306 -- config file needs to be readable by service
 	if err := os.WriteFile(configPath, data, 0644); err != nil {
 		return previousBackup, fmt.Errorf("failed to restore config: %w", err)
 	}

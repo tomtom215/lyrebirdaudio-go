@@ -49,12 +49,12 @@ type Source struct {
 
 // Track represents a media track in a stream.
 type Track struct {
-	Type        string `json:"type"`        // "audio" or "video"
-	Codec       string `json:"codec"`       // e.g., "opus", "aac"
-	ClockRate   int    `json:"clockRate"`   // e.g., 48000
-	Channels    int    `json:"channels"`    // Audio channels
-	BitDepth    int    `json:"bitDepth"`    // Audio bit depth
-	SampleRate  int    `json:"sampleRate"`  // Audio sample rate
+	Type       string `json:"type"`       // "audio" or "video"
+	Codec      string `json:"codec"`      // e.g., "opus", "aac"
+	ClockRate  int    `json:"clockRate"`  // e.g., 48000
+	Channels   int    `json:"channels"`   // Audio channels
+	BitDepth   int    `json:"bitDepth"`   // Audio bit depth
+	SampleRate int    `json:"sampleRate"` // Audio sample rate
 }
 
 // Reader represents a client reading from a stream.

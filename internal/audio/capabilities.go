@@ -56,24 +56,24 @@ type RecommendedSettings struct {
 
 // Common ALSA formats and their bit depths.
 var formatBitDepths = map[string]int{
-	"S8":      8,
-	"U8":      8,
-	"S16_LE":  16,
-	"S16_BE":  16,
-	"U16_LE":  16,
-	"U16_BE":  16,
-	"S24_LE":  24,
-	"S24_BE":  24,
-	"U24_LE":  24,
-	"U24_BE":  24,
-	"S24_3LE": 24,
-	"S24_3BE": 24,
-	"S32_LE":  32,
-	"S32_BE":  32,
-	"U32_LE":  32,
-	"U32_BE":  32,
-	"FLOAT_LE": 32,
-	"FLOAT_BE": 32,
+	"S8":         8,
+	"U8":         8,
+	"S16_LE":     16,
+	"S16_BE":     16,
+	"U16_LE":     16,
+	"U16_BE":     16,
+	"S24_LE":     24,
+	"S24_BE":     24,
+	"U24_LE":     24,
+	"U24_BE":     24,
+	"S24_3LE":    24,
+	"S24_3BE":    24,
+	"S32_LE":     32,
+	"S32_BE":     32,
+	"U32_LE":     32,
+	"U32_BE":     32,
+	"FLOAT_LE":   32,
+	"FLOAT_BE":   32,
 	"FLOAT64_LE": 64,
 	"FLOAT64_BE": 64,
 }
@@ -131,6 +131,7 @@ func DetectCapabilities(asoundPath string, cardNumber int) (*Capabilities, error
 
 	// Read device name
 	idPath := filepath.Join(cardDir, "id")
+	// #nosec G304 -- reading from /proc/asound, controlled path
 	if data, err := os.ReadFile(idPath); err == nil {
 		caps.DeviceName = strings.TrimSpace(string(data))
 	}
@@ -189,6 +190,7 @@ func DetectCapabilities(asoundPath string, cardNumber int) (*Capabilities, error
 //
 // Reference: lyrebird-mic-check.sh parse_stream_file() lines 680-730
 func parseStreamFile(path string, caps *Capabilities) error {
+	// #nosec G304 -- reading from /proc/asound, controlled path
 	file, err := os.Open(path)
 	if err != nil {
 		return err
@@ -295,6 +297,7 @@ func parseStreamFile(path string, caps *Capabilities) error {
 
 // parsePCMInfo parses /proc/asound/cardN/pcm0c/info as fallback.
 func parsePCMInfo(path string, caps *Capabilities) error {
+	// #nosec G304 -- reading from /proc/asound, controlled path
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -329,6 +332,7 @@ func parsePCMInfo(path string, caps *Capabilities) error {
 func checkDeviceBusy(cardDir string, cardNumber int) (busy bool, busyBy string) {
 	// Check status file
 	statusPath := filepath.Join(cardDir, "pcm0c", "sub0", "status")
+	// #nosec G304 -- reading from /proc/asound, controlled path
 	if data, err := os.ReadFile(statusPath); err == nil {
 		content := strings.TrimSpace(string(data))
 		if strings.Contains(content, "RUNNING") || strings.Contains(content, "PREPARED") {
@@ -350,6 +354,7 @@ func checkDeviceBusy(cardDir string, cardNumber int) (busy bool, busyBy string) 
 
 	// Check hw_params file
 	hwParamsPath := filepath.Join(cardDir, "pcm0c", "sub0", "hw_params")
+	// #nosec G304 -- reading from /proc/asound, controlled path
 	if data, err := os.ReadFile(hwParamsPath); err == nil {
 		content := strings.TrimSpace(string(data))
 		if content != "closed" && content != "" {

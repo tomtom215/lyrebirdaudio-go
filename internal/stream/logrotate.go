@@ -98,6 +98,7 @@ func NewRotatingWriter(path string, opts ...RotatingWriterOption) (*RotatingWrit
 
 	// Create parent directory if needed
 	dir := filepath.Dir(path)
+	// #nosec G301 -- log directory needs to be readable
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create log directory: %w", err)
 	}
@@ -185,6 +186,7 @@ func (w *RotatingWriter) rotate() error {
 
 // openFile opens the log file for writing.
 func (w *RotatingWriter) openFile() error {
+	// #nosec G302 -- log files should be readable by other processes
 	file, err := os.OpenFile(w.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return fmt.Errorf("failed to open log file: %w", err)
@@ -193,7 +195,7 @@ func (w *RotatingWriter) openFile() error {
 	// Get current size
 	info, err := file.Stat()
 	if err != nil {
-		file.Close()
+		_ = file.Close()
 		return fmt.Errorf("failed to stat log file: %w", err)
 	}
 
@@ -231,6 +233,7 @@ func (w *RotatingWriter) rotatedPath(n int) string {
 // compressFile compresses a log file with gzip.
 func (w *RotatingWriter) compressFile(path string) {
 	// Read original file
+	// #nosec G304 -- path is from controlled log rotation paths
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return
@@ -238,6 +241,7 @@ func (w *RotatingWriter) compressFile(path string) {
 
 	// Create compressed file
 	gzPath := path + ".gz"
+	// #nosec G304 -- gzPath is from controlled log rotation paths
 	gzFile, err := os.Create(gzPath)
 	if err != nil {
 		return
@@ -247,24 +251,24 @@ func (w *RotatingWriter) compressFile(path string) {
 	// Write compressed data
 	gzWriter := gzip.NewWriter(gzFile)
 	if _, err := gzWriter.Write(data); err != nil {
-		os.Remove(gzPath)
+		_ = os.Remove(gzPath)
 		return
 	}
 	if err := gzWriter.Close(); err != nil {
-		os.Remove(gzPath)
+		_ = os.Remove(gzPath)
 		return
 	}
 
 	// Remove original
-	os.Remove(path)
+	_ = os.Remove(path)
 }
 
 // cleanup removes log files beyond maxFiles.
 func (w *RotatingWriter) cleanup() {
 	for i := w.maxFiles + 1; i <= w.maxFiles+10; i++ {
 		path := w.rotatedPath(i)
-		os.Remove(path)
-		os.Remove(path + ".gz")
+		_ = os.Remove(path)
+		_ = os.Remove(path + ".gz")
 	}
 }
 
@@ -360,7 +364,7 @@ func TotalLogSize(basePath string) (int64, error) {
 // CleanupLogs removes all log files for a base path.
 func CleanupLogs(basePath string) error {
 	// Remove main log
-	os.Remove(basePath)
+	_ = os.Remove(basePath)
 
 	// Remove rotated files
 	files, err := ListRotatedFiles(basePath)
@@ -369,7 +373,7 @@ func CleanupLogs(basePath string) error {
 	}
 
 	for _, f := range files {
-		os.Remove(f.Path)
+		_ = os.Remove(f.Path)
 	}
 
 	return nil

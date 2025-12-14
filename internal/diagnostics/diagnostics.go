@@ -47,12 +47,12 @@ const (
 
 // DiagnosticReport contains results from all diagnostic checks.
 type DiagnosticReport struct {
-	Timestamp     time.Time      `json:"timestamp"`
-	Duration      time.Duration  `json:"duration"`
-	SystemInfo    *SystemInfo    `json:"system_info"`
-	Checks        []CheckResult  `json:"checks"`
-	Summary       *Summary       `json:"summary"`
-	Healthy       bool           `json:"healthy"`
+	Timestamp  time.Time     `json:"timestamp"`
+	Duration   time.Duration `json:"duration"`
+	SystemInfo *SystemInfo   `json:"system_info"`
+	Checks     []CheckResult `json:"checks"`
+	Summary    *Summary      `json:"summary"`
+	Healthy    bool          `json:"healthy"`
 }
 
 // SystemInfo contains basic system information.
@@ -81,9 +81,9 @@ type Summary struct {
 type CheckMode string
 
 const (
-	ModeQuick  CheckMode = "quick"   // Essential checks only
-	ModeFull   CheckMode = "full"    // All checks (default)
-	ModeDebug  CheckMode = "debug"   // All checks with verbose output
+	ModeQuick CheckMode = "quick" // Essential checks only
+	ModeFull  CheckMode = "full"  // All checks (default)
+	ModeDebug CheckMode = "debug" // All checks with verbose output
 )
 
 // Options configures the diagnostic run.
@@ -386,6 +386,7 @@ func (r *Runner) checkUSBAudio(ctx context.Context) CheckResult {
 		var devices []string
 		for _, m := range matches {
 			cardDir := filepath.Dir(m)
+			// #nosec G304 -- reading from /proc/asound, controlled path
 			if id, err := os.ReadFile(filepath.Join(cardDir, "id")); err == nil {
 				devices = append(devices, strings.TrimSpace(string(id)))
 			}
@@ -438,6 +439,7 @@ func (r *Runner) checkFFmpeg(ctx context.Context) CheckResult {
 	}
 
 	// Check version and codecs
+	// #nosec G204 -- path is from exec.LookPath, not user input
 	out, err := exec.CommandContext(ctx, path, "-version").Output()
 	if err != nil {
 		result.Status = StatusWarning
@@ -447,6 +449,7 @@ func (r *Runner) checkFFmpeg(ctx context.Context) CheckResult {
 	}
 
 	// Check for opus codec
+	// #nosec G204 -- path is from exec.LookPath, not user input
 	codecOut, _ := exec.CommandContext(ctx, path, "-encoders").Output()
 	hasOpus := strings.Contains(string(codecOut), "libopus")
 	hasAAC := strings.Contains(string(codecOut), "aac")
@@ -659,7 +662,7 @@ func (r *Runner) checkLogFiles(ctx context.Context) CheckResult {
 
 	// Calculate total log size
 	var totalSize int64
-	filepath.Walk(r.opts.LogDir, func(path string, info os.FileInfo, err error) error {
+	_ = filepath.Walk(r.opts.LogDir, func(path string, info os.FileInfo, err error) error {
 		if err == nil && !info.IsDir() {
 			totalSize += info.Size()
 		}
@@ -694,7 +697,9 @@ func (r *Runner) checkDiskSpace(ctx context.Context) CheckResult {
 		return result
 	}
 
+	// #nosec G115 -- Bsize is always positive on Linux filesystems
 	available := stat.Bavail * uint64(stat.Bsize)
+	// #nosec G115 -- Bsize is always positive on Linux filesystems
 	total := stat.Blocks * uint64(stat.Bsize)
 	usedPercent := 100.0 - (float64(available)/float64(total))*100.0
 
@@ -879,6 +884,7 @@ func (r *Runner) checkSystemdServices(ctx context.Context) CheckResult {
 	var running, stopped []string
 
 	for _, svc := range services {
+		// #nosec G204 -- svc is from hardcoded list, not user input
 		out, _ := exec.CommandContext(ctx, "systemctl", "is-active", svc).Output()
 		status := strings.TrimSpace(string(out))
 		if status == "active" {
@@ -1087,7 +1093,7 @@ func isPortOpen(addr string) bool {
 	if err != nil {
 		return false
 	}
-	conn.Close()
+	_ = conn.Close()
 	return true
 }
 

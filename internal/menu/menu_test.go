@@ -274,8 +274,8 @@ func TestSelect(t *testing.T) {
 		{"1\n", []string{"a", "b", "c"}, 0},
 		{"2\n", []string{"a", "b", "c"}, 1},
 		{"3\n", []string{"a", "b", "c"}, 2},
-		{"0\n", []string{"a", "b", "c"}, -1},  // Out of range
-		{"4\n", []string{"a", "b", "c"}, -1},  // Out of range
+		{"0\n", []string{"a", "b", "c"}, -1},   // Out of range
+		{"4\n", []string{"a", "b", "c"}, -1},   // Out of range
 		{"abc\n", []string{"a", "b", "c"}, -1}, // Invalid
 	}
 

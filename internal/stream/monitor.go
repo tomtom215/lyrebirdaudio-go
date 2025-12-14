@@ -157,6 +157,7 @@ func (m *ResourceMonitor) GetMetrics(pid int) (*ResourceMetrics, error) {
 
 	// Read stat for CPU and thread info
 	statPath := filepath.Join(procDir, "stat")
+	// #nosec G304 -- reading from /proc, controlled path
 	if data, err := os.ReadFile(statPath); err == nil {
 		metrics.ThreadCount = parseThreadCount(string(data))
 		// Note: CPU percentage requires delta calculation over time
@@ -165,6 +166,7 @@ func (m *ResourceMonitor) GetMetrics(pid int) (*ResourceMetrics, error) {
 
 	// Read statm for memory info
 	statmPath := filepath.Join(procDir, "statm")
+	// #nosec G304 -- reading from /proc, controlled path
 	if data, err := os.ReadFile(statmPath); err == nil {
 		metrics.MemoryBytes = parseMemoryBytes(string(data))
 	}
@@ -305,6 +307,7 @@ func (m *ResourceMonitor) ClearMetrics(pid int) {
 // getProcessStartTime reads the process start time from /proc/{pid}/stat.
 func (m *ResourceMonitor) getProcessStartTime(pid int) (time.Time, error) {
 	statPath := filepath.Join(m.procPath, strconv.Itoa(pid), "stat")
+	// #nosec G304 -- reading from /proc, controlled path
 	data, err := os.ReadFile(statPath)
 	if err != nil {
 		return time.Time{}, err
@@ -380,6 +383,7 @@ func parseMemoryBytes(statm string) int64 {
 // getSystemBootTime reads the system boot time from /proc/stat.
 func getSystemBootTime(procPath string) time.Time {
 	statPath := filepath.Join(procPath, "stat")
+	// #nosec G304 -- reading from /proc, controlled path
 	data, err := os.ReadFile(statPath)
 	if err != nil {
 		return time.Now() // Fallback to current time
@@ -403,6 +407,7 @@ func getSystemBootTime(procPath string) time.Time {
 // GetSystemFDLimits returns the system-wide file descriptor limits.
 func GetSystemFDLimits(procPath string) (current, max int, err error) {
 	path := filepath.Join(procPath, "sys", "fs", "file-nr")
+	// #nosec G304 -- reading from /proc, controlled path
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return 0, 0, err

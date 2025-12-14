@@ -8,11 +8,11 @@ import (
 
 func TestDetectCapabilities(t *testing.T) {
 	tests := []struct {
-		name          string
-		setupFunc     func(t *testing.T, tmpDir string)
-		cardNumber    int
-		wantErr       bool
-		checkFunc     func(t *testing.T, caps *Capabilities)
+		name       string
+		setupFunc  func(t *testing.T, tmpDir string)
+		cardNumber int
+		wantErr    bool
+		checkFunc  func(t *testing.T, caps *Capabilities)
 	}{
 		{
 			name: "valid card with full stream0",
@@ -483,8 +483,8 @@ func TestSupportsRate(t *testing.T) {
 	}{
 		{44100, true},
 		{48000, true},
-		{96000, true},  // In range
-		{8000, true},   // In range
+		{96000, true},   // In range
+		{8000, true},    // In range
 		{192000, false}, // Out of range
 	}
 
@@ -510,8 +510,8 @@ func TestSupportsChannels(t *testing.T) {
 	}{
 		{1, true},
 		{2, true},
-		{4, true},  // In range
-		{8, true},  // In range
+		{4, true},   // In range
+		{8, true},   // In range
 		{16, false}, // Out of range
 	}
 
