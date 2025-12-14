@@ -346,8 +346,12 @@ func getUSBBusDevFromCard(cardNum int) (busNum, devNum int, err error) {
 				return 0, 0, fmt.Errorf("failed to read devnum: %w", err)
 			}
 
-			fmt.Sscanf(strings.TrimSpace(string(busnumData)), "%d", &busNum)
-			fmt.Sscanf(strings.TrimSpace(string(devnumData)), "%d", &devNum)
+			if _, err := fmt.Sscanf(strings.TrimSpace(string(busnumData)), "%d", &busNum); err != nil {
+				continue // Try parent directory
+			}
+			if _, err := fmt.Sscanf(strings.TrimSpace(string(devnumData)), "%d", &devNum); err != nil {
+				continue // Try parent directory
+			}
 
 			if busNum > 0 && devNum > 0 {
 				return busNum, devNum, nil
@@ -640,7 +644,7 @@ func runSetup(args []string) error {
 		fmt.Println()
 		fmt.Println("Some prerequisites are missing. Continue anyway? [y/N]: ")
 		var response string
-		fmt.Scanln(&response)
+		_, _ = fmt.Scanln(&response)
 		if strings.ToLower(response) != "y" {
 			return fmt.Errorf("setup cancelled - install missing prerequisites first")
 		}
@@ -659,7 +663,7 @@ func runSetup(args []string) error {
 				if !autoMode {
 					fmt.Println("  Continue anyway? [y/N]: ")
 					var response string
-					fmt.Scanln(&response)
+					_, _ = fmt.Scanln(&response)
 					if strings.ToLower(response) != "y" {
 						return err
 					}
@@ -787,7 +791,7 @@ func runSetup(args []string) error {
 func promptYesNo(prompt string) bool {
 	fmt.Printf("%s [y/N]: ", prompt)
 	var response string
-	fmt.Scanln(&response)
+	_, _ = fmt.Scanln(&response)
 	return strings.ToLower(response) == "y"
 }
 
