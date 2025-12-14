@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"log"
 	"os"
 	"path/filepath"
 	"testing"
@@ -146,4 +147,102 @@ func TestStreamService_Run_WithNilManager(t *testing.T) {
 	}()
 
 	_ = svc.Run(ctx)
+}
+
+func TestPrintUsage(t *testing.T) {
+	// Just verify printUsage doesn't panic
+	printUsage()
+}
+
+func TestFindFFmpegPathCommonLocations(t *testing.T) {
+	// Test that the function checks common locations
+	path, err := findFFmpegPath()
+
+	// Either finds ffmpeg or returns appropriate error
+	if err != nil {
+		if path != "" {
+			t.Errorf("findFFmpegPath returned path %q with error %v", path, err)
+		}
+	} else {
+		if path == "" {
+			t.Error("findFFmpegPath returned empty path without error")
+		}
+	}
+}
+
+func TestLoadConfigurationDefaults(t *testing.T) {
+	// Test loading from non-existent path uses defaults
+	cfg, err := loadConfiguration("/nonexistent/path/config.yaml")
+	if err != nil {
+		t.Errorf("loadConfiguration should not error for non-existent file: %v", err)
+	}
+
+	if cfg == nil {
+		t.Fatal("loadConfiguration returned nil config")
+	}
+
+	// Verify defaults are set
+	if cfg.Default.SampleRate != 48000 {
+		t.Errorf("Default SampleRate = %d, want 48000", cfg.Default.SampleRate)
+	}
+	if cfg.Default.Channels != 2 {
+		t.Errorf("Default Channels = %d, want 2", cfg.Default.Channels)
+	}
+}
+
+func TestLoadConfigurationWithValidFile(t *testing.T) {
+	// Create a valid config file
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := `
+default:
+  sample_rate: 44100
+  channels: 1
+  bitrate: "96k"
+  codec: aac
+stream:
+  initial_restart_delay: 5s
+  max_restart_delay: 120s
+mediamtx:
+  rtsp_url: rtsp://localhost:8554
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("Failed to write test config: %v", err)
+	}
+
+	cfg, err := loadConfiguration(path)
+	if err != nil {
+		t.Errorf("loadConfiguration should not error: %v", err)
+	}
+
+	if cfg == nil {
+		t.Fatal("loadConfiguration returned nil config")
+	}
+
+	// Verify loaded values
+	if cfg.Default.SampleRate != 44100 {
+		t.Errorf("Default SampleRate = %d, want 44100", cfg.Default.SampleRate)
+	}
+	if cfg.Default.Channels != 1 {
+		t.Errorf("Default Channels = %d, want 1", cfg.Default.Channels)
+	}
+	if cfg.Default.Bitrate != "96k" {
+		t.Errorf("Default Bitrate = %s, want 96k", cfg.Default.Bitrate)
+	}
+}
+
+func TestStreamServiceWithLogger(t *testing.T) {
+	// Test streamService with a logger
+	logger := log.New(os.Stderr, "test: ", 0)
+
+	svc := &streamService{
+		name:    "test_device",
+		manager: nil,
+		logger:  logger,
+	}
+
+	// Verify name works with logger set
+	if got := svc.Name(); got != "test_device" {
+		t.Errorf("Name() = %q, want %q", got, "test_device")
+	}
 }

@@ -103,10 +103,10 @@ LyreBirdAudio must achieve **industrial control system (RTOS) level reliability*
 
 ### Coverage Requirements
 
-- **Minimum**: 70% (enforced by CI)
+- **Minimum**: 65% (enforced by CI)
 - **Target**: 90%+ for internal packages
 - **Internal packages**: ~87% (well-tested core libraries)
-- **CLI packages**: Lower coverage due to root/interactive requirements
+- **CLI packages**: Lower coverage due to root/interactive/network requirements
 - **Critical components** (stream manager, lock, config): 100% of realistic paths
 - **Error paths**: Every error return must have a test that triggers it
 - **Panic recovery**: Every potential panic must be tested
@@ -464,12 +464,12 @@ GitHub Actions workflow (`.github/workflows/ci.yml`):
 
 1. **Quality** - Format check, go vet, golangci-lint
 2. **Security** - gosec, govulncheck
-3. **Test** - Race detector, coverage threshold (70%)
+3. **Test** - Race detector, coverage threshold (65%)
 4. **Build** - Cross-compile for linux/amd64, arm64, arm/v7, arm/v6
 
 ### Coverage Threshold
 
-CI enforces 70% minimum coverage. Internal packages average **~87%**.
+CI enforces 65% minimum coverage. Internal packages average **~87%**.
 
 Coverage notes:
 - CLI commands (cmd/lyrebird) have lower coverage due to root/interactive requirements

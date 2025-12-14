@@ -694,11 +694,11 @@ func TestDetectArch(t *testing.T) {
 
 	// detectArch should return one of the known values or empty string
 	validArchs := map[string]bool{
-		"amd64":  true,
-		"arm64":  true,
-		"armv7":  true,
-		"armv6":  true,
-		"":       true, // Unknown arch returns empty
+		"amd64": true,
+		"arm64": true,
+		"armv7": true,
+		"armv6": true,
+		"":      true, // Unknown arch returns empty
 	}
 
 	if !validArchs[arch] {
@@ -714,10 +714,10 @@ func TestDetectArch(t *testing.T) {
 // TestReadLockPID verifies lock file reading.
 func TestReadLockPID(t *testing.T) {
 	tests := []struct {
-		name     string
-		content  string
-		wantPID  int
-		wantErr  bool
+		name    string
+		content string
+		wantPID int
+		wantErr bool
 	}{
 		{
 			name:    "valid pid",
