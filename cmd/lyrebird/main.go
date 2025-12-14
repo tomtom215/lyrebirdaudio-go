@@ -603,26 +603,426 @@ func runSetup(args []string) error {
 		return fmt.Errorf("setup requires root privileges (run with sudo)")
 	}
 
-	fmt.Println("Setup command not yet implemented")
-	fmt.Println("\nManual setup:")
-	fmt.Println("  1. lyrebird install-mediamtx")
-	fmt.Println("  2. sudo lyrebird usb-map")
-	fmt.Println("  3. lyrebird detect")
-	fmt.Println("  4. sudo systemctl start lyrebird-stream")
+	// Parse flags
+	autoMode := false
+	for _, arg := range args {
+		if arg == "--auto" || arg == "-y" {
+			autoMode = true
+		}
+	}
+
+	fmt.Println("LyreBirdAudio Setup Wizard")
+	fmt.Println("==========================")
+	fmt.Println()
+
+	// Step 1: Check prerequisites
+	fmt.Println("Step 1: Checking prerequisites...")
+	prereqsOK := true
+
+	// Check FFmpeg
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		fmt.Println("  [!] FFmpeg not found - required for audio encoding")
+		fmt.Println("      Install with: sudo apt-get install ffmpeg")
+		prereqsOK = false
+	} else {
+		fmt.Println("  [✓] FFmpeg installed")
+	}
+
+	// Check ALSA
+	if _, err := os.Stat("/proc/asound"); os.IsNotExist(err) {
+		fmt.Println("  [!] ALSA not available - required for audio capture")
+		prereqsOK = false
+	} else {
+		fmt.Println("  [✓] ALSA available")
+	}
+
+	if !prereqsOK && !autoMode {
+		fmt.Println()
+		fmt.Println("Some prerequisites are missing. Continue anyway? [y/N]: ")
+		var response string
+		fmt.Scanln(&response)
+		if strings.ToLower(response) != "y" {
+			return fmt.Errorf("setup cancelled - install missing prerequisites first")
+		}
+	}
+	fmt.Println()
+
+	// Step 2: Install MediaMTX
+	fmt.Println("Step 2: MediaMTX RTSP Server")
+	if _, err := exec.LookPath("mediamtx"); err == nil {
+		fmt.Println("  [✓] MediaMTX already installed")
+	} else {
+		if autoMode || promptYesNo("  Install MediaMTX?") {
+			fmt.Println("  Installing MediaMTX...")
+			if err := runInstallMediaMTX([]string{}); err != nil {
+				fmt.Printf("  [!] MediaMTX installation failed: %v\n", err)
+				if !autoMode {
+					fmt.Println("  Continue anyway? [y/N]: ")
+					var response string
+					fmt.Scanln(&response)
+					if strings.ToLower(response) != "y" {
+						return err
+					}
+				}
+			} else {
+				fmt.Println("  [✓] MediaMTX installed")
+			}
+		} else {
+			fmt.Println("  [!] Skipping MediaMTX installation")
+		}
+	}
+	fmt.Println()
+
+	// Step 3: Detect USB audio devices
+	fmt.Println("Step 3: Detecting USB Audio Devices")
+	devices, err := audio.DetectDevices("/proc/asound")
+	if err != nil {
+		fmt.Printf("  [!] Device detection failed: %v\n", err)
+	} else if len(devices) == 0 {
+		fmt.Println("  [!] No USB audio devices found")
+		fmt.Println("      Connect USB microphones and try again")
+	} else {
+		fmt.Printf("  [✓] Found %d USB audio device(s):\n", len(devices))
+		for _, dev := range devices {
+			fmt.Printf("      - Card %d: %s\n", dev.CardNumber, dev.Name)
+		}
+	}
+	fmt.Println()
+
+	// Step 4: Create udev rules
+	fmt.Println("Step 4: USB Device Mapping (udev rules)")
+	if _, err := os.Stat(udev.RulesFilePath); err == nil {
+		fmt.Printf("  [✓] udev rules already exist (%s)\n", udev.RulesFilePath)
+	} else if len(devices) > 0 {
+		if autoMode || promptYesNo("  Create udev rules for persistent device mapping?") {
+			fmt.Println("  Creating udev rules...")
+			if err := runUSBMapWithPath("/proc/asound", []string{"--no-reload"}); err != nil {
+				fmt.Printf("  [!] udev rule creation failed: %v\n", err)
+			} else {
+				fmt.Println("  [✓] udev rules created")
+			}
+		} else {
+			fmt.Println("  [!] Skipping udev rules")
+		}
+	} else {
+		fmt.Println("  [!] Skipping - no devices to map")
+	}
+	fmt.Println()
+
+	// Step 5: Create default config if needed
+	fmt.Println("Step 5: Configuration")
+	if _, err := os.Stat(defaultConfigPath); err == nil {
+		fmt.Printf("  [✓] Configuration exists (%s)\n", defaultConfigPath)
+	} else {
+		if autoMode || promptYesNo("  Create default configuration?") {
+			fmt.Println("  Creating default configuration...")
+			cfg := config.DefaultConfig()
+
+			// Add detected devices to config
+			for _, dev := range devices {
+				devName := audio.SanitizeDeviceName(dev.Name)
+				cfg.Devices[devName] = config.DeviceConfig{
+					SampleRate: 48000,
+					Channels:   2,
+					Bitrate:    "128k",
+					Codec:      "opus",
+				}
+			}
+
+			// Ensure directory exists
+			if err := os.MkdirAll(filepath.Dir(defaultConfigPath), 0755); err != nil {
+				fmt.Printf("  [!] Failed to create config directory: %v\n", err)
+			} else if err := cfg.Save(defaultConfigPath); err != nil {
+				fmt.Printf("  [!] Failed to save configuration: %v\n", err)
+			} else {
+				fmt.Printf("  [✓] Configuration saved to %s\n", defaultConfigPath)
+			}
+		} else {
+			fmt.Println("  [!] Skipping configuration creation")
+		}
+	}
+	fmt.Println()
+
+	// Step 6: Install systemd service
+	fmt.Println("Step 6: Systemd Service")
+	servicePath := "/etc/systemd/system/lyrebird-stream.service"
+	if _, err := os.Stat(servicePath); err == nil {
+		fmt.Println("  [✓] Service already installed")
+	} else {
+		if autoMode || promptYesNo("  Install lyrebird-stream service?") {
+			fmt.Println("  Installing systemd service...")
+			if err := installLyreBirdService(); err != nil {
+				fmt.Printf("  [!] Service installation failed: %v\n", err)
+			} else {
+				fmt.Println("  [✓] Service installed")
+			}
+		} else {
+			fmt.Println("  [!] Skipping service installation")
+		}
+	}
+	fmt.Println()
+
+	// Summary
+	fmt.Println("Setup Complete!")
+	fmt.Println("===============")
+	fmt.Println()
+	fmt.Println("Next steps:")
+	fmt.Println("  1. Start MediaMTX:         sudo systemctl start mediamtx")
+	fmt.Println("  2. Start streaming:        sudo systemctl start lyrebird-stream")
+	fmt.Println("  3. Enable on boot:         sudo systemctl enable mediamtx lyrebird-stream")
+	fmt.Println("  4. Check status:           lyrebird status")
+	fmt.Println()
+	if len(devices) > 0 {
+		fmt.Println("Stream URLs:")
+		for _, dev := range devices {
+			devName := audio.SanitizeDeviceName(dev.Name)
+			fmt.Printf("  rtsp://localhost:8554/%s\n", devName)
+		}
+	}
+
 	return nil
 }
 
-// runInstallMediaMTX installs MediaMTX (stub for now).
+// promptYesNo displays a yes/no prompt and returns true for yes.
+func promptYesNo(prompt string) bool {
+	fmt.Printf("%s [y/N]: ", prompt)
+	var response string
+	fmt.Scanln(&response)
+	return strings.ToLower(response) == "y"
+}
+
+// installLyreBirdService installs the lyrebird-stream systemd service.
+func installLyreBirdService() error {
+	serviceContent := `[Unit]
+Description=LyreBirdAudio Stream Manager
+Documentation=https://github.com/tomtom215/lyrebirdaudio-go
+After=network.target sound.target mediamtx.service
+Wants=mediamtx.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/lyrebird-stream --config=/etc/lyrebird/config.yaml
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+`
+	servicePath := "/etc/systemd/system/lyrebird-stream.service"
+	// #nosec G306 - systemd service files should be world-readable
+	if err := os.WriteFile(servicePath, []byte(serviceContent), 0644); err != nil {
+		return fmt.Errorf("failed to write service file: %w", err)
+	}
+
+	// Reload systemd
+	reloadCmd := exec.Command("systemctl", "daemon-reload")
+	if output, err := reloadCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("systemctl daemon-reload failed: %w: %s", err, string(output))
+	}
+
+	return nil
+}
+
+// runInstallMediaMTX installs MediaMTX RTSP server.
 func runInstallMediaMTX(args []string) error {
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("install-mediamtx requires root privileges (run with sudo)")
 	}
 
-	fmt.Println("MediaMTX installation not yet implemented")
-	fmt.Println("\nManual installation:")
-	fmt.Println("  wget https://github.com/bluenviron/mediamtx/releases/latest/download/mediamtx_linux_amd64.tar.gz")
-	fmt.Println("  tar -xzf mediamtx_linux_amd64.tar.gz")
-	fmt.Println("  sudo mv mediamtx /usr/local/bin/")
+	// Parse flags
+	version := "v1.9.3" // Known stable version
+	installService := true
+	for i := 0; i < len(args); i++ {
+		switch {
+		case strings.HasPrefix(args[i], "--version="):
+			version = strings.TrimPrefix(args[i], "--version=")
+		case args[i] == "--no-service":
+			installService = false
+		}
+	}
+
+	fmt.Println("MediaMTX Installation")
+	fmt.Println("=====================")
+	fmt.Println()
+
+	// Detect architecture
+	arch := detectArch()
+	fmt.Printf("Detected architecture: %s\n", arch)
+
+	if arch == "" {
+		return fmt.Errorf("unsupported architecture")
+	}
+
+	// Check if already installed
+	if existingPath, err := exec.LookPath("mediamtx"); err == nil {
+		fmt.Printf("MediaMTX already installed at: %s\n", existingPath)
+		fmt.Print("Reinstall? [y/N]: ")
+		var response string
+		fmt.Scanln(&response)
+		if strings.ToLower(response) != "y" {
+			fmt.Println("Installation cancelled.")
+			return nil
+		}
+	}
+
+	// Construct download URL
+	downloadURL := fmt.Sprintf(
+		"https://github.com/bluenviron/mediamtx/releases/download/%s/mediamtx_%s_linux_%s.tar.gz",
+		version, version, arch,
+	)
+
+	fmt.Printf("Version: %s\n", version)
+	fmt.Printf("Download URL: %s\n", downloadURL)
+	fmt.Println()
+
+	// Create temp directory
+	tmpDir, err := os.MkdirTemp("", "mediamtx-install-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp directory: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	tarPath := filepath.Join(tmpDir, "mediamtx.tar.gz")
+
+	// Download using curl or wget
+	fmt.Println("Downloading MediaMTX...")
+	if err := downloadFile(downloadURL, tarPath); err != nil {
+		return fmt.Errorf("download failed: %w", err)
+	}
+	fmt.Println("Download complete.")
+
+	// Extract
+	fmt.Println("Extracting...")
+	extractCmd := exec.Command("tar", "-xzf", tarPath, "-C", tmpDir)
+	if output, err := extractCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("extraction failed: %w: %s", err, string(output))
+	}
+
+	// Install binary
+	binaryPath := filepath.Join(tmpDir, "mediamtx")
+	if _, err := os.Stat(binaryPath); os.IsNotExist(err) {
+		return fmt.Errorf("mediamtx binary not found in archive")
+	}
+
+	fmt.Println("Installing to /usr/local/bin/mediamtx...")
+	installCmd := exec.Command("install", "-m", "755", binaryPath, "/usr/local/bin/mediamtx")
+	if output, err := installCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("installation failed: %w: %s", err, string(output))
+	}
+
+	// Install config if it doesn't exist
+	configSrc := filepath.Join(tmpDir, "mediamtx.yml")
+	configDst := "/etc/mediamtx/mediamtx.yml"
+	if _, err := os.Stat(configDst); os.IsNotExist(err) {
+		fmt.Printf("Installing default config to %s...\n", configDst)
+		if err := os.MkdirAll("/etc/mediamtx", 0755); err != nil {
+			fmt.Printf("Warning: failed to create config directory: %v\n", err)
+		} else if _, err := os.Stat(configSrc); err == nil {
+			copyCmd := exec.Command("cp", configSrc, configDst)
+			if output, err := copyCmd.CombinedOutput(); err != nil {
+				fmt.Printf("Warning: failed to copy config: %v: %s\n", err, string(output))
+			}
+		}
+	} else {
+		fmt.Printf("Config already exists at %s, keeping existing.\n", configDst)
+	}
+
+	// Install systemd service
+	if installService {
+		fmt.Println("Installing systemd service...")
+		if err := installMediaMTXService(); err != nil {
+			fmt.Printf("Warning: failed to install systemd service: %v\n", err)
+			fmt.Println("You can start MediaMTX manually with: mediamtx")
+		} else {
+			fmt.Println("Systemd service installed.")
+			fmt.Println("Start with: sudo systemctl start mediamtx")
+			fmt.Println("Enable on boot: sudo systemctl enable mediamtx")
+		}
+	}
+
+	fmt.Println()
+	fmt.Println("MediaMTX installation complete!")
+	fmt.Println()
+	fmt.Println("Default RTSP URL: rtsp://localhost:8554")
+	fmt.Println("API URL: http://localhost:9997")
+
+	return nil
+}
+
+// detectArch returns the MediaMTX architecture string for the current system.
+func detectArch() string {
+	cmd := exec.Command("uname", "-m")
+	output, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+
+	machine := strings.TrimSpace(string(output))
+	switch machine {
+	case "x86_64", "amd64":
+		return "amd64"
+	case "aarch64", "arm64":
+		return "arm64"
+	case "armv7l", "armhf":
+		return "armv7"
+	case "armv6l":
+		return "armv6"
+	default:
+		return ""
+	}
+}
+
+// downloadFile downloads a file from URL to destination path.
+func downloadFile(url, dest string) error {
+	// Try curl first
+	if _, err := exec.LookPath("curl"); err == nil {
+		cmd := exec.Command("curl", "-fsSL", "-o", dest, url)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("curl failed: %w: %s", err, string(output))
+		}
+		return nil
+	}
+
+	// Fall back to wget
+	if _, err := exec.LookPath("wget"); err == nil {
+		cmd := exec.Command("wget", "-q", "-O", dest, url)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("wget failed: %w: %s", err, string(output))
+		}
+		return nil
+	}
+
+	return fmt.Errorf("neither curl nor wget found - install one of them first")
+}
+
+// installMediaMTXService installs the MediaMTX systemd service.
+func installMediaMTXService() error {
+	serviceContent := `[Unit]
+Description=MediaMTX RTSP Server
+Documentation=https://github.com/bluenviron/mediamtx
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/mediamtx /etc/mediamtx/mediamtx.yml
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+`
+	servicePath := "/etc/systemd/system/mediamtx.service"
+	// #nosec G306 - systemd service files should be world-readable
+	if err := os.WriteFile(servicePath, []byte(serviceContent), 0644); err != nil {
+		return fmt.Errorf("failed to write service file: %w", err)
+	}
+
+	// Reload systemd
+	reloadCmd := exec.Command("systemctl", "daemon-reload")
+	if output, err := reloadCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("systemctl daemon-reload failed: %w: %s", err, string(output))
+	}
+
 	return nil
 }
 
