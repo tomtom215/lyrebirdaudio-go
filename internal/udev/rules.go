@@ -2,6 +2,8 @@ package udev
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
 	"strings"
 	"time"
 )
@@ -144,8 +146,8 @@ func GenerateRulesFile(devices []struct {
 // This function performs the following operations:
 // 1. Validates all device info
 // 2. Generates rules file content
-// 3. Writes to /etc/udev/rules.d/99-usb-soundcards.rules
-// 4. Sets permissions to 0644 (root:root, readable by all)
+// 3. Writes to the specified path (or default RulesFilePath)
+// 4. Sets permissions to 0644 (readable by all)
 // 5. Optionally reloads udev rules
 //
 // Parameters:
@@ -165,6 +167,22 @@ func GenerateRulesFile(devices []struct {
 //
 // Reference: usb-audio-mapper.sh write_udev_rules() function
 func WriteRulesFile(devices []*DeviceInfo, reload bool) error {
+	return WriteRulesFileToPath(devices, RulesFilePath, reload)
+}
+
+// WriteRulesFileToPath writes the udev rules file to a specified path.
+//
+// This is the core implementation that allows specifying a custom path,
+// useful for testing without requiring root access.
+//
+// Parameters:
+//   - devices: Slice of DeviceInfo structs
+//   - path: Destination file path
+//   - reload: If true, automatically reload udev rules after writing
+//
+// Returns:
+//   - error: if validation, writing, or reloading fails
+func WriteRulesFileToPath(devices []*DeviceInfo, path string, reload bool) error {
 	// Validate all devices first
 	for i, dev := range devices {
 		if _, err := GenerateRuleWithValidation(dev.PortPath, dev.BusNum, dev.DevNum); err != nil {
@@ -193,11 +211,42 @@ func WriteRulesFile(devices []*DeviceInfo, reload bool) error {
 
 	content := GenerateRulesFile(anonDevices)
 
-	// Note: Actual file writing and permission setting will be implemented
-	// in a separate function that requires elevated privileges.
-	// This function is primarily for testing and validation.
-	_ = content
-	_ = reload
+	// Write to file with 0644 permissions (readable by all, writable by owner)
+	// #nosec G306 - udev rules must be world-readable (0644 is appropriate)
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		return fmt.Errorf("failed to write rules file: %w", err)
+	}
 
-	return fmt.Errorf("WriteRulesFile not yet implemented - requires elevated privileges")
+	// Optionally reload udev rules
+	if reload {
+		if err := ReloadUdevRules(); err != nil {
+			return fmt.Errorf("failed to reload udev rules: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// ReloadUdevRules reloads udev rules and triggers re-enumeration.
+//
+// This runs:
+//   - udevadm control --reload-rules
+//   - udevadm trigger
+//
+// Returns:
+//   - error: if either command fails
+func ReloadUdevRules() error {
+	// Reload rules
+	reloadCmd := exec.Command("udevadm", "control", "--reload-rules")
+	if output, err := reloadCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("udevadm control --reload-rules failed: %w: %s", err, string(output))
+	}
+
+	// Trigger re-enumeration
+	triggerCmd := exec.Command("udevadm", "trigger")
+	if output, err := triggerCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("udevadm trigger failed: %w: %s", err, string(output))
+	}
+
+	return nil
 }

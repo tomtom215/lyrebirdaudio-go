@@ -1,0 +1,66 @@
+# LyreBirdAudio Stream Manager Service
+#
+# This service manages audio streaming from USB devices to RTSP via MediaMTX.
+# It automatically detects USB audio devices and maintains persistent streams
+# with automatic restart on failure.
+#
+# Installation:
+#   sudo cp lyrebird-stream.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable lyrebird-stream
+#   sudo systemctl start lyrebird-stream
+#
+# Configuration: /etc/lyrebird/config.yaml
+# Logs: journalctl -u lyrebird-stream -f
+
+[Unit]
+Description=LyreBirdAudio Stream Manager
+Documentation=https://github.com/tomtom215/lyrebirdaudio-go
+After=network.target sound.target mediamtx.service
+Wants=mediamtx.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=root
+Group=audio
+
+# Main executable
+ExecStart=/usr/local/bin/lyrebird-stream --config=/etc/lyrebird/config.yaml --log-level=info
+
+# Graceful shutdown
+ExecStop=/bin/kill -SIGTERM $MAINPID
+TimeoutStopSec=30
+
+# Restart policy
+Restart=always
+RestartSec=10
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+# Allow access to audio devices
+SupplementaryGroups=audio
+DeviceAllow=/dev/snd/* rw
+DevicePolicy=closed
+
+# Allow access to required paths
+ReadWritePaths=/var/run/lyrebird
+ReadOnlyPaths=/etc/lyrebird /proc/asound
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# Environment
+Environment=HOME=/var/run/lyrebird
+
+[Install]
+WantedBy=multi-user.target
