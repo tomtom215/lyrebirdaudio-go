@@ -1075,7 +1075,6 @@ func runTest(args []string) error {
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
 		fmt.Printf("FAILED\n      %v\n", err)
-		allPassed = false
 		// Can't continue without valid config
 		return fmt.Errorf("config test failed: %w", err)
 	}

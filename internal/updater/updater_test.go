@@ -59,7 +59,7 @@ func TestGetLatestRelease(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
-		json.NewEncoder(w).Encode(release)
+		_ = json.NewEncoder(w).Encode(release)
 	}))
 	defer server.Close()
 
@@ -74,7 +74,7 @@ func TestGetLatestRelease(t *testing.T) {
 
 	// For testing, we'll create a mock server and use it directly
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(release)
+		_ = json.NewEncoder(w).Encode(release)
 	}))
 	defer mockServer.Close()
 
@@ -104,7 +104,7 @@ func TestListReleases(t *testing.T) {
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(releases)
+		_ = json.NewEncoder(w).Encode(releases)
 	}))
 	defer server.Close()
 
@@ -187,7 +187,7 @@ func TestDownload(t *testing.T) {
 	content := "test binary content"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Length", "19")
-		w.Write([]byte(content))
+		_, _ = w.Write([]byte(content))
 	}))
 	defer server.Close()
 
@@ -408,7 +408,7 @@ func TestDownloadErrorStatus(t *testing.T) {
 func TestDownloadNoProgress(t *testing.T) {
 	content := "test content"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(content))
+		_, _ = w.Write([]byte(content))
 	}))
 	defer server.Close()
 

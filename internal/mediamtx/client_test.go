@@ -47,7 +47,7 @@ func TestListPaths(t *testing.T) {
 				{Name: "stream2", Ready: false, BytesReceived: 0},
 			},
 		}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -69,7 +69,7 @@ func TestListPaths(t *testing.T) {
 func TestListPathsError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte("internal error"))
+		_, _ = w.Write([]byte("internal error"))
 	}))
 	defer server.Close()
 
@@ -95,7 +95,7 @@ func TestGetPath(t *testing.T) {
 				{Type: "audio", Codec: "opus", SampleRate: 48000},
 			},
 		}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -160,7 +160,7 @@ func TestIsStreamHealthy(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				json.NewEncoder(w).Encode(tt.path)
+				_ = json.NewEncoder(w).Encode(tt.path)
 			}))
 			defer server.Close()
 
@@ -178,7 +178,7 @@ func TestIsStreamHealthy(t *testing.T) {
 
 func TestPing(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(PathList{})
+		_ = json.NewEncoder(w).Encode(PathList{})
 	}))
 	defer server.Close()
 
@@ -212,7 +212,7 @@ func TestGetStreamStats(t *testing.T) {
 				{Type: "rtsp", ID: "reader1"},
 			},
 		}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -244,7 +244,7 @@ func TestHealthCheck(t *testing.T) {
 				{Name: "stream2", Ready: true, BytesReceived: 500},
 			},
 		}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -276,7 +276,7 @@ func TestHealthCheckUnhealthy(t *testing.T) {
 				{Name: "stream2", Ready: false, BytesReceived: 0}, // Unhealthy
 			},
 		}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -301,7 +301,7 @@ func TestWaitForStreamTimeout(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Always return not ready
 		resp := Path{Name: "test", Ready: false, BytesReceived: 0}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -322,7 +322,7 @@ func TestWaitForStreamSuccess(t *testing.T) {
 		} else {
 			resp = Path{Name: "test", Ready: false, BytesReceived: 0}
 		}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 

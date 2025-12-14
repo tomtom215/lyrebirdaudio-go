@@ -272,7 +272,9 @@ func TestGetMetricsWithMockProc(t *testing.T) {
 	// Create some fake fd symlinks
 	for i := 0; i < 5; i++ {
 		fdPath := filepath.Join(fdDir, strconv.Itoa(i))
-		os.WriteFile(fdPath, []byte{}, 0644)
+		if err := os.WriteFile(fdPath, []byte{}, 0644); err != nil {
+			t.Fatalf("Failed to create fd file: %v", err)
+		}
 	}
 
 	// Create stat file

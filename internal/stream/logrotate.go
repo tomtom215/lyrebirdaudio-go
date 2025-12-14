@@ -38,10 +38,10 @@ type RotatingWriter struct {
 	maxFiles int
 	compress bool
 
-	mu       sync.Mutex
-	file     *os.File
-	size     int64
-	rotation int // Current rotation number
+	mu     sync.Mutex
+	file   *os.File
+	size   int64
+	closed bool
 }
 
 // RotatingWriterOption is a functional option for configuring RotatingWriter.
@@ -118,11 +118,21 @@ func (w *RotatingWriter) Write(p []byte) (n int, err error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	if w.closed {
+		return 0, fmt.Errorf("write to closed log writer")
+	}
+
 	// Check if rotation needed
 	if w.size+int64(len(p)) > w.maxSize {
-		if err := w.rotate(); err != nil {
-			// Log rotation failed, but try to write anyway
-			// (better to potentially exceed size than lose logs)
+		// Log rotation may fail, but we try to write anyway
+		// (better to potentially exceed size than lose logs)
+		_ = w.rotate()
+	}
+
+	// Ensure file is open
+	if w.file == nil {
+		if err := w.openFile(); err != nil {
+			return 0, fmt.Errorf("failed to open log file for write: %w", err)
 		}
 	}
 
@@ -136,6 +146,7 @@ func (w *RotatingWriter) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	w.closed = true
 	if w.file != nil {
 		err := w.file.Close()
 		w.file = nil
