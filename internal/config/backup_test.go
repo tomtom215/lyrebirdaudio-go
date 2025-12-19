@@ -377,3 +377,186 @@ func TestBackupBeforeSave(t *testing.T) {
 		t.Errorf("New config not saved correctly, SampleRate = %d", newCfg.Default.SampleRate)
 	}
 }
+
+// TestBackupBeforeSaveNoExistingConfig tests BackupBeforeSave when no config exists.
+func TestBackupBeforeSaveNoExistingConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	backupDir := filepath.Join(tmpDir, "backups")
+	configPath := filepath.Join(tmpDir, "config.yaml")
+
+	// Create new config (no existing config at configPath)
+	cfg := DefaultConfig()
+	cfg.Default.SampleRate = 48000
+
+	// Backup and save - should work without creating backup
+	backupPath, err := BackupBeforeSave(cfg, configPath, backupDir)
+	if err != nil {
+		t.Fatalf("BackupBeforeSave() error: %v", err)
+	}
+
+	// No backup should be created since no existing config
+	if backupPath != "" {
+		t.Errorf("Expected no backup when config doesn't exist, got: %s", backupPath)
+	}
+
+	// Verify new config was saved
+	newCfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("Failed to load new config: %v", err)
+	}
+
+	if newCfg.Default.SampleRate != 48000 {
+		t.Errorf("New config not saved correctly, SampleRate = %d", newCfg.Default.SampleRate)
+	}
+}
+
+// TestBackupConfigDuplicateTimestamp tests creating backup when one already exists with same timestamp.
+func TestBackupConfigDuplicateTimestamp(t *testing.T) {
+	tmpDir := t.TempDir()
+	backupDir := filepath.Join(tmpDir, "backups")
+
+	// Create a config file to backup
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	configContent := `default:
+  sample_rate: 48000
+  channels: 2
+  bitrate: "128k"
+  codec: opus
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("Failed to create config: %v", err)
+	}
+
+	// Create first backup
+	backup1, err := BackupConfig(configPath, backupDir)
+	if err != nil {
+		t.Fatalf("First BackupConfig() error: %v", err)
+	}
+
+	// Create second backup immediately (same second, should add milliseconds)
+	backup2, err := BackupConfig(configPath, backupDir)
+	if err != nil {
+		t.Fatalf("Second BackupConfig() error: %v", err)
+	}
+
+	// Paths should be different
+	if backup1 == backup2 {
+		t.Error("Duplicate backup should have unique path")
+	}
+
+	// Both backups should exist
+	if _, err := os.Stat(backup1); os.IsNotExist(err) {
+		t.Errorf("First backup not found: %s", backup1)
+	}
+	if _, err := os.Stat(backup2); os.IsNotExist(err) {
+		t.Errorf("Second backup not found: %s", backup2)
+	}
+}
+
+// TestRestoreBackupNotFound tests RestoreBackup when backup file doesn't exist.
+func TestRestoreBackupNotFound(t *testing.T) {
+	tmpDir := t.TempDir()
+	backupDir := filepath.Join(tmpDir, "backups")
+	configPath := filepath.Join(tmpDir, "config.yaml")
+
+	_, err := RestoreBackup("/nonexistent/backup.bak", configPath, backupDir)
+	if err == nil {
+		t.Error("Expected error for nonexistent backup file")
+	}
+}
+
+// TestCleanOldBackupsFewerThanKeep tests CleanOldBackups when there are fewer backups than keepCount.
+func TestCleanOldBackupsFewerThanKeep(t *testing.T) {
+	tmpDir := t.TempDir()
+	backupDir := filepath.Join(tmpDir, "backups")
+
+	// Create backup directory
+	if err := os.MkdirAll(backupDir, 0755); err != nil {
+		t.Fatalf("Failed to create backup dir: %v", err)
+	}
+
+	// Create only 2 backups
+	for i := 0; i < 2; i++ {
+		name := time.Now().Add(time.Duration(-i) * time.Hour).Format(BackupTimestampFormat)
+		path := filepath.Join(backupDir, "config.yaml."+name+BackupSuffix)
+		if err := os.WriteFile(path, []byte("test"), 0644); err != nil {
+			t.Fatalf("Failed to create test file: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Keep 5 (more than we have)
+	deleted, err := CleanOldBackups(backupDir, "config.yaml", 5)
+	if err != nil {
+		t.Fatalf("CleanOldBackups() error: %v", err)
+	}
+
+	if deleted != 0 {
+		t.Errorf("CleanOldBackups() deleted %d files, want 0", deleted)
+	}
+}
+
+// TestListBackupsWithDirectories tests ListBackups ignores directories in backup folder.
+func TestListBackupsWithDirectories(t *testing.T) {
+	tmpDir := t.TempDir()
+	backupDir := filepath.Join(tmpDir, "backups")
+
+	// Create backup directory
+	if err := os.MkdirAll(backupDir, 0755); err != nil {
+		t.Fatalf("Failed to create backup dir: %v", err)
+	}
+
+	// Create a valid backup file
+	backupFile := filepath.Join(backupDir, "config.yaml.2025-12-14T10-00-00.bak")
+	if err := os.WriteFile(backupFile, []byte("test"), 0644); err != nil {
+		t.Fatalf("Failed to create backup file: %v", err)
+	}
+
+	// Create a subdirectory (should be ignored)
+	subDir := filepath.Join(backupDir, "subdir")
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		t.Fatalf("Failed to create subdir: %v", err)
+	}
+
+	backups, err := ListBackups(backupDir, "")
+	if err != nil {
+		t.Fatalf("ListBackups() error: %v", err)
+	}
+
+	// Should only find 1 backup (not the directory)
+	if len(backups) != 1 {
+		t.Errorf("ListBackups() returned %d backups, want 1", len(backups))
+	}
+}
+
+// TestListBackupsInvalidTimestamp tests ListBackups skips files with invalid timestamps.
+func TestListBackupsInvalidTimestamp(t *testing.T) {
+	tmpDir := t.TempDir()
+	backupDir := filepath.Join(tmpDir, "backups")
+
+	// Create backup directory
+	if err := os.MkdirAll(backupDir, 0755); err != nil {
+		t.Fatalf("Failed to create backup dir: %v", err)
+	}
+
+	// Create files with valid and invalid timestamps
+	validFile := filepath.Join(backupDir, "config.yaml.2025-12-14T10-00-00.bak")
+	if err := os.WriteFile(validFile, []byte("test"), 0644); err != nil {
+		t.Fatalf("Failed to create valid backup file: %v", err)
+	}
+
+	invalidFile := filepath.Join(backupDir, "config.yaml.invalid-timestamp.bak")
+	if err := os.WriteFile(invalidFile, []byte("test"), 0644); err != nil {
+		t.Fatalf("Failed to create invalid backup file: %v", err)
+	}
+
+	backups, err := ListBackups(backupDir, "")
+	if err != nil {
+		t.Fatalf("ListBackups() error: %v", err)
+	}
+
+	// Should only find 1 backup (the valid one)
+	if len(backups) != 1 {
+		t.Errorf("ListBackups() returned %d backups, want 1", len(backups))
+	}
+}

@@ -1,6 +1,8 @@
 package updater
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"io"
@@ -580,5 +582,580 @@ func TestUpdateInfoFields(t *testing.T) {
 	}
 	if !info.UpdateAvailable {
 		t.Error("UpdateInfo UpdateAvailable should be true")
+	}
+}
+
+// mockTransport redirects requests to a mock server
+type mockTransport struct {
+	mockServer *httptest.Server
+}
+
+func (t *mockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Redirect GitHub API requests to mock server
+	mockURL := t.mockServer.URL + req.URL.Path
+	mockReq, err := http.NewRequestWithContext(req.Context(), req.Method, mockURL, req.Body)
+	if err != nil {
+		return nil, err
+	}
+	for k, v := range req.Header {
+		mockReq.Header[k] = v
+	}
+	return http.DefaultTransport.RoundTrip(mockReq)
+}
+
+func TestGetLatestReleaseWithMock(t *testing.T) {
+	release := Release{
+		TagName:     "v1.2.0",
+		Name:        "Release 1.2.0",
+		PublishedAt: time.Now(),
+		Body:        "Release notes",
+		Assets: []Asset{
+			{Name: "lyrebird-linux-amd64.tar.gz", BrowserDownloadURL: "https://example.com/download"},
+		},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/releases/latest") {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(release)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	u := New(WithOwner("test"), WithRepo("repo"))
+	u.httpClient = &http.Client{Transport: &mockTransport{mockServer: server}}
+
+	got, err := u.GetLatestRelease(context.Background())
+	if err != nil {
+		t.Fatalf("GetLatestRelease() error: %v", err)
+	}
+
+	if got.TagName != "v1.2.0" {
+		t.Errorf("TagName = %q, want %q", got.TagName, "v1.2.0")
+	}
+}
+
+func TestGetLatestReleaseNotFound(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	u := New(WithOwner("test"), WithRepo("repo"))
+	u.httpClient = &http.Client{Transport: &mockTransport{mockServer: server}}
+
+	_, err := u.GetLatestRelease(context.Background())
+	if err == nil {
+		t.Error("Expected error for 404 response")
+	}
+	if !strings.Contains(err.Error(), "no releases found") {
+		t.Errorf("Error = %q, want to contain 'no releases found'", err.Error())
+	}
+}
+
+func TestGetLatestReleaseServerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	u := New(WithOwner("test"), WithRepo("repo"))
+	u.httpClient = &http.Client{Transport: &mockTransport{mockServer: server}}
+
+	_, err := u.GetLatestRelease(context.Background())
+	if err == nil {
+		t.Error("Expected error for 500 response")
+	}
+}
+
+func TestGetLatestReleaseInvalidJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("invalid json"))
+	}))
+	defer server.Close()
+
+	u := New(WithOwner("test"), WithRepo("repo"))
+	u.httpClient = &http.Client{Transport: &mockTransport{mockServer: server}}
+
+	_, err := u.GetLatestRelease(context.Background())
+	if err == nil {
+		t.Error("Expected error for invalid JSON")
+	}
+}
+
+func TestListReleasesWithMock(t *testing.T) {
+	releases := []Release{
+		{TagName: "v1.2.0", PublishedAt: time.Now()},
+		{TagName: "v1.1.0", PublishedAt: time.Now().Add(-24 * time.Hour)},
+		{TagName: "v1.0.0-draft", Draft: true}, // Should be filtered
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/releases") {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(releases)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	u := New(WithOwner("test"), WithRepo("repo"))
+	u.httpClient = &http.Client{Transport: &mockTransport{mockServer: server}}
+
+	got, err := u.ListReleases(context.Background())
+	if err != nil {
+		t.Fatalf("ListReleases() error: %v", err)
+	}
+
+	// Draft should be filtered
+	if len(got) != 2 {
+		t.Errorf("Expected 2 releases (draft filtered), got %d", len(got))
+	}
+}
+
+func TestListReleasesServerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	u := New(WithOwner("test"), WithRepo("repo"))
+	u.httpClient = &http.Client{Transport: &mockTransport{mockServer: server}}
+
+	_, err := u.ListReleases(context.Background())
+	if err == nil {
+		t.Error("Expected error for 500 response")
+	}
+}
+
+func TestListReleasesInvalidJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("invalid json"))
+	}))
+	defer server.Close()
+
+	u := New(WithOwner("test"), WithRepo("repo"))
+	u.httpClient = &http.Client{Transport: &mockTransport{mockServer: server}}
+
+	_, err := u.ListReleases(context.Background())
+	if err == nil {
+		t.Error("Expected error for invalid JSON")
+	}
+}
+
+func TestGetReleaseWithMock(t *testing.T) {
+	release := Release{
+		TagName:     "v1.0.0",
+		Name:        "Release 1.0.0",
+		PublishedAt: time.Now(),
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/releases/tags/v1.0.0") {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(release)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	u := New(WithOwner("test"), WithRepo("repo"))
+	u.httpClient = &http.Client{Transport: &mockTransport{mockServer: server}}
+
+	got, err := u.GetRelease(context.Background(), "v1.0.0")
+	if err != nil {
+		t.Fatalf("GetRelease() error: %v", err)
+	}
+
+	if got.TagName != "v1.0.0" {
+		t.Errorf("TagName = %q, want %q", got.TagName, "v1.0.0")
+	}
+}
+
+func TestGetReleaseNotFoundWithMock(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	u := New(WithOwner("test"), WithRepo("repo"))
+	u.httpClient = &http.Client{Transport: &mockTransport{mockServer: server}}
+
+	_, err := u.GetRelease(context.Background(), "v999.0.0")
+	if err == nil {
+		t.Error("Expected error for 404 response")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("Error = %q, want to contain 'not found'", err.Error())
+	}
+}
+
+func TestGetReleaseServerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	u := New(WithOwner("test"), WithRepo("repo"))
+	u.httpClient = &http.Client{Transport: &mockTransport{mockServer: server}}
+
+	_, err := u.GetRelease(context.Background(), "v1.0.0")
+	if err == nil {
+		t.Error("Expected error for 500 response")
+	}
+}
+
+func TestGetReleaseInvalidJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("invalid json"))
+	}))
+	defer server.Close()
+
+	u := New(WithOwner("test"), WithRepo("repo"))
+	u.httpClient = &http.Client{Transport: &mockTransport{mockServer: server}}
+
+	_, err := u.GetRelease(context.Background(), "v1.0.0")
+	if err == nil {
+		t.Error("Expected error for invalid JSON")
+	}
+}
+
+func TestCheckForUpdatesWithMock(t *testing.T) {
+	assetName := getAssetName()
+	release := Release{
+		TagName:     "v2.0.0",
+		Name:        "Release 2.0.0",
+		PublishedAt: time.Now(),
+		Body:        "New features",
+		Assets: []Asset{
+			{Name: assetName + ".tar.gz", BrowserDownloadURL: "https://example.com/download"},
+		},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/releases/latest") {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(release)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	u := New(WithOwner("test"), WithRepo("repo"), WithCurrentVersion("v1.0.0"))
+	u.httpClient = &http.Client{Transport: &mockTransport{mockServer: server}}
+
+	info, err := u.CheckForUpdates(context.Background())
+	if err != nil {
+		t.Fatalf("CheckForUpdates() error: %v", err)
+	}
+
+	if !info.UpdateAvailable {
+		t.Error("UpdateAvailable should be true")
+	}
+	if info.LatestVersion != "v2.0.0" {
+		t.Errorf("LatestVersion = %q, want %q", info.LatestVersion, "v2.0.0")
+	}
+	if info.DownloadURL == "" {
+		t.Error("DownloadURL should not be empty")
+	}
+}
+
+func TestCheckForUpdatesNoUpdate(t *testing.T) {
+	release := Release{
+		TagName:     "v1.0.0",
+		PublishedAt: time.Now(),
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/releases/latest") {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(release)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	u := New(WithOwner("test"), WithRepo("repo"), WithCurrentVersion("v1.0.0"))
+	u.httpClient = &http.Client{Transport: &mockTransport{mockServer: server}}
+
+	info, err := u.CheckForUpdates(context.Background())
+	if err != nil {
+		t.Fatalf("CheckForUpdates() error: %v", err)
+	}
+
+	if info.UpdateAvailable {
+		t.Error("UpdateAvailable should be false (same version)")
+	}
+}
+
+func TestCheckForUpdatesError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	u := New(WithOwner("test"), WithRepo("repo"))
+	u.httpClient = &http.Client{Transport: &mockTransport{mockServer: server}}
+
+	_, err := u.CheckForUpdates(context.Background())
+	if err == nil {
+		t.Error("Expected error when release not found")
+	}
+}
+
+// createTestTarGz creates a test tar.gz archive with the specified files
+func createTestTarGz(t *testing.T, archivePath string, files map[string][]byte) {
+	t.Helper()
+
+	f, err := os.Create(archivePath)
+	if err != nil {
+		t.Fatalf("Failed to create archive: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	gw := gzip.NewWriter(f)
+	defer func() { _ = gw.Close() }()
+
+	tw := tar.NewWriter(gw)
+	defer func() { _ = tw.Close() }()
+
+	for name, content := range files {
+		header := &tar.Header{
+			Name: name,
+			Size: int64(len(content)),
+			Mode: 0755,
+		}
+		if err := tw.WriteHeader(header); err != nil {
+			t.Fatalf("Failed to write header: %v", err)
+		}
+		if _, err := tw.Write(content); err != nil {
+			t.Fatalf("Failed to write content: %v", err)
+		}
+	}
+}
+
+func TestExtractBinaryFromTarGz(t *testing.T) {
+	tmpDir := t.TempDir()
+	archivePath := filepath.Join(tmpDir, "test.tar.gz")
+
+	// Create test archive with lyrebird binary
+	files := map[string][]byte{
+		"lyrebird":        []byte("#!/bin/bash\necho 'hello'\n"),
+		"lyrebird-stream": []byte("#!/bin/bash\necho 'stream'\n"),
+		"README.md":       []byte("# README"),
+	}
+	createTestTarGz(t, archivePath, files)
+
+	// Extract
+	destDir := filepath.Join(tmpDir, "extracted")
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		t.Fatalf("Failed to create dest dir: %v", err)
+	}
+
+	binaryPath, err := extractBinaryFromTarGz(archivePath, destDir)
+	if err != nil {
+		t.Fatalf("extractBinaryFromTarGz() error: %v", err)
+	}
+
+	if !strings.HasSuffix(binaryPath, "lyrebird") {
+		t.Errorf("Binary path = %q, want to end with 'lyrebird'", binaryPath)
+	}
+
+	// Verify binary was extracted
+	content, err := os.ReadFile(binaryPath)
+	if err != nil {
+		t.Fatalf("Failed to read extracted binary: %v", err)
+	}
+	if string(content) != string(files["lyrebird"]) {
+		t.Error("Extracted content doesn't match")
+	}
+}
+
+func TestExtractBinaryFromTarGzNoBinary(t *testing.T) {
+	tmpDir := t.TempDir()
+	archivePath := filepath.Join(tmpDir, "test.tar.gz")
+
+	// Create archive without lyrebird binary
+	files := map[string][]byte{
+		"README.md":  []byte("# README"),
+		"other-file": []byte("other content"),
+	}
+	createTestTarGz(t, archivePath, files)
+
+	destDir := filepath.Join(tmpDir, "extracted")
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		t.Fatalf("Failed to create dest dir: %v", err)
+	}
+
+	_, err := extractBinaryFromTarGz(archivePath, destDir)
+	if err == nil {
+		t.Error("Expected error when binary not in archive")
+	}
+	if !strings.Contains(err.Error(), "binary not found") {
+		t.Errorf("Error = %q, want to contain 'binary not found'", err.Error())
+	}
+}
+
+func TestExtractBinaryFromTarGzNotFound(t *testing.T) {
+	tmpDir := t.TempDir()
+	destDir := filepath.Join(tmpDir, "extracted")
+
+	_, err := extractBinaryFromTarGz("/nonexistent/archive.tar.gz", destDir)
+	if err == nil {
+		t.Error("Expected error for nonexistent archive")
+	}
+}
+
+func TestExtractBinaryFromTarGzInvalidGzip(t *testing.T) {
+	tmpDir := t.TempDir()
+	archivePath := filepath.Join(tmpDir, "invalid.tar.gz")
+
+	// Create invalid gzip file
+	if err := os.WriteFile(archivePath, []byte("not gzip"), 0644); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	destDir := filepath.Join(tmpDir, "extracted")
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		t.Fatalf("Failed to create dest dir: %v", err)
+	}
+
+	_, err := extractBinaryFromTarGz(archivePath, destDir)
+	if err == nil {
+		t.Error("Expected error for invalid gzip")
+	}
+}
+
+func TestExtractBinaryFromTarGzInvalidTar(t *testing.T) {
+	tmpDir := t.TempDir()
+	archivePath := filepath.Join(tmpDir, "invalid.tar.gz")
+
+	// Create valid gzip but invalid tar
+	f, err := os.Create(archivePath)
+	if err != nil {
+		t.Fatalf("Failed to create file: %v", err)
+	}
+
+	gw := gzip.NewWriter(f)
+	_, _ = gw.Write([]byte("not valid tar"))
+	_ = gw.Close()
+	_ = f.Close()
+
+	destDir := filepath.Join(tmpDir, "extracted")
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		t.Fatalf("Failed to create dest dir: %v", err)
+	}
+
+	_, err = extractBinaryFromTarGz(archivePath, destDir)
+	if err == nil {
+		t.Error("Expected error for invalid tar")
+	}
+}
+
+func TestUpdateWithMock(t *testing.T) {
+	// Create a mock tar.gz archive
+	tmpDir := t.TempDir()
+	archivePath := filepath.Join(tmpDir, "release.tar.gz")
+	files := map[string][]byte{
+		"lyrebird": []byte("#!/bin/bash\necho 'new version'\n"),
+	}
+	createTestTarGz(t, archivePath, files)
+
+	// Read the archive content for serving
+	archiveContent, err := os.ReadFile(archivePath)
+	if err != nil {
+		t.Fatalf("Failed to read archive: %v", err)
+	}
+
+	// Create mock download server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/gzip")
+		_, _ = w.Write(archiveContent)
+	}))
+	defer server.Close()
+
+	// Create existing binary
+	binaryPath := filepath.Join(tmpDir, "lyrebird")
+	if err := os.WriteFile(binaryPath, []byte("old version"), 0755); err != nil {
+		t.Fatalf("Failed to create binary: %v", err)
+	}
+
+	u := New()
+	u.httpClient = server.Client()
+
+	info := &UpdateInfo{
+		DownloadURL: server.URL + "/release.tar.gz",
+		AssetName:   "lyrebird-linux-amd64.tar.gz",
+	}
+
+	err = u.Update(context.Background(), info, binaryPath, nil)
+	if err != nil {
+		t.Fatalf("Update() error: %v", err)
+	}
+
+	// Verify the binary was updated
+	content, err := os.ReadFile(binaryPath)
+	if err != nil {
+		t.Fatalf("Failed to read binary: %v", err)
+	}
+
+	expected := string(files["lyrebird"])
+	if string(content) != expected {
+		t.Errorf("Binary content = %q, want %q", string(content), expected)
+	}
+
+	// Verify backup was removed (successful update)
+	backupPath := binaryPath + ".backup"
+	if _, err := os.Stat(backupPath); !os.IsNotExist(err) {
+		t.Error("Backup should be removed after successful update")
+	}
+}
+
+func TestUpdateDownloadFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "Not found", http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	tmpDir := t.TempDir()
+	binaryPath := filepath.Join(tmpDir, "lyrebird")
+	if err := os.WriteFile(binaryPath, []byte("old version"), 0755); err != nil {
+		t.Fatalf("Failed to create binary: %v", err)
+	}
+
+	u := New()
+	u.httpClient = server.Client()
+
+	info := &UpdateInfo{
+		DownloadURL: server.URL + "/release.tar.gz",
+		AssetName:   "lyrebird-linux-amd64.tar.gz",
+	}
+
+	err := u.Update(context.Background(), info, binaryPath, nil)
+	if err == nil {
+		t.Error("Expected error for download failure")
+	}
+}
+
+func TestCopyFileDestError(t *testing.T) {
+	tmpDir := t.TempDir()
+	srcPath := filepath.Join(tmpDir, "source.txt")
+	if err := os.WriteFile(srcPath, []byte("content"), 0644); err != nil {
+		t.Fatalf("Failed to create source: %v", err)
+	}
+
+	// Try to copy to a nonexistent directory
+	err := copyFile(srcPath, "/nonexistent/dir/dest.txt")
+	if err == nil {
+		t.Error("Expected error for nonexistent destination directory")
 	}
 }

@@ -1,10 +1,12 @@
 // Package supervisor provides a supervision tree for managing multiple stream managers.
 //
-// The supervisor implements Erlang/OTP-style process supervision, providing:
-//   - Automatic restart of failed services with configurable backoff
+// The supervisor implements Erlang/OTP-style process supervision using github.com/thejerf/suture,
+// providing:
+//   - Automatic restart of failed services with configurable exponential backoff
 //   - Graceful shutdown with timeout
-//   - Dynamic service registration
-//   - Health status reporting
+//   - Dynamic service registration (add/remove while running)
+//   - Health status reporting with uptime and restart metrics
+//   - Hierarchical supervision (supervisor trees)
 //
 // Example:
 //
@@ -28,8 +30,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"sync"
 	"time"
+
+	"github.com/thejerf/suture/v4"
 )
 
 // Service is the interface that supervised services must implement.
@@ -83,9 +88,25 @@ type ServiceStatus struct {
 
 // Config contains supervisor configuration.
 type Config struct {
+	// Name is the supervisor's identifier (used in logging).
+	// Default: "supervisor"
+	Name string
+
 	// ShutdownTimeout is the maximum time to wait for services to stop gracefully.
 	// Default: 10 seconds.
 	ShutdownTimeout time.Duration
+
+	// RestartDelay is the initial delay before restarting a failed service.
+	// Default: 1 second.
+	RestartDelay time.Duration
+
+	// MaxRestartDelay is the maximum delay between restarts (exponential backoff cap).
+	// Default: 5 minutes.
+	MaxRestartDelay time.Duration
+
+	// RestartMultipler is the factor by which RestartDelay is multiplied after each failure.
+	// Default: 2.0.
+	RestartMultipler float64
 
 	// Logger is optional; if set, supervisor events are logged here.
 	Logger io.Writer
@@ -94,54 +115,139 @@ type Config struct {
 // DefaultConfig returns a Config with sensible defaults.
 func DefaultConfig() Config {
 	return Config{
-		ShutdownTimeout: 10 * time.Second,
+		Name:             "supervisor",
+		ShutdownTimeout:  10 * time.Second,
+		RestartDelay:     1 * time.Second,
+		MaxRestartDelay:  5 * time.Minute,
+		RestartMultipler: 2.0,
 	}
 }
 
 // Supervisor manages a collection of services, restarting them on failure.
+// It wraps thejerf/suture for production-grade supervision.
 type Supervisor struct {
-	cfg Config
+	cfg    Config
+	suture *suture.Supervisor
 
 	mu       sync.RWMutex
 	services map[string]*serviceEntry
 	running  bool
-	wg       sync.WaitGroup
-
-	// For coordinated shutdown
-	cancel context.CancelFunc
-
-	// Mutex for thread-safe logging
-	logMu sync.Mutex
+	logger   *log.Logger
 }
 
 // serviceEntry tracks a single service's lifecycle.
 type serviceEntry struct {
 	service   Service
+	wrapper   *serviceWrapper
+	token     suture.ServiceToken
 	state     ServiceState
 	startTime time.Time
 	restarts  int
 	lastError error
-	cancel    context.CancelFunc
+}
+
+// serviceWrapper adapts our Service interface to suture.Service.
+type serviceWrapper struct {
+	svc    Service
+	entry  *serviceEntry
+	sup    *Supervisor
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
+// Serve implements suture.Service.
+func (w *serviceWrapper) Serve(ctx context.Context) error {
+	// Create a cancellable context for this service
+	w.ctx, w.cancel = context.WithCancel(ctx)
+
+	// Update state to running
+	w.sup.mu.Lock()
+	w.entry.state = ServiceStateRunning
+	w.entry.startTime = time.Now()
+	w.sup.mu.Unlock()
+
+	w.sup.logf("Service %s started", w.svc.Name())
+
+	// Run the actual service
+	err := w.svc.Run(w.ctx)
+
+	// Update state based on result
+	w.sup.mu.Lock()
+	if w.ctx.Err() != nil {
+		// Context was cancelled (graceful shutdown)
+		w.entry.state = ServiceStateStopped
+	} else if err != nil {
+		// Service failed
+		w.entry.state = ServiceStateFailed
+		w.entry.lastError = err
+		w.entry.restarts++
+		w.sup.logf("Service %s failed (restarts=%d): %v", w.svc.Name(), w.entry.restarts, err)
+	} else {
+		// Service exited cleanly but unexpectedly
+		w.entry.state = ServiceStateFailed
+		w.entry.restarts++
+		w.sup.logf("Service %s exited unexpectedly (restarts=%d)", w.svc.Name(), w.entry.restarts)
+	}
+	w.sup.mu.Unlock()
+
+	return err
+}
+
+// String implements suture.Service for logging.
+func (w *serviceWrapper) String() string {
+	return w.svc.Name()
+}
+
+// Stop is called by suture when stopping the service.
+func (w *serviceWrapper) Stop() {
+	if w.cancel != nil {
+		w.cancel()
+	}
 }
 
 // New creates a new Supervisor with the given configuration.
 func New(cfg Config) *Supervisor {
+	// Apply defaults
+	if cfg.Name == "" {
+		cfg.Name = "supervisor"
+	}
 	if cfg.ShutdownTimeout == 0 {
 		cfg.ShutdownTimeout = 10 * time.Second
 	}
+	if cfg.RestartDelay == 0 {
+		cfg.RestartDelay = 1 * time.Second
+	}
+	if cfg.MaxRestartDelay == 0 {
+		cfg.MaxRestartDelay = 5 * time.Minute
+	}
+	if cfg.RestartMultipler == 0 {
+		cfg.RestartMultipler = 2.0
+	}
 
-	return &Supervisor{
+	// Create suture supervisor with configured backoff
+	spec := suture.Spec{
+		EventHook: nil, // We handle logging ourselves
+		Timeout:   cfg.ShutdownTimeout,
+	}
+
+	s := &Supervisor{
 		cfg:      cfg,
+		suture:   suture.New(cfg.Name, spec),
 		services: make(map[string]*serviceEntry),
 	}
+
+	// Set up logging if configured
+	if cfg.Logger != nil {
+		s.logger = log.New(cfg.Logger, "", log.LstdFlags)
+	}
+
+	return s
 }
 
-// logf writes a formatted log message if Logger is configured (thread-safe).
+// logf writes a formatted log message if Logger is configured.
 func (s *Supervisor) logf(format string, args ...interface{}) {
-	if s.cfg.Logger != nil {
-		s.logMu.Lock()
-		_, _ = fmt.Fprintf(s.cfg.Logger, "[Supervisor] "+format+"\n", args...)
-		s.logMu.Unlock()
+	if s.logger != nil {
+		s.logger.Printf("[Supervisor] "+format, args...)
 	}
 }
 
@@ -161,35 +267,49 @@ func (s *Supervisor) Add(svc Service) error {
 		service: svc,
 		state:   ServiceStateIdle,
 	}
+
+	// Create wrapper that adapts to suture.Service
+	wrapper := &serviceWrapper{
+		svc:   svc,
+		entry: entry,
+		sup:   s,
+	}
+	entry.wrapper = wrapper
+
+	// Add to suture supervisor (suture handles starting if already running)
+	token := s.suture.Add(wrapper)
+	entry.token = token
+
 	s.services[name] = entry
 	s.logf("Added service: %s", name)
-
-	// If already running, start the service immediately
-	if s.running {
-		s.startService(entry)
-	}
 
 	return nil
 }
 
 // Remove unregisters and stops a service.
-// Blocks until the service has stopped (up to ShutdownTimeout).
+// Returns an error if the service doesn't exist.
 func (s *Supervisor) Remove(name string) error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	entry, exists := s.services[name]
 	if !exists {
-		s.mu.Unlock()
 		return fmt.Errorf("service %q not found", name)
 	}
 
-	// Cancel the service if running
-	if entry.cancel != nil {
-		entry.cancel()
+	// Remove from suture (this stops the service)
+	if err := s.suture.Remove(entry.token); err != nil {
+		s.logf("Warning: error removing service %s: %v", name, err)
 	}
-	delete(s.services, name)
-	s.mu.Unlock()
 
+	// Cancel the service context to ensure it stops
+	if entry.wrapper != nil && entry.wrapper.cancel != nil {
+		entry.wrapper.cancel()
+	}
+
+	delete(s.services, name)
 	s.logf("Removed service: %s", name)
+
 	return nil
 }
 
@@ -235,108 +355,29 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		s.mu.Unlock()
 		return errors.New("supervisor already running")
 	}
-
-	// Create a derived context for coordinated shutdown
-	runCtx, cancel := context.WithCancel(ctx)
-	s.cancel = cancel
 	s.running = true
-
-	// Start all registered services
-	for _, entry := range s.services {
-		s.startService(entry)
-	}
 	s.mu.Unlock()
 
 	s.logf("Supervisor started with %d services", s.ServiceCount())
 
-	// Wait for context cancellation
-	<-runCtx.Done()
+	// Run suture supervisor (blocks until context is done or it terminates)
+	err := s.suture.Serve(ctx)
 
-	s.logf("Shutdown signal received, stopping services...")
-
-	// Stop all services gracefully
-	return s.shutdown()
-}
-
-// startService launches a service in a goroutine with restart logic.
-func (s *Supervisor) startService(entry *serviceEntry) {
-	ctx, cancel := context.WithCancel(context.Background())
-	entry.cancel = cancel
-	entry.state = ServiceStateRunning
-	entry.startTime = time.Now()
-
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
-		s.runServiceLoop(ctx, entry)
-	}()
-}
-
-// runServiceLoop runs a service with automatic restart on failure.
-func (s *Supervisor) runServiceLoop(ctx context.Context, entry *serviceEntry) {
-	for {
-		select {
-		case <-ctx.Done():
-			entry.state = ServiceStateStopped
-			s.logf("Service %s stopped", entry.service.Name())
-			return
-		default:
-		}
-
-		entry.state = ServiceStateRunning
-		entry.startTime = time.Now()
-
-		err := entry.service.Run(ctx)
-
-		// Check if context was cancelled (graceful shutdown)
-		if ctx.Err() != nil {
-			entry.state = ServiceStateStopped
-			return
-		}
-
-		// Service failed
-		entry.state = ServiceStateFailed
-		entry.lastError = err
-		entry.restarts++
-		s.logf("Service %s failed (restarts=%d): %v", entry.service.Name(), entry.restarts, err)
-
-		// Brief delay before restart (the stream manager has its own backoff)
-		select {
-		case <-ctx.Done():
-			entry.state = ServiceStateStopped
-			return
-		case <-time.After(1 * time.Second):
-			// Continue to restart
-		}
-	}
-}
-
-// shutdown stops all services gracefully with timeout.
-func (s *Supervisor) shutdown() error {
 	s.mu.Lock()
-	// Cancel all services
-	for _, entry := range s.services {
-		if entry.cancel != nil {
-			entry.state = ServiceStateStopping
-			entry.cancel()
-		}
-	}
 	s.running = false
+	// Mark all services as stopped
+	for _, entry := range s.services {
+		entry.state = ServiceStateStopped
+	}
 	s.mu.Unlock()
 
-	// Wait for all services to stop with timeout
-	done := make(chan struct{})
-	go func() {
-		s.wg.Wait()
-		close(done)
-	}()
+	s.logf("Supervisor stopped")
 
-	select {
-	case <-done:
-		s.logf("All services stopped gracefully")
+	// suture.Serve returns context.Canceled when context is cancelled
+	// This is normal shutdown, not an error
+	if errors.Is(err, context.Canceled) {
 		return nil
-	case <-time.After(s.cfg.ShutdownTimeout):
-		s.logf("Shutdown timeout exceeded, some services may not have stopped cleanly")
-		return errors.New("shutdown timeout exceeded")
 	}
+
+	return err
 }

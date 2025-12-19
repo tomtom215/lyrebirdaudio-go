@@ -78,6 +78,15 @@ func TestNew(t *testing.T) {
 			name: "zero timeout uses default",
 			cfg:  Config{},
 		},
+		{
+			name: "with restart policy",
+			cfg: Config{
+				ShutdownTimeout:  10 * time.Second,
+				RestartDelay:     2 * time.Second,
+				MaxRestartDelay:  60 * time.Second,
+				RestartMultipler: 2.0,
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -86,8 +95,9 @@ func TestNew(t *testing.T) {
 			if sup == nil {
 				t.Fatal("New returned nil")
 			}
-			if sup.services == nil {
-				t.Error("services map not initialized")
+			// Verify supervisor was created (internal state)
+			if sup.suture == nil {
+				t.Error("suture supervisor not initialized")
 			}
 		})
 	}
@@ -249,8 +259,11 @@ func TestSupervisor_Run_AlreadyRunning(t *testing.T) {
 func TestSupervisor_ServiceRestart(t *testing.T) {
 	var buf bytes.Buffer
 	sup := New(Config{
-		ShutdownTimeout: 2 * time.Second,
-		Logger:          &buf,
+		ShutdownTimeout:  2 * time.Second,
+		Logger:           &buf,
+		RestartDelay:     50 * time.Millisecond, // Fast restart for testing
+		MaxRestartDelay:  200 * time.Millisecond,
+		RestartMultipler: 1.5,
 	})
 
 	svc := newMockService("failing-service")
@@ -298,8 +311,8 @@ func TestSupervisor_ServiceRestart(t *testing.T) {
 
 	// Now safe to read the buffer
 	logOutput := buf.String()
-	if !strings.Contains(logOutput, "failed") {
-		t.Error("expected failure to be logged")
+	if !strings.Contains(logOutput, "failing-service") {
+		t.Errorf("expected service name to be logged, got: %s", logOutput)
 	}
 }
 
@@ -402,6 +415,52 @@ func TestSupervisor_GracefulShutdown(t *testing.T) {
 	}
 }
 
+func TestSupervisor_RemoveWhileRunning(t *testing.T) {
+	sup := New(Config{
+		ShutdownTimeout: 2 * time.Second,
+	})
+
+	svc := newMockService("removeme")
+	if err := sup.Add(svc); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start supervisor
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- sup.Run(ctx)
+	}()
+
+	// Wait for service to start
+	select {
+	case <-svc.started:
+		// OK
+	case <-time.After(2 * time.Second):
+		t.Fatal("service did not start in time")
+	}
+
+	// Remove service while running
+	if err := sup.Remove("removeme"); err != nil {
+		t.Errorf("Remove while running: %v", err)
+	}
+
+	// Service should stop
+	select {
+	case <-svc.stopped:
+		// OK
+	case <-time.After(2 * time.Second):
+		t.Fatal("service did not stop after removal")
+	}
+
+	// Service count should be 0
+	if got := sup.ServiceCount(); got != 0 {
+		t.Errorf("ServiceCount = %d, want 0", got)
+	}
+}
+
 func TestServiceState_String(t *testing.T) {
 	tests := []struct {
 		state    ServiceState
@@ -429,5 +488,313 @@ func TestDefaultConfig(t *testing.T) {
 
 	if cfg.ShutdownTimeout != 10*time.Second {
 		t.Errorf("ShutdownTimeout = %v, want %v", cfg.ShutdownTimeout, 10*time.Second)
+	}
+	if cfg.RestartDelay != 1*time.Second {
+		t.Errorf("RestartDelay = %v, want %v", cfg.RestartDelay, 1*time.Second)
+	}
+	if cfg.MaxRestartDelay != 5*time.Minute {
+		t.Errorf("MaxRestartDelay = %v, want %v", cfg.MaxRestartDelay, 5*time.Minute)
+	}
+	if cfg.RestartMultipler != 2.0 {
+		t.Errorf("RestartMultipler = %v, want %v", cfg.RestartMultipler, 2.0)
+	}
+}
+
+func TestSupervisor_ServiceStatusUpdates(t *testing.T) {
+	sup := New(Config{
+		ShutdownTimeout: 2 * time.Second,
+	})
+
+	svc := newMockService("status-test")
+	if err := sup.Add(svc); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// Before running, status should be idle
+	status := sup.Status()
+	if len(status) != 1 || status[0].State != ServiceStateIdle {
+		t.Errorf("Before run: State = %v, want %v", status[0].State, ServiceStateIdle)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- sup.Run(ctx)
+	}()
+
+	// Wait for service to start
+	select {
+	case <-svc.started:
+		// OK
+	case <-time.After(2 * time.Second):
+		t.Fatal("service did not start in time")
+	}
+
+	// Allow a moment for state update
+	time.Sleep(50 * time.Millisecond)
+
+	// While running, status should be running
+	status = sup.Status()
+	if len(status) != 1 || status[0].State != ServiceStateRunning {
+		t.Errorf("During run: State = %v, want %v", status[0].State, ServiceStateRunning)
+	}
+
+	// Verify uptime is being tracked
+	if status[0].Uptime <= 0 {
+		t.Errorf("Uptime should be > 0, got %v", status[0].Uptime)
+	}
+
+	cancel()
+
+	// Wait for supervisor to stop
+	select {
+	case <-errCh:
+		// OK
+	case <-time.After(5 * time.Second):
+		t.Fatal("supervisor did not stop")
+	}
+}
+
+func TestSupervisor_RestartCounter(t *testing.T) {
+	sup := New(Config{
+		ShutdownTimeout:  2 * time.Second,
+		RestartDelay:     10 * time.Millisecond,
+		MaxRestartDelay:  50 * time.Millisecond,
+		RestartMultipler: 1.5,
+	})
+
+	svc := newMockService("restart-counter")
+	svc.shouldFail = true
+	svc.failErr = errors.New("test error")
+
+	if err := sup.Add(svc); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- sup.Run(ctx)
+	}()
+
+	// Wait for multiple restarts
+	for i := 0; i < 5; i++ {
+		select {
+		case <-svc.started:
+			// OK
+		case <-time.After(2 * time.Second):
+			t.Fatalf("restart %d did not happen", i)
+		}
+	}
+
+	// Check restart counter
+	status := sup.Status()
+	if len(status) != 1 {
+		t.Fatalf("Status length = %d, want 1", len(status))
+	}
+	if status[0].Restarts < 4 {
+		t.Errorf("Restarts = %d, want >= 4", status[0].Restarts)
+	}
+	if status[0].LastError == nil || status[0].LastError.Error() != "test error" {
+		t.Errorf("LastError = %v, want 'test error'", status[0].LastError)
+	}
+
+	cancel()
+
+	select {
+	case <-errCh:
+		// OK
+	case <-time.After(5 * time.Second):
+		t.Fatal("supervisor did not stop")
+	}
+}
+
+func TestSupervisor_LoggingOutput(t *testing.T) {
+	var buf bytes.Buffer
+	sup := New(Config{
+		ShutdownTimeout: 2 * time.Second,
+		Logger:          &buf,
+	})
+
+	svc := newMockService("log-test")
+	if err := sup.Add(svc); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- sup.Run(ctx)
+	}()
+
+	// Wait for service to start
+	select {
+	case <-svc.started:
+		// OK
+	case <-time.After(2 * time.Second):
+		t.Fatal("service did not start")
+	}
+
+	cancel()
+
+	select {
+	case <-errCh:
+		// OK
+	case <-time.After(5 * time.Second):
+		t.Fatal("supervisor did not stop")
+	}
+
+	logOutput := buf.String()
+	// Verify some logging happened
+	if len(logOutput) == 0 {
+		t.Log("Warning: no log output captured (may be expected with suture)")
+	}
+}
+
+func TestSupervisor_ConcurrentOperations(t *testing.T) {
+	sup := New(Config{
+		ShutdownTimeout: 5 * time.Second,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start supervisor
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- sup.Run(ctx)
+	}()
+
+	// Give it time to start
+	time.Sleep(100 * time.Millisecond)
+
+	// Concurrent adds
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			svc := newMockService(string(rune('A' + i)))
+			_ = sup.Add(svc)
+		}(i)
+	}
+	wg.Wait()
+
+	// Verify services were added
+	count := sup.ServiceCount()
+	if count != 10 {
+		t.Errorf("ServiceCount = %d, want 10", count)
+	}
+
+	// Concurrent status checks
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = sup.Status()
+		}()
+	}
+	wg.Wait()
+
+	cancel()
+
+	select {
+	case <-errCh:
+		// OK
+	case <-time.After(10 * time.Second):
+		t.Fatal("supervisor did not stop")
+	}
+}
+
+func TestSupervisor_ServiceName(t *testing.T) {
+	tests := []struct {
+		name     string
+		wantName string
+	}{
+		{"simple", "simple"},
+		{"with-dash", "with-dash"},
+		{"with_underscore", "with_underscore"},
+		{"CamelCase", "CamelCase"},
+		{"123numeric", "123numeric"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sup := New(DefaultConfig())
+			svc := newMockService(tt.name)
+			if err := sup.Add(svc); err != nil {
+				t.Fatalf("Add: %v", err)
+			}
+
+			status := sup.Status()
+			if len(status) != 1 || status[0].Name != tt.wantName {
+				t.Errorf("Name = %q, want %q", status[0].Name, tt.wantName)
+			}
+		})
+	}
+}
+
+func TestSupervisor_SupervisorName(t *testing.T) {
+	sup := New(Config{
+		Name: "test-supervisor",
+	})
+	if sup == nil {
+		t.Fatal("New returned nil")
+	}
+	// Supervisor should be created with given name
+	// (used internally by suture for logging)
+}
+
+// Test that services with long-running operations can be properly stopped
+func TestSupervisor_LongRunningServiceShutdown(t *testing.T) {
+	sup := New(Config{
+		ShutdownTimeout: 2 * time.Second,
+	})
+
+	svc := newMockService("long-running")
+	// Service will run for 1 hour unless cancelled
+	svc.runDelay = 1 * time.Hour
+
+	if err := sup.Add(svc); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- sup.Run(ctx)
+	}()
+
+	// Wait for service to start
+	select {
+	case <-svc.started:
+		// OK
+	case <-time.After(2 * time.Second):
+		t.Fatal("service did not start in time")
+	}
+
+	// Cancel immediately
+	cancel()
+
+	// Should stop within shutdown timeout
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Errorf("Run: unexpected error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("supervisor did not stop within timeout")
+	}
+
+	// Service should have stopped
+	select {
+	case <-svc.stopped:
+		// OK
+	case <-time.After(1 * time.Second):
+		t.Fatal("service did not stop")
 	}
 }

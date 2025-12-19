@@ -9,6 +9,7 @@ require (
 	github.com/knadh/koanf/providers/env/v2 v2.0.0
 	github.com/knadh/koanf/providers/file v1.2.1
 	github.com/knadh/koanf/v2 v2.3.0
+	github.com/thejerf/suture/v4 v4.0.6
 	gopkg.in/yaml.v3 v3.0.1
 )
 

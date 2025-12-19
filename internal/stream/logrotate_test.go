@@ -272,3 +272,198 @@ func TestRotatingWriterCreatesDirs(t *testing.T) {
 		t.Error("Expected parent directories to be created")
 	}
 }
+
+func TestLogWriter(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	tests := []struct {
+		name         string
+		streamName   string
+		expectedFile string
+	}{
+		{"simple", "mystream", "ffmpeg-mystream.log"},
+		{"with_spaces", "my stream", "ffmpeg-my_stream.log"},
+		{"with_special", "stream@#$!", "ffmpeg-stream____.log"},
+		{"with_dashes", "my-stream", "ffmpeg-my-stream.log"},
+		{"with_underscores", "my_stream", "ffmpeg-my_stream.log"},
+		{"mixed", "Stream-1_Test", "ffmpeg-Stream-1_Test.log"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w, err := LogWriter(tmpDir, tt.streamName)
+			if err != nil {
+				t.Fatalf("LogWriter failed: %v", err)
+			}
+			defer func() { _ = w.Close() }()
+
+			expectedPath := filepath.Join(tmpDir, tt.expectedFile)
+			// Write something to verify it works
+			_, err = w.Write([]byte("test"))
+			if err != nil {
+				t.Fatalf("Write failed: %v", err)
+			}
+
+			// Check the file was created
+			if _, err := os.Stat(expectedPath); os.IsNotExist(err) {
+				t.Errorf("Expected file %s to exist", expectedPath)
+			}
+		})
+	}
+}
+
+func TestLogWriterWithOptions(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	w, err := LogWriter(tmpDir, "teststream",
+		WithMaxSize(1024),
+		WithMaxFiles(5),
+		WithCompression(true),
+	)
+	if err != nil {
+		t.Fatalf("LogWriter with options failed: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	// Write some data
+	_, err = w.Write([]byte("log data\n"))
+	if err != nil {
+		t.Fatalf("Write failed: %v", err)
+	}
+}
+
+func TestCompressFileErrors(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "test.log")
+
+	w, err := NewRotatingWriter(logPath, WithCompression(true), WithMaxSize(50))
+	if err != nil {
+		t.Fatalf("NewRotatingWriter failed: %v", err)
+	}
+
+	// Test compressing a non-existent file - should not panic
+	w.compressFile(filepath.Join(tmpDir, "nonexistent.log"))
+
+	// Test compressing a file in a read-only directory (if possible)
+	// Create a file first
+	testFile := filepath.Join(tmpDir, "compressme.log")
+	if err := os.WriteFile(testFile, []byte("test data"), 0600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	// Compress it - this should work
+	w.compressFile(testFile)
+
+	// Check that compressed file exists
+	if _, err := os.Stat(testFile + ".gz"); os.IsNotExist(err) {
+		t.Error("Expected compressed file to exist")
+	}
+
+	// Original should be removed
+	if _, err := os.Stat(testFile); !os.IsNotExist(err) {
+		t.Error("Expected original file to be removed after compression")
+	}
+
+	_ = w.Close()
+}
+
+func TestRotateWithCompression(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "test.log")
+
+	w, err := NewRotatingWriter(logPath,
+		WithMaxSize(50),
+		WithMaxFiles(3),
+		WithCompression(true),
+	)
+	if err != nil {
+		t.Fatalf("NewRotatingWriter failed: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	// Write data to trigger rotation
+	for i := 0; i < 5; i++ {
+		data := strings.Repeat("x", 30) + "\n"
+		_, _ = w.Write([]byte(data))
+	}
+
+	// Force a rotation
+	err = w.Rotate()
+	if err != nil {
+		t.Fatalf("Rotate failed: %v", err)
+	}
+
+	// Give compression goroutine time to run
+	// Check for .1 file (before compression)
+	if _, err := os.Stat(logPath + ".1"); os.IsNotExist(err) {
+		// Check for compressed version
+		if _, err := os.Stat(logPath + ".1.gz"); os.IsNotExist(err) {
+			t.Log("Neither .1 nor .1.gz exists (compression may be async)")
+		}
+	}
+}
+
+func TestListRotatedFilesWithCompressed(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "test.log")
+
+	// Create regular and compressed rotated files
+	if err := os.WriteFile(logPath+".1", []byte("data1"), 0600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	if err := os.WriteFile(logPath+".2.gz", []byte("compressed"), 0600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	files, err := ListRotatedFiles(logPath)
+	if err != nil {
+		t.Fatalf("ListRotatedFiles failed: %v", err)
+	}
+
+	if len(files) != 2 {
+		t.Errorf("Expected 2 files, got %d", len(files))
+	}
+
+	// Check that compressed file is identified correctly
+	hasCompressed := false
+	for _, f := range files {
+		if f.Compressed {
+			hasCompressed = true
+		}
+	}
+	if !hasCompressed {
+		t.Error("Expected at least one compressed file")
+	}
+}
+
+func TestCleanupLogsWithCompressed(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "test.log")
+
+	// Create main, rotated, and compressed files
+	if err := os.WriteFile(logPath, []byte("main"), 0600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	if err := os.WriteFile(logPath+".1", []byte("rot1"), 0600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	if err := os.WriteFile(logPath+".2.gz", []byte("comp"), 0600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	err := CleanupLogs(logPath)
+	if err != nil {
+		t.Fatalf("CleanupLogs failed: %v", err)
+	}
+
+	// All files should be removed
+	if _, err := os.Stat(logPath); !os.IsNotExist(err) {
+		t.Error("Expected main log to be removed")
+	}
+	if _, err := os.Stat(logPath + ".1"); !os.IsNotExist(err) {
+		t.Error("Expected rotated log to be removed")
+	}
+	if _, err := os.Stat(logPath + ".2.gz"); !os.IsNotExist(err) {
+		t.Error("Expected compressed log to be removed")
+	}
+}

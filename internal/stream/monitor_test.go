@@ -1,10 +1,13 @@
 package stream
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestNewResourceMonitor(t *testing.T) {
@@ -419,4 +422,379 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func TestFormatBytes(t *testing.T) {
+	tests := []struct {
+		bytes int64
+		want  string
+	}{
+		{0, "0 B"},
+		{100, "100 B"},
+		{1023, "1023 B"},
+		{1024, "1.0 KiB"},
+		{1024 * 1024, "1.0 MiB"},
+		{1024 * 1024 * 1024, "1.0 GiB"},
+		{1024 * 1024 * 1024 * 1024, "1.0 TiB"},
+		{1536, "1.5 KiB"},                           // 1.5 KB
+		{2 * 1024 * 1024, "2.0 MiB"},                // 2 MB
+		{1024*1024*1024 + 512*1024*1024, "1.5 GiB"}, // 1.5 GB
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.want, func(t *testing.T) {
+			got := FormatBytes(tt.bytes)
+			if got != tt.want {
+				t.Errorf("FormatBytes(%d) = %q, want %q", tt.bytes, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWithLogger(t *testing.T) {
+	// Create a test logger (io.Writer)
+	// The option should set the logger field on ResourceMonitor
+	tmpFile, err := os.CreateTemp(t.TempDir(), "test-log")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer tmpFile.Close()
+
+	m := NewResourceMonitor(WithLogger(tmpFile))
+	if m == nil {
+		t.Fatal("NewResourceMonitor with WithLogger returned nil")
+	}
+	// The logger should be set (we can't easily verify the internal field)
+	// but the option should not panic
+}
+
+func TestGetCachedMetrics(t *testing.T) {
+	m := NewResourceMonitor()
+
+	// Use current process PID
+	pid := os.Getpid()
+
+	// Initially there should be no cached metrics for this PID
+	metrics := m.GetCachedMetrics(pid)
+	if metrics != nil {
+		t.Error("GetCachedMetrics() should return nil when no metrics cached")
+	}
+
+	// After getting metrics for a process, they should be cached
+	_, err := m.GetMetrics(pid)
+	if err != nil {
+		t.Skipf("Cannot get metrics for current process: %v", err)
+	}
+
+	metrics = m.GetCachedMetrics(pid)
+	if metrics == nil {
+		t.Error("GetCachedMetrics() should return cached metrics after GetMetrics")
+	}
+}
+
+func TestMonitorProcess(t *testing.T) {
+	// Create mock /proc structure
+	tmpDir := t.TempDir()
+	pid := 12345
+	procDir := filepath.Join(tmpDir, strconv.Itoa(pid))
+
+	// Create fd directory with some entries
+	fdDir := filepath.Join(procDir, "fd")
+	if err := os.MkdirAll(fdDir, 0755); err != nil {
+		t.Fatalf("Failed to create fd dir: %v", err)
+	}
+
+	// Create some fake fd files
+	for i := 0; i < 5; i++ {
+		fdPath := filepath.Join(fdDir, strconv.Itoa(i))
+		if err := os.WriteFile(fdPath, []byte{}, 0644); err != nil {
+			t.Fatalf("Failed to create fd file: %v", err)
+		}
+	}
+
+	// Create stat file
+	statContent := "12345 (test) S 1 12345 12345 0 -1 4194304 100 0 0 0 10 5 0 0 20 0 3 0 1000 1000000 100 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n"
+	if err := os.WriteFile(filepath.Join(procDir, "stat"), []byte(statContent), 0644); err != nil {
+		t.Fatalf("Failed to create stat file: %v", err)
+	}
+
+	// Create statm file
+	statmContent := "1000 500 100 10 0 500 0\n"
+	if err := os.WriteFile(filepath.Join(procDir, "statm"), []byte(statmContent), 0644); err != nil {
+		t.Fatalf("Failed to create statm file: %v", err)
+	}
+
+	// Create a logger buffer to capture output
+	logBuf := &strings.Builder{}
+	m := NewResourceMonitor(WithProcPath(tmpDir), WithLogger(logBuf))
+
+	// Create context with cancellation
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	// Track alerts
+	var alertCount int
+	alertCallback := func(alerts []ResourceAlert) {
+		alertCount += len(alerts)
+	}
+
+	// Start monitoring (will run for ~200ms)
+	m.MonitorProcess(ctx, pid, 50*time.Millisecond, alertCallback)
+
+	// Should have collected metrics at least once
+	// (due to short interval and context timeout)
+}
+
+func TestMonitorProcessWithAlerts(t *testing.T) {
+	// Create mock /proc structure with high resource usage
+	tmpDir := t.TempDir()
+	pid := 12346
+	procDir := filepath.Join(tmpDir, strconv.Itoa(pid))
+
+	// Create fd directory with many entries (above warning threshold of 500)
+	fdDir := filepath.Join(procDir, "fd")
+	if err := os.MkdirAll(fdDir, 0755); err != nil {
+		t.Fatalf("Failed to create fd dir: %v", err)
+	}
+
+	// Create 600 fake fd files (above warning threshold)
+	for i := 0; i < 600; i++ {
+		fdPath := filepath.Join(fdDir, strconv.Itoa(i))
+		if err := os.WriteFile(fdPath, []byte{}, 0644); err != nil {
+			t.Fatalf("Failed to create fd file: %v", err)
+		}
+	}
+
+	// Create stat file
+	statContent := "12346 (test) S 1 12346 12346 0 -1 4194304 100 0 0 0 10 5 0 0 20 0 3 0 1000 1000000 100 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n"
+	if err := os.WriteFile(filepath.Join(procDir, "stat"), []byte(statContent), 0644); err != nil {
+		t.Fatalf("Failed to create stat file: %v", err)
+	}
+
+	// Create statm file
+	statmContent := "1000 500 100 10 0 500 0\n"
+	if err := os.WriteFile(filepath.Join(procDir, "statm"), []byte(statmContent), 0644); err != nil {
+		t.Fatalf("Failed to create statm file: %v", err)
+	}
+
+	logBuf := &strings.Builder{}
+	m := NewResourceMonitor(WithProcPath(tmpDir), WithLogger(logBuf))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+
+	var alertCount int
+	alertCallback := func(alerts []ResourceAlert) {
+		alertCount += len(alerts)
+	}
+
+	m.MonitorProcess(ctx, pid, 50*time.Millisecond, alertCallback)
+
+	// Should have generated alerts due to high FD count
+	if alertCount == 0 {
+		t.Log("No alerts generated (may depend on timing)")
+	}
+
+	// Check that logger received output
+	logOutput := logBuf.String()
+	if logOutput != "" && !strings.Contains(logOutput, "WARNING") && !strings.Contains(logOutput, "fd") {
+		t.Logf("Log output: %s", logOutput)
+	}
+}
+
+func TestMonitorProcessExitedProcess(t *testing.T) {
+	// Use a non-existent PID to test error handling
+	tmpDir := t.TempDir()
+	logBuf := &strings.Builder{}
+	m := NewResourceMonitor(WithProcPath(tmpDir), WithLogger(logBuf))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	// Monitor a non-existent process
+	m.MonitorProcess(ctx, 99999, 20*time.Millisecond, nil)
+
+	// Should have logged an error about the missing process
+	logOutput := logBuf.String()
+	if logOutput == "" {
+		t.Log("Expected log output for failed metrics (may have been too fast)")
+	}
+}
+
+func TestMonitorProcessNilCallback(t *testing.T) {
+	// Create mock /proc structure
+	tmpDir := t.TempDir()
+	pid := 12347
+	procDir := filepath.Join(tmpDir, strconv.Itoa(pid))
+
+	fdDir := filepath.Join(procDir, "fd")
+	if err := os.MkdirAll(fdDir, 0755); err != nil {
+		t.Fatalf("Failed to create fd dir: %v", err)
+	}
+
+	statContent := "12347 (test) S 1 12347 12347 0 -1 4194304 100 0 0 0 10 5 0 0 20 0 3 0 1000 1000000 100 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n"
+	if err := os.WriteFile(filepath.Join(procDir, "stat"), []byte(statContent), 0644); err != nil {
+		t.Fatalf("Failed to create stat file: %v", err)
+	}
+
+	statmContent := "1000 500 100 10 0 500 0\n"
+	if err := os.WriteFile(filepath.Join(procDir, "statm"), []byte(statmContent), 0644); err != nil {
+		t.Fatalf("Failed to create statm file: %v", err)
+	}
+
+	m := NewResourceMonitor(WithProcPath(tmpDir))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+
+	// Should not panic with nil callback
+	m.MonitorProcess(ctx, pid, 30*time.Millisecond, nil)
+}
+
+func TestGetProcessStartTime(t *testing.T) {
+	tmpDir := t.TempDir()
+	pid := 12348
+	procDir := filepath.Join(tmpDir, strconv.Itoa(pid))
+
+	if err := os.MkdirAll(procDir, 0755); err != nil {
+		t.Fatalf("Failed to create proc dir: %v", err)
+	}
+
+	// Create stat file with valid format
+	statContent := "12348 (test) S 1 12348 12348 0 -1 4194304 100 0 0 0 10 5 0 0 20 0 3 0 1000000 1000000 100 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n"
+	if err := os.WriteFile(filepath.Join(procDir, "stat"), []byte(statContent), 0644); err != nil {
+		t.Fatalf("Failed to create stat file: %v", err)
+	}
+
+	// Create /proc/stat for boot time
+	if err := os.WriteFile(filepath.Join(tmpDir, "stat"), []byte("cpu 0 0 0 0 0 0 0 0 0 0\nbtime 1700000000\n"), 0644); err != nil {
+		t.Fatalf("Failed to create /proc/stat: %v", err)
+	}
+
+	m := NewResourceMonitor(WithProcPath(tmpDir))
+	startTime, err := m.getProcessStartTime(pid)
+	if err != nil {
+		t.Fatalf("getProcessStartTime failed: %v", err)
+	}
+
+	// Should return a valid time
+	if startTime.IsZero() {
+		t.Error("Expected non-zero start time")
+	}
+}
+
+func TestGetProcessStartTimeErrors(t *testing.T) {
+	tmpDir := t.TempDir()
+	m := NewResourceMonitor(WithProcPath(tmpDir))
+
+	// Test with non-existent PID
+	_, err := m.getProcessStartTime(99999)
+	if err == nil {
+		t.Error("Expected error for non-existent PID")
+	}
+
+	// Test with invalid stat format (no closing paren)
+	pid := 12349
+	procDir := filepath.Join(tmpDir, strconv.Itoa(pid))
+	if err := os.MkdirAll(procDir, 0755); err != nil {
+		t.Fatalf("Failed to create proc dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(procDir, "stat"), []byte("12349 (test S 1"), 0644); err != nil {
+		t.Fatalf("Failed to create stat file: %v", err)
+	}
+
+	_, err = m.getProcessStartTime(pid)
+	if err == nil {
+		t.Error("Expected error for invalid stat format")
+	}
+
+	// Test with insufficient fields
+	pid2 := 12350
+	procDir2 := filepath.Join(tmpDir, strconv.Itoa(pid2))
+	if err := os.MkdirAll(procDir2, 0755); err != nil {
+		t.Fatalf("Failed to create proc dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(procDir2, "stat"), []byte("12350 (test) S 1 2 3"), 0644); err != nil {
+		t.Fatalf("Failed to create stat file: %v", err)
+	}
+
+	_, err = m.getProcessStartTime(pid2)
+	if err == nil {
+		t.Error("Expected error for insufficient fields")
+	}
+}
+
+func TestGetSystemFDLimitsError(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Test with missing file-nr
+	_, _, err := GetSystemFDLimits(tmpDir)
+	if err == nil {
+		t.Error("Expected error when file-nr doesn't exist")
+	}
+
+	// Test with invalid content
+	sysDir := filepath.Join(tmpDir, "sys", "fs")
+	if err := os.MkdirAll(sysDir, 0755); err != nil {
+		t.Fatalf("Failed to create sys dir: %v", err)
+	}
+
+	// Invalid format (not enough fields)
+	if err := os.WriteFile(filepath.Join(sysDir, "file-nr"), []byte("5000\n"), 0644); err != nil {
+		t.Fatalf("Failed to create file-nr: %v", err)
+	}
+
+	_, _, err = GetSystemFDLimits(tmpDir)
+	if err == nil {
+		t.Error("Expected error for invalid file-nr format")
+	}
+}
+
+func TestParseThreadCountEdgeCases(t *testing.T) {
+	tests := []struct {
+		name string
+		stat string
+		want int
+	}{
+		{"normal", "1 (test) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 5 0 1 0\n", 5},
+		{"empty", "", 0},
+		{"no_paren", "invalid", 0},
+		{"insufficient_fields", "1 (test) S 1 2", 0},
+		{"non_numeric_thread", "1 (test) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 abc 0", 0},
+		{"with_spaces_in_name", "1 (test process) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 7 0 1 0\n", 7},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseThreadCount(tt.stat)
+			if got != tt.want {
+				t.Errorf("parseThreadCount() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseMemoryBytesEdgeCases(t *testing.T) {
+	pageSize := int64(os.Getpagesize())
+
+	tests := []struct {
+		name  string
+		statm string
+		want  int64
+	}{
+		{"normal", "1000 500 100 10 0 500 0", 500 * pageSize},
+		{"empty", "", 0},
+		{"single_field", "1000", 0},
+		{"non_numeric", "abc def", 0},
+		{"zero_rss", "1000 0 100 10 0 500 0", 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseMemoryBytes(tt.statm)
+			if got != tt.want {
+				t.Errorf("parseMemoryBytes() = %d, want %d", got, tt.want)
+			}
+		})
+	}
 }

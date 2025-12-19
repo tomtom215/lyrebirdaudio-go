@@ -708,3 +708,362 @@ func containsSubstringHelper(s, substr string) bool {
 	}
 	return false
 }
+
+// Test parsePCMInfo directly for improved coverage
+func TestParsePCMInfo(t *testing.T) {
+	tests := []struct {
+		name        string
+		content     string
+		wantFormats []string
+		wantRates   []int
+		wantChans   []int
+		wantErr     bool
+	}{
+		{
+			name:        "capture stream detected",
+			content:     "card: 0\nname: USB Audio\nstream: CAPTURE\n",
+			wantFormats: []string{"S16_LE", "S24_LE"},
+			wantRates:   []int{44100, 48000},
+			wantChans:   []int{1, 2},
+			wantErr:     false,
+		},
+		{
+			name:        "playback stream only (no capture)",
+			content:     "card: 0\nname: USB Audio\nstream: PLAYBACK\n",
+			wantFormats: nil, // No formats set for playback-only
+			wantRates:   nil,
+			wantChans:   nil,
+			wantErr:     false,
+		},
+		{
+			name:        "empty file",
+			content:     "",
+			wantFormats: nil,
+			wantRates:   nil,
+			wantChans:   nil,
+			wantErr:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			path := filepath.Join(tmpDir, "info")
+			if err := os.WriteFile(path, []byte(tt.content), 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			caps := &Capabilities{}
+			err := parsePCMInfo(path, caps)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("parsePCMInfo() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			if !tt.wantErr {
+				if tt.wantFormats != nil {
+					for _, f := range tt.wantFormats {
+						if !contains(caps.Formats, f) {
+							t.Errorf("Formats should contain %s, got %v", f, caps.Formats)
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestParsePCMInfoFileNotFound(t *testing.T) {
+	caps := &Capabilities{}
+	err := parsePCMInfo("/nonexistent/path/info", caps)
+	if err == nil {
+		t.Error("Expected error for nonexistent file, got nil")
+	}
+}
+
+// Test RecommendSettings edge cases
+func TestRecommendSettingsEdgeCases(t *testing.T) {
+	tests := []struct {
+		name     string
+		caps     *Capabilities
+		tier     QualityTier
+		wantRate int
+		wantChan int
+	}{
+		{
+			name: "empty capabilities uses defaults",
+			caps: &Capabilities{
+				Formats:     []string{},
+				SampleRates: []int{},
+				Channels:    []int{},
+			},
+			tier:     QualityNormal,
+			wantRate: 48000, // Uses preset default
+			wantChan: 2,
+		},
+		{
+			name: "all channels higher than desired - uses minimum available",
+			caps: &Capabilities{
+				Formats:     []string{"S16_LE"},
+				SampleRates: []int{48000},
+				Channels:    []int{4, 6, 8}, // All > 2 (desired for normal)
+			},
+			tier:     QualityNormal,
+			wantRate: 48000,
+			wantChan: 2, // Loop doesn't modify, fallback check fails since 2 < 8
+		},
+		{
+			name: "format fallback to S24_LE",
+			caps: &Capabilities{
+				Formats:     []string{"S24_LE", "S32_LE"}, // No S16_LE
+				SampleRates: []int{48000},
+				Channels:    []int{2},
+			},
+			tier:     QualityNormal,
+			wantRate: 48000,
+			wantChan: 2,
+		},
+		{
+			name: "format fallback to first available",
+			caps: &Capabilities{
+				Formats:     []string{"FLOAT_LE"}, // No S16_LE or S24_LE
+				SampleRates: []int{48000},
+				Channels:    []int{2},
+			},
+			tier:     QualityNormal,
+			wantRate: 48000,
+			wantChan: 2,
+		},
+		{
+			name: "invalid tier uses normal",
+			caps: &Capabilities{
+				Formats:     []string{"S16_LE"},
+				SampleRates: []int{48000},
+				Channels:    []int{2},
+			},
+			tier:     QualityTier("invalid"),
+			wantRate: 48000,
+			wantChan: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			settings := RecommendSettings(tt.caps, tt.tier)
+
+			if settings.SampleRate != tt.wantRate {
+				t.Errorf("SampleRate = %d, want %d", settings.SampleRate, tt.wantRate)
+			}
+			if settings.Channels != tt.wantChan {
+				t.Errorf("Channels = %d, want %d", settings.Channels, tt.wantChan)
+			}
+		})
+	}
+}
+
+// Test SupportsRate boundary conditions
+func TestSupportsRateBoundaries(t *testing.T) {
+	tests := []struct {
+		name string
+		caps *Capabilities
+		rate int
+		want bool
+	}{
+		{
+			name: "exact MinRate",
+			caps: &Capabilities{
+				SampleRates: []int{},
+				MinRate:     8000,
+				MaxRate:     96000,
+			},
+			rate: 8000,
+			want: true,
+		},
+		{
+			name: "exact MaxRate",
+			caps: &Capabilities{
+				SampleRates: []int{},
+				MinRate:     8000,
+				MaxRate:     96000,
+			},
+			rate: 96000,
+			want: true,
+		},
+		{
+			name: "just below MinRate",
+			caps: &Capabilities{
+				SampleRates: []int{},
+				MinRate:     8000,
+				MaxRate:     96000,
+			},
+			rate: 7999,
+			want: false,
+		},
+		{
+			name: "just above MaxRate",
+			caps: &Capabilities{
+				SampleRates: []int{},
+				MinRate:     8000,
+				MaxRate:     96000,
+			},
+			rate: 96001,
+			want: false,
+		},
+		{
+			name: "no range set and not in list",
+			caps: &Capabilities{
+				SampleRates: []int{44100, 48000},
+				MinRate:     0,
+				MaxRate:     0,
+			},
+			rate: 96000,
+			want: false,
+		},
+		{
+			name: "MinRate equals MaxRate (single rate range)",
+			caps: &Capabilities{
+				SampleRates: []int{},
+				MinRate:     48000,
+				MaxRate:     48000,
+			},
+			rate: 48000,
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.caps.SupportsRate(tt.rate); got != tt.want {
+				t.Errorf("SupportsRate(%d) = %v, want %v", tt.rate, got, tt.want)
+			}
+		})
+	}
+}
+
+// Test SupportsChannels boundary conditions
+func TestSupportsChannelsBoundaries(t *testing.T) {
+	tests := []struct {
+		name     string
+		caps     *Capabilities
+		channels int
+		want     bool
+	}{
+		{
+			name: "exact MinChannels",
+			caps: &Capabilities{
+				Channels:    []int{},
+				MinChannels: 1,
+				MaxChannels: 8,
+			},
+			channels: 1,
+			want:     true,
+		},
+		{
+			name: "exact MaxChannels",
+			caps: &Capabilities{
+				Channels:    []int{},
+				MinChannels: 1,
+				MaxChannels: 8,
+			},
+			channels: 8,
+			want:     true,
+		},
+		{
+			name: "just below MinChannels",
+			caps: &Capabilities{
+				Channels:    []int{},
+				MinChannels: 2,
+				MaxChannels: 8,
+			},
+			channels: 1,
+			want:     false,
+		},
+		{
+			name: "just above MaxChannels",
+			caps: &Capabilities{
+				Channels:    []int{},
+				MinChannels: 1,
+				MaxChannels: 8,
+			},
+			channels: 9,
+			want:     false,
+		},
+		{
+			name: "no range set and not in list",
+			caps: &Capabilities{
+				Channels:    []int{1, 2},
+				MinChannels: 0,
+				MaxChannels: 0,
+			},
+			channels: 4,
+			want:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.caps.SupportsChannels(tt.channels); got != tt.want {
+				t.Errorf("SupportsChannels(%d) = %v, want %v", tt.channels, got, tt.want)
+			}
+		})
+	}
+}
+
+// Test formatIntSlice directly
+func TestFormatIntSlice(t *testing.T) {
+	tests := []struct {
+		name  string
+		slice []int
+		want  string
+	}{
+		{"empty slice", []int{}, "(none)"},
+		{"single value", []int{48000}, "48000"},
+		{"multiple values", []int{44100, 48000, 96000}, "44100, 48000, 96000"},
+		{"negative values", []int{-1, 0, 1}, "-1, 0, 1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatIntSlice(tt.slice)
+			if got != tt.want {
+				t.Errorf("formatIntSlice(%v) = %q, want %q", tt.slice, got, tt.want)
+			}
+		})
+	}
+}
+
+// Test parseStreamFile error handling
+func TestParseStreamFileErrors(t *testing.T) {
+	// Test file not found
+	caps := &Capabilities{}
+	err := parseStreamFile("/nonexistent/stream0", caps)
+	if err == nil {
+		t.Error("Expected error for nonexistent file")
+	}
+}
+
+// Test parseStreamFile with no capture capabilities (no formats found)
+func TestParseStreamFileNoCaptureCapabilities(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "stream0")
+
+	// Content with no format information at all
+	content := `USB Audio
+  Status: Stop
+  Interface 1
+    Altset 1
+    Endpoint: 1 OUT (ASYNC)
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	caps := &Capabilities{}
+	err := parseStreamFile(path, caps)
+
+	// Should return error for no capture capabilities (no formats found)
+	if err == nil {
+		t.Error("Expected error for no capture capabilities")
+	}
+}
