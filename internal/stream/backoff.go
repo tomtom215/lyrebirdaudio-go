@@ -74,9 +74,14 @@ func NewBackoffWithThreshold(initialDelay, maxDelay, successThreshold time.Durat
 // RecordFailure records a failed attempt and increases delay.
 //
 // Doubles the current delay (up to max delay cap) and increments counters.
+// No-op if receiver is nil.
 //
 // Reference: mediamtx-stream-manager.sh lines 2259-2262, 2292-2295
 func (b *Backoff) RecordFailure() {
+	if b == nil {
+		return
+	}
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -99,12 +104,17 @@ func (b *Backoff) RecordFailure() {
 //
 // If runTime exceeds the success threshold, resets delay to initial
 // and clears consecutive failures. Otherwise, treats as another failure.
+// No-op if receiver is nil.
 //
 // Parameters:
 //   - runTime: How long the process ran before exiting
 //
 // Reference: mediamtx-stream-manager.sh lines 2282-2297
 func (b *Backoff) RecordSuccess(runTime time.Duration) {
+	if b == nil {
+		return
+	}
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -132,44 +142,68 @@ func (b *Backoff) RecordSuccess(runTime time.Duration) {
 }
 
 // CurrentDelay returns the current backoff delay.
+// Returns 0 if receiver is nil.
 func (b *Backoff) CurrentDelay() time.Duration {
+	if b == nil {
+		return 0
+	}
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return b.currentDelay
 }
 
 // Attempts returns the total number of attempts (successes + failures).
+// Returns 0 if receiver is nil.
 func (b *Backoff) Attempts() int {
+	if b == nil {
+		return 0
+	}
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return b.attempts
 }
 
 // MaxAttempts returns the maximum number of attempts allowed.
+// Returns 0 if receiver is nil.
 func (b *Backoff) MaxAttempts() int {
+	if b == nil {
+		return 0
+	}
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return b.maxAttempts
 }
 
 // ConsecutiveFailures returns the number of consecutive failures.
+// Returns 0 if receiver is nil.
 func (b *Backoff) ConsecutiveFailures() int {
+	if b == nil {
+		return 0
+	}
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return b.consecutiveFailures
 }
 
 // ShouldStop returns true if max attempts reached.
+// Returns true if receiver is nil (fail-safe behavior).
 //
 // Reference: mediamtx-stream-manager.sh lines 2243-2246
 func (b *Backoff) ShouldStop() bool {
+	if b == nil {
+		return true
+	}
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return b.attempts >= b.maxAttempts
 }
 
 // Reset resets the backoff to initial state.
+// No-op if receiver is nil.
 func (b *Backoff) Reset() {
+	if b == nil {
+		return
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -179,21 +213,29 @@ func (b *Backoff) Reset() {
 }
 
 // Wait blocks for the current backoff delay.
+// Returns immediately if receiver is nil.
 //
 // This is equivalent to: sleep ${RESTART_DELAY}
 //
 // Reference: mediamtx-stream-manager.sh line 2305
 func (b *Backoff) Wait() {
+	if b == nil {
+		return
+	}
 	delay := b.CurrentDelay()
 	time.Sleep(delay)
 }
 
 // WaitContext blocks for the current backoff delay or until context is cancelled.
+// Returns nil immediately if receiver is nil.
 //
 // Returns:
-//   - nil if wait completed
+//   - nil if wait completed or receiver is nil
 //   - context error if context was cancelled
 func (b *Backoff) WaitContext(ctx context.Context) error {
+	if b == nil {
+		return nil
+	}
 	delay := b.CurrentDelay()
 
 	select {

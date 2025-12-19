@@ -199,14 +199,16 @@ func (kc *KoanfConfig) reload() error {
 
 // Watch starts watching the configuration file for changes.
 //
-// When changes are detected, the callback function is called with the event type.
-// The configuration is automatically reloaded before the callback is invoked.
+// When changes are detected, the callback function is called with the event type
+// and any error that occurred. The configuration is automatically reloaded before
+// the callback is invoked on success.
 //
 // This enables hot-reload via SIGHUP or file system events.
 //
 // Parameters:
 //   - ctx: Context for cancellation
-//   - callback: Function called when configuration changes (receives event description)
+//   - callback: Function called when configuration changes. Receives event description
+//     and error (nil on success, non-nil on watch/reload errors).
 //
 // Returns:
 //   - error: if watching cannot be started
@@ -216,11 +218,15 @@ func (kc *KoanfConfig) reload() error {
 //	ctx, cancel := context.WithCancel(context.Background())
 //	defer cancel()
 //
-//	err := kc.Watch(ctx, func(event string) {
+//	err := kc.Watch(ctx, func(event string, err error) {
+//	    if err != nil {
+//	        log.Printf("Config watch error: %v", err)
+//	        return
+//	    }
 //	    log.Printf("Config reloaded: %s", event)
 //	    // Restart affected services...
 //	})
-func (kc *KoanfConfig) Watch(ctx context.Context, callback func(event string)) error {
+func (kc *KoanfConfig) Watch(ctx context.Context, callback func(event string, err error)) error {
 	if kc.filePath == "" {
 		return fmt.Errorf("cannot watch: no file path specified")
 	}
@@ -231,18 +237,18 @@ func (kc *KoanfConfig) Watch(ctx context.Context, callback func(event string)) e
 	// Start watching
 	watchErr := fp.Watch(func(event interface{}, err error) {
 		if err != nil {
-			// Log error but continue watching
-			callback(fmt.Sprintf("watch error: %v", err))
+			// Propagate error to callback
+			callback("watch error", fmt.Errorf("file watch error: %w", err))
 			return
 		}
 
 		// Reload configuration
 		if err := kc.reload(); err != nil {
-			callback(fmt.Sprintf("reload error: %v", err))
+			callback("reload error", fmt.Errorf("config reload failed: %w", err))
 			return
 		}
 
-		callback("config reloaded")
+		callback("config reloaded", nil)
 	})
 
 	if watchErr != nil {

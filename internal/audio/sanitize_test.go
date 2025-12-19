@@ -321,3 +321,155 @@ func BenchmarkSanitizeDeviceName(b *testing.B) {
 		}
 	}
 }
+
+// TestSanitizeDeviceNameExcessiveLength verifies rejection of excessively long inputs.
+func TestSanitizeDeviceNameExcessiveLength(t *testing.T) {
+	tests := []struct {
+		name     string
+		inputLen int
+		wantLike string
+	}{
+		{
+			name:     "exactly 1024 chars (at limit)",
+			inputLen: MaxRawInputLength,
+			wantLike: "", // Should be processed normally
+		},
+		{
+			name:     "1025 chars (over limit)",
+			inputLen: MaxRawInputLength + 1,
+			wantLike: "unknown_device_", // Should trigger fallback
+		},
+		{
+			name:     "10000 chars (way over limit)",
+			inputLen: 10000,
+			wantLike: "unknown_device_", // Should trigger fallback
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := strings.Repeat("a", tt.inputLen)
+			got := SanitizeDeviceName(input)
+
+			if tt.wantLike != "" {
+				// Should trigger timestamp fallback
+				if !strings.HasPrefix(got, tt.wantLike) {
+					t.Errorf("SanitizeDeviceName(len=%d) = %q, want prefix %q", tt.inputLen, got, tt.wantLike)
+				}
+			} else {
+				// Should be processed normally (truncated to 64)
+				if len(got) > MaxDeviceNameLength {
+					t.Errorf("SanitizeDeviceName(len=%d) = %q (len=%d), exceeds 64 chars", tt.inputLen, got, len(got))
+				}
+				if strings.HasPrefix(got, "unknown_device_") {
+					t.Errorf("SanitizeDeviceName(len=%d) = %q, unexpected fallback", tt.inputLen, got)
+				}
+			}
+		})
+	}
+}
+
+// TestSanitizeDeviceNameControlChars verifies rejection of control characters.
+func TestSanitizeDeviceNameControlChars(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		wantLike string
+	}{
+		{
+			name:     "null byte",
+			input:    "Device\x00Name",
+			wantLike: "unknown_device_",
+		},
+		{
+			name:     "bell character",
+			input:    "Device\x07Name",
+			wantLike: "unknown_device_",
+		},
+		{
+			name:     "backspace",
+			input:    "Device\x08Name",
+			wantLike: "unknown_device_",
+		},
+		{
+			name:     "escape character",
+			input:    "Device\x1bName",
+			wantLike: "unknown_device_",
+		},
+		{
+			name:     "DEL character",
+			input:    "Device\x7fName",
+			wantLike: "unknown_device_",
+		},
+		{
+			name:     "tab is allowed",
+			input:    "Device\tName",
+			wantLike: "", // Tab is allowed - converted to underscore
+		},
+		{
+			name:     "newline is allowed",
+			input:    "Device\nName",
+			wantLike: "", // Newline is allowed - converted to underscore
+		},
+		{
+			name:     "carriage return is allowed",
+			input:    "Device\rName",
+			wantLike: "", // CR is allowed - converted to underscore
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := SanitizeDeviceName(tt.input)
+
+			if tt.wantLike != "" {
+				// Should trigger timestamp fallback
+				if !strings.HasPrefix(got, tt.wantLike) {
+					t.Errorf("SanitizeDeviceName(%q) = %q, want prefix %q", tt.input, got, tt.wantLike)
+				}
+			} else {
+				// Should be processed normally
+				if strings.HasPrefix(got, "unknown_device_") {
+					t.Errorf("SanitizeDeviceName(%q) = %q, unexpected fallback", tt.input, got)
+				}
+				// Result should contain only safe characters
+				for i := 0; i < len(got); i++ {
+					c := got[i]
+					if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
+						t.Errorf("SanitizeDeviceName(%q) = %q, contains unsafe char: %q", tt.input, got, c)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestContainsControlChars tests the control character detection helper.
+func TestContainsControlChars(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{"clean string", "Hello World", false},
+		{"with tab", "Hello\tWorld", false},     // Tab is allowed
+		{"with newline", "Hello\nWorld", false}, // Newline is allowed
+		{"with CR", "Hello\rWorld", false},      // CR is allowed
+		{"with null", "Hello\x00World", true},
+		{"with bell", "Hello\x07World", true},
+		{"with backspace", "Hello\x08World", true},
+		{"with escape", "Hello\x1bWorld", true},
+		{"with DEL", "Hello\x7fWorld", true},
+		{"with form feed", "Hello\x0cWorld", true},
+		{"empty string", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := containsControlChars(tt.input)
+			if got != tt.want {
+				t.Errorf("containsControlChars(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}

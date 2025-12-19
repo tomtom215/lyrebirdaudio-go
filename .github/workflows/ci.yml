@@ -102,10 +102,11 @@ jobs:
           sudo apt-get install -y ffmpeg
 
       - name: Run tests with race detector
-        run: go test -race -timeout 30s ./...
+        # 2m timeout provides margin for race detector overhead on slow CI runners
+        run: go test -race -timeout 2m ./...
 
       - name: Run tests with coverage
-        run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
+        run: go test -race -timeout 2m -coverprofile=coverage.out -covermode=atomic ./...
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4

@@ -86,6 +86,45 @@ const (
 	ModeDebug CheckMode = "debug" // All checks with verbose output
 )
 
+// Diagnostic thresholds - all configurable for different deployment scenarios.
+const (
+	// LogSizeWarningBytes is the threshold for warning about log file sizes (100MB).
+	LogSizeWarningBytes = 100 * 1024 * 1024
+
+	// DiskUsageCriticalPercent is the disk usage percentage that triggers critical status.
+	DiskUsageCriticalPercent = 95
+
+	// DiskUsageWarningPercent is the disk usage percentage that triggers warning status.
+	DiskUsageWarningPercent = 85
+
+	// FDUsageCriticalPercent is the file descriptor usage percentage that triggers critical status.
+	FDUsageCriticalPercent = 80
+
+	// FDUsageWarningPercent is the file descriptor usage percentage that triggers warning status.
+	FDUsageWarningPercent = 50
+
+	// MemoryUsageCriticalPercent is the memory usage percentage that triggers critical status.
+	MemoryUsageCriticalPercent = 90
+
+	// MemoryUsageWarningPercent is the memory usage percentage that triggers warning status.
+	MemoryUsageWarningPercent = 75
+
+	// DefaultRTSPPort is the default MediaMTX RTSP port.
+	DefaultRTSPPort = 8554
+
+	// DefaultAPIPort is the default MediaMTX API port.
+	DefaultAPIPort = 9997
+
+	// MinInotifyWatches is the minimum recommended inotify watches.
+	MinInotifyWatches = 8192
+
+	// TimeWaitWarningThreshold is the number of TIME_WAIT connections that triggers a warning.
+	TimeWaitWarningThreshold = 1000
+
+	// MinEntropyBytes is the minimum recommended entropy pool size.
+	MinEntropyBytes = 256
+)
+
 // Options configures the diagnostic run.
 type Options struct {
 	Mode       CheckMode
@@ -669,7 +708,7 @@ func (r *Runner) checkLogFiles(ctx context.Context) CheckResult {
 		return nil
 	})
 
-	if totalSize > 100*1024*1024 { // 100MB
+	if totalSize > LogSizeWarningBytes {
 		result.Status = StatusWarning
 		result.Message = fmt.Sprintf("Log directory size: %s", formatBytes(totalSize))
 		result.Suggestions = append(result.Suggestions, "Consider cleaning old logs")
@@ -703,11 +742,11 @@ func (r *Runner) checkDiskSpace(ctx context.Context) CheckResult {
 	total := stat.Blocks * uint64(stat.Bsize)
 	usedPercent := 100.0 - (float64(available)/float64(total))*100.0
 
-	if usedPercent > 95 {
+	if usedPercent > DiskUsageCriticalPercent {
 		result.Status = StatusCritical
 		result.Message = fmt.Sprintf("Disk usage critical: %.1f%%", usedPercent)
 		result.Suggestions = append(result.Suggestions, "Free up disk space")
-	} else if usedPercent > 85 {
+	} else if usedPercent > DiskUsageWarningPercent {
 		result.Status = StatusWarning
 		result.Message = fmt.Sprintf("Disk usage high: %.1f%%", usedPercent)
 	} else {
@@ -746,10 +785,10 @@ func (r *Runner) checkFileDescriptors(ctx context.Context) CheckResult {
 	max, _ := strconv.ParseInt(fields[2], 10, 64)
 	usedPercent := float64(used) / float64(max) * 100
 
-	if usedPercent > 80 {
+	if usedPercent > FDUsageCriticalPercent {
 		result.Status = StatusCritical
 		result.Message = fmt.Sprintf("FD usage critical: %.1f%% (%d/%d)", usedPercent, used, max)
-	} else if usedPercent > 50 {
+	} else if usedPercent > FDUsageWarningPercent {
 		result.Status = StatusWarning
 		result.Message = fmt.Sprintf("FD usage elevated: %.1f%% (%d/%d)", usedPercent, used, max)
 	} else {
@@ -795,10 +834,10 @@ func (r *Runner) checkMemory(ctx context.Context) CheckResult {
 
 	usedPercent := 100.0 - (float64(available)/float64(total))*100.0
 
-	if usedPercent > 90 {
+	if usedPercent > MemoryUsageCriticalPercent {
 		result.Status = StatusCritical
 		result.Message = fmt.Sprintf("Memory usage critical: %.1f%%", usedPercent)
-	} else if usedPercent > 75 {
+	} else if usedPercent > MemoryUsageWarningPercent {
 		result.Status = StatusWarning
 		result.Message = fmt.Sprintf("Memory usage elevated: %.1f%%", usedPercent)
 	} else {
@@ -817,14 +856,15 @@ func (r *Runner) checkNetworkPorts(ctx context.Context) CheckResult {
 		Category: "Network",
 	}
 
-	// Check RTSP port (8554)
-	rtspOpen := isPortOpen("localhost:8554")
-	// Check API port (9997)
-	apiOpen := isPortOpen("localhost:9997")
+	// Check RTSP and API ports
+	rtspAddr := fmt.Sprintf("localhost:%d", DefaultRTSPPort)
+	apiAddr := fmt.Sprintf("localhost:%d", DefaultAPIPort)
+	rtspOpen := isPortOpen(rtspAddr)
+	apiOpen := isPortOpen(apiAddr)
 
 	if rtspOpen && apiOpen {
 		result.Status = StatusOK
-		result.Message = "RTSP (8554) and API (9997) ports accessible"
+		result.Message = fmt.Sprintf("RTSP (%d) and API (%d) ports accessible", DefaultRTSPPort, DefaultAPIPort)
 	} else if !rtspOpen && !apiOpen {
 		result.Status = StatusWarning
 		result.Message = "RTSP and API ports not accessible"
@@ -833,10 +873,10 @@ func (r *Runner) checkNetworkPorts(ctx context.Context) CheckResult {
 		result.Status = StatusWarning
 		var ports []string
 		if !rtspOpen {
-			ports = append(ports, "RTSP (8554)")
+			ports = append(ports, fmt.Sprintf("RTSP (%d)", DefaultRTSPPort))
 		}
 		if !apiOpen {
-			ports = append(ports, "API (9997)")
+			ports = append(ports, fmt.Sprintf("API (%d)", DefaultAPIPort))
 		}
 		result.Message = "Some ports not accessible: " + strings.Join(ports, ", ")
 	}
@@ -983,7 +1023,7 @@ func (r *Runner) checkInotifyLimits(ctx context.Context) CheckResult {
 
 	maxWatches, _ := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
 
-	if maxWatches < 8192 {
+	if maxWatches < MinInotifyWatches {
 		result.Status = StatusWarning
 		result.Message = fmt.Sprintf("inotify max_user_watches low: %d", maxWatches)
 		result.Suggestions = append(result.Suggestions, "Increase with: sysctl fs.inotify.max_user_watches=65536")
@@ -1017,7 +1057,7 @@ func (r *Runner) checkTCPResources(ctx context.Context) CheckResult {
 		timeWaitCount = 0
 	}
 
-	if timeWaitCount > 1000 {
+	if timeWaitCount > TimeWaitWarningThreshold {
 		result.Status = StatusWarning
 		result.Message = fmt.Sprintf("High TIME_WAIT connections: %d", timeWaitCount)
 	} else {
@@ -1046,7 +1086,7 @@ func (r *Runner) checkEntropy(ctx context.Context) CheckResult {
 
 	entropy, _ := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
 
-	if entropy < 256 {
+	if entropy < MinEntropyBytes {
 		result.Status = StatusWarning
 		result.Message = fmt.Sprintf("Entropy pool low: %d", entropy)
 		result.Suggestions = append(result.Suggestions, "Install haveged or rng-tools")

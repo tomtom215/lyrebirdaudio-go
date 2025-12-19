@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -115,20 +116,44 @@ OPTIONS:
     --help, -h        Show help for specific command
 
 EXAMPLES:
-    # Interactive setup
+    # Interactive setup (recommended for first-time users)
     sudo lyrebird setup
 
-    # List detected devices
+    # Non-interactive setup
+    sudo lyrebird setup --auto
+
+    # List detected USB audio devices
     lyrebird devices
 
-    # Create USB device mappings
+    # Detect device capabilities
+    lyrebird detect
+
+    # Create persistent USB device mappings (requires reboot)
     sudo lyrebird usb-map
+
+    # Show stream status
+    lyrebird status
+
+    # Show stream status as JSON (for scripting)
+    lyrebird status --json
 
     # Migrate from bash configuration
     lyrebird migrate --from=/etc/mediamtx/audio-devices.conf --to=/etc/lyrebird/config.yaml
 
     # Validate configuration
     lyrebird validate --config=/etc/lyrebird/config.yaml
+
+    # Test configuration without making changes
+    lyrebird test --config=/etc/lyrebird/config.yaml
+
+    # Run system diagnostics
+    lyrebird diagnose
+
+    # Install MediaMTX RTSP server
+    sudo lyrebird install-mediamtx
+
+    # Check for updates
+    lyrebird update --check
 
 For more information, visit: https://github.com/tomtom215/lyrebirdaudio-go
 `, Version, defaultConfigPath)
@@ -486,29 +511,50 @@ func runValidate(args []string) error {
 	return nil
 }
 
-// runStatus shows stream status (stub for now).
+// StatusOutput represents the JSON output format for status command.
+type StatusOutput struct {
+	ServiceStatus string         `json:"service_status"`
+	DeviceCount   int            `json:"device_count"`
+	ActiveStreams []StreamStatus `json:"active_streams"`
+	AvailableURLs []StreamURL    `json:"available_urls"`
+	Error         string         `json:"error,omitempty"`
+}
+
+// StreamStatus represents the status of an individual stream.
+type StreamStatus struct {
+	DeviceName string `json:"device_name"`
+	Status     string `json:"status"`
+	PID        int    `json:"pid,omitempty"`
+}
+
+// StreamURL represents an available RTSP URL.
+type StreamURL struct {
+	DeviceName string `json:"device_name"`
+	URL        string `json:"url"`
+}
+
+// runStatus shows stream status.
 func runStatus(args []string) error {
 	// Parse flags
 	lockDir := "/var/run/lyrebird"
 	configPath := defaultConfigPath
+	jsonOutput := false
 	for i := 0; i < len(args); i++ {
 		switch {
 		case strings.HasPrefix(args[i], "--lock-dir="):
 			lockDir = strings.TrimPrefix(args[i], "--lock-dir=")
 		case strings.HasPrefix(args[i], "--config="):
 			configPath = strings.TrimPrefix(args[i], "--config=")
+		case args[i] == "--json" || args[i] == "-j":
+			jsonOutput = true
 		}
 	}
 
-	fmt.Println("LyreBird Stream Status")
-	fmt.Println("======================")
-	fmt.Println()
+	// Collect status data
+	status := StatusOutput{}
 
 	// Check systemd service status
-	fmt.Print("Service: ")
-	serviceStatus := getServiceStatus("lyrebird-stream")
-	fmt.Println(serviceStatus)
-	fmt.Println()
+	status.ServiceStatus = getServiceStatus("lyrebird-stream")
 
 	// Load config for MediaMTX settings
 	cfg, _ := config.LoadConfig(configPath)
@@ -519,47 +565,99 @@ func runStatus(args []string) error {
 	// Detect current devices
 	devices, err := audio.DetectDevices("/proc/asound")
 	if err != nil {
-		fmt.Printf("Device detection: error - %v\n", err)
+		status.Error = fmt.Sprintf("device detection error: %v", err)
 	} else {
-		fmt.Printf("Detected Devices: %d USB audio device(s)\n", len(devices))
+		status.DeviceCount = len(devices)
+	}
+
+	// Check lock files for active streams
+	status.ActiveStreams = []StreamStatus{}
+	locks, _ := filepath.Glob(filepath.Join(lockDir, "*.lock"))
+	for _, lockFile := range locks {
+		deviceName := strings.TrimSuffix(filepath.Base(lockFile), ".lock")
+		pid, err := readLockPID(lockFile)
+		if err != nil {
+			status.ActiveStreams = append(status.ActiveStreams, StreamStatus{
+				DeviceName: deviceName,
+				Status:     "unknown",
+			})
+			continue
+		}
+
+		if pid > 0 && processExists(pid) {
+			status.ActiveStreams = append(status.ActiveStreams, StreamStatus{
+				DeviceName: deviceName,
+				Status:     "running",
+				PID:        pid,
+			})
+		} else {
+			status.ActiveStreams = append(status.ActiveStreams, StreamStatus{
+				DeviceName: deviceName,
+				Status:     "stale",
+				PID:        pid,
+			})
+		}
+	}
+
+	// Collect RTSP URLs
+	status.AvailableURLs = []StreamURL{}
+	for _, dev := range devices {
+		devName := audio.SanitizeDeviceName(dev.Name)
+		url := fmt.Sprintf("%s/%s", cfg.MediaMTX.RTSPURL, devName)
+		status.AvailableURLs = append(status.AvailableURLs, StreamURL{
+			DeviceName: devName,
+			URL:        url,
+		})
+	}
+
+	// Output based on format
+	if jsonOutput {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(status)
+	}
+
+	// Text output (original format)
+	fmt.Println("LyreBird Stream Status")
+	fmt.Println("======================")
+	fmt.Println()
+
+	fmt.Printf("Service: %s\n", status.ServiceStatus)
+	fmt.Println()
+
+	if status.Error != "" {
+		fmt.Printf("Device detection: error - %s\n", status.Error)
+	} else {
+		fmt.Printf("Detected Devices: %d USB audio device(s)\n", status.DeviceCount)
 	}
 	fmt.Println()
 
-	// Check lock files for active streams
 	fmt.Println("Active Streams:")
 	fmt.Println("---------------")
 
-	locks, err := filepath.Glob(filepath.Join(lockDir, "*.lock"))
-	if err != nil || len(locks) == 0 {
+	if len(status.ActiveStreams) == 0 {
 		fmt.Println("  (no active streams)")
 	} else {
-		for _, lockFile := range locks {
-			deviceName := strings.TrimSuffix(filepath.Base(lockFile), ".lock")
-			pid, err := readLockPID(lockFile)
-			if err != nil {
-				fmt.Printf("  %s: unknown (lock file error)\n", deviceName)
-				continue
-			}
-
-			if pid > 0 && processExists(pid) {
-				fmt.Printf("  %s: running (PID %d)\n", deviceName, pid)
-			} else {
-				fmt.Printf("  %s: stale lock (PID %d not running)\n", deviceName, pid)
+		for _, s := range status.ActiveStreams {
+			switch s.Status {
+			case "running":
+				fmt.Printf("  %s: running (PID %d)\n", s.DeviceName, s.PID)
+			case "stale":
+				fmt.Printf("  %s: stale lock (PID %d not running)\n", s.DeviceName, s.PID)
+			default:
+				fmt.Printf("  %s: unknown (lock file error)\n", s.DeviceName)
 			}
 		}
 	}
 	fmt.Println()
 
-	// Show RTSP URLs
 	fmt.Println("Stream URLs:")
 	fmt.Println("------------")
-	if len(devices) == 0 {
+	if len(status.AvailableURLs) == 0 {
 		fmt.Println("  (no devices to stream)")
 	} else {
-		for _, dev := range devices {
-			devName := audio.SanitizeDeviceName(dev.Name)
-			url := fmt.Sprintf("%s/%s", cfg.MediaMTX.RTSPURL, devName)
-			fmt.Printf("  %s: %s\n", devName, url)
+		for _, u := range status.AvailableURLs {
+			fmt.Printf("  %s: %s\n", u.DeviceName, u.URL)
 		}
 	}
 
