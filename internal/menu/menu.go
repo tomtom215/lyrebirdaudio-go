@@ -1,6 +1,6 @@
-// Package menu provides an interactive terminal menu system.
+// Package menu provides an interactive terminal menu system using charmbracelet/huh.
 //
-// This implements a simple TUI menu matching the functionality of the
+// This implements a TUI menu matching the functionality of the
 // bash lyrebird-orchestrator.sh script, allowing users to navigate
 // through options without memorizing CLI commands.
 //
@@ -13,13 +13,14 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
+
+	"github.com/charmbracelet/huh"
 )
 
 // MenuItem represents a single menu option.
 type MenuItem struct {
-	Key         string       // Key to press (e.g., "1", "q")
+	Key         string       // Key identifier (e.g., "1", "q")
 	Label       string       // Display label
 	Description string       // Optional description
 	Action      func() error // Action to execute
@@ -35,19 +36,20 @@ type Menu struct {
 	input       io.Reader
 	output      io.Writer
 	clearScreen bool
+	accessible  bool // Enable accessible mode for screen readers
 }
 
 // Option is a functional option for configuring menus.
 type Option func(*Menu)
 
-// WithInput sets the input reader.
+// WithInput sets the input reader (for testing).
 func WithInput(r io.Reader) Option {
 	return func(m *Menu) {
 		m.input = r
 	}
 }
 
-// WithOutput sets the output writer.
+// WithOutput sets the output writer (for testing).
 func WithOutput(w io.Writer) Option {
 	return func(m *Menu) {
 		m.output = w
@@ -61,6 +63,13 @@ func WithClearScreen(clear bool) Option {
 	}
 }
 
+// WithAccessible enables accessible mode for screen readers.
+func WithAccessible(accessible bool) Option {
+	return func(m *Menu) {
+		m.accessible = accessible
+	}
+}
+
 // New creates a new menu.
 func New(title string, opts ...Option) *Menu {
 	m := &Menu{
@@ -68,6 +77,7 @@ func New(title string, opts ...Option) *Menu {
 		input:       os.Stdin,
 		output:      os.Stdout,
 		clearScreen: true,
+		accessible:  false,
 	}
 
 	for _, opt := range opts {
@@ -90,6 +100,80 @@ func (m *Menu) AddSeparator() {
 // Display shows the menu and waits for user input.
 // Returns when the user selects an action or exits.
 func (m *Menu) Display() error {
+	// Check if we're in test mode (non-TTY input)
+	if m.input != os.Stdin {
+		return m.displayWithScanner()
+	}
+
+	for {
+		if m.clearScreen {
+			clearScreen(m.output)
+		}
+
+		// Build options for huh.Select
+		var options []huh.Option[string]
+		for _, item := range m.Items {
+			if item.Key == "" && item.Label == "" {
+				// Skip separators in huh (they don't support separators directly)
+				continue
+			}
+			if item.Hidden {
+				continue
+			}
+			label := fmt.Sprintf("%s. %s", item.Key, item.Label)
+			options = append(options, huh.NewOption(label, item.Key))
+		}
+
+		if len(options) == 0 {
+			return nil
+		}
+
+		var choice string
+		selector := huh.NewSelect[string]().
+			Title(m.Title).
+			Options(options...).
+			Value(&choice)
+
+		form := huh.NewForm(huh.NewGroup(selector)).
+			WithAccessible(m.accessible)
+
+		err := form.Run()
+		if err != nil {
+			// Handle Ctrl+C or other interrupts
+			if err == huh.ErrUserAborted {
+				return nil
+			}
+			return err
+		}
+
+		// Check for exit keys
+		if choice == "0" || choice == "q" || choice == "Q" {
+			return nil
+		}
+
+		// Find and execute the matching item
+		for _, item := range m.Items {
+			if item.Key == choice {
+				if item.SubMenu != nil {
+					// Copy options to submenu
+					item.SubMenu.accessible = m.accessible
+					if err := item.SubMenu.Display(); err != nil {
+						return err
+					}
+				} else if item.Action != nil {
+					if err := item.Action(); err != nil {
+						_, _ = fmt.Fprintf(m.output, "\nError: %v\n", err)
+						WaitForKey(m.input, m.output, "")
+					}
+				}
+				break
+			}
+		}
+	}
+}
+
+// displayWithScanner provides a fallback for non-TTY input (testing).
+func (m *Menu) displayWithScanner() error {
 	scanner := bufio.NewScanner(m.input)
 
 	for {
@@ -135,7 +219,7 @@ func (m *Menu) Display() error {
 	}
 }
 
-// render draws the menu.
+// render draws the menu using box characters (for scanner fallback mode).
 func (m *Menu) render() {
 	// Calculate width based on longest item
 	width := len(m.Title)
@@ -199,8 +283,32 @@ func WaitForKey(r io.Reader, w io.Writer, prompt string) {
 	bufio.NewScanner(r).Scan()
 }
 
-// Confirm asks the user for confirmation.
+// Confirm asks the user for confirmation using huh.
 func Confirm(r io.Reader, w io.Writer, prompt string) bool {
+	// If not using stdin, fall back to scanner-based input
+	if r != os.Stdin {
+		return confirmWithScanner(r, w, prompt)
+	}
+
+	var confirmed bool
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title(prompt).
+				Affirmative("Yes").
+				Negative("No").
+				Value(&confirmed),
+		),
+	)
+
+	if err := form.Run(); err != nil {
+		return false
+	}
+	return confirmed
+}
+
+// confirmWithScanner provides scanner-based confirmation for testing.
+func confirmWithScanner(r io.Reader, w io.Writer, prompt string) bool {
 	_, _ = fmt.Fprintf(w, "%s [y/N]: ", prompt)
 
 	scanner := bufio.NewScanner(r)
@@ -212,8 +320,36 @@ func Confirm(r io.Reader, w io.Writer, prompt string) bool {
 	return response == "y" || response == "yes"
 }
 
-// Select presents options and returns the selected index.
+// Select presents options and returns the selected index using huh.
 func Select(r io.Reader, w io.Writer, prompt string, options []string) int {
+	// If not using stdin, fall back to scanner-based input
+	if r != os.Stdin {
+		return selectWithScanner(r, w, prompt, options)
+	}
+
+	var choice int
+	var huhOptions []huh.Option[int]
+	for i, opt := range options {
+		huhOptions = append(huhOptions, huh.NewOption(opt, i))
+	}
+
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[int]().
+				Title(prompt).
+				Options(huhOptions...).
+				Value(&choice),
+		),
+	)
+
+	if err := form.Run(); err != nil {
+		return -1
+	}
+	return choice
+}
+
+// selectWithScanner provides scanner-based selection for testing.
+func selectWithScanner(r io.Reader, w io.Writer, prompt string, options []string) int {
 	_, _ = fmt.Fprintln(w, prompt)
 	for i, opt := range options {
 		_, _ = fmt.Fprintf(w, "  %d. %s\n", i+1, opt)
@@ -225,12 +361,46 @@ func Select(r io.Reader, w io.Writer, prompt string, options []string) int {
 		return -1
 	}
 
-	choice, err := strconv.Atoi(strings.TrimSpace(scanner.Text()))
+	var choice int
+	_, err := fmt.Sscanf(strings.TrimSpace(scanner.Text()), "%d", &choice)
 	if err != nil || choice < 1 || choice > len(options) {
 		return -1
 	}
 
 	return choice - 1
+}
+
+// Input prompts for text input using huh.
+func Input(r io.Reader, w io.Writer, prompt string) string {
+	// If not using stdin, fall back to scanner-based input
+	if r != os.Stdin {
+		return inputWithScanner(r, w, prompt)
+	}
+
+	var value string
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewInput().
+				Title(prompt).
+				Value(&value),
+		),
+	)
+
+	if err := form.Run(); err != nil {
+		return ""
+	}
+	return value
+}
+
+// inputWithScanner provides scanner-based input for testing.
+func inputWithScanner(r io.Reader, w io.Writer, prompt string) string {
+	_, _ = fmt.Fprintf(w, "%s: ", prompt)
+
+	scanner := bufio.NewScanner(r)
+	if !scanner.Scan() {
+		return ""
+	}
+	return strings.TrimSpace(scanner.Text())
 }
 
 // RunCommand runs a shell command and displays output.
@@ -503,13 +673,7 @@ func createConfigMenu() *Menu {
 		Key:   "2",
 		Label: "Migrate from Bash Config",
 		Action: func() error {
-			fmt.Println("Enter path to bash config file:")
-			fmt.Print("> ")
-			scanner := bufio.NewScanner(os.Stdin)
-			if !scanner.Scan() {
-				return nil
-			}
-			bashPath := strings.TrimSpace(scanner.Text())
+			bashPath := Input(os.Stdin, os.Stdout, "Enter path to bash config file")
 			if bashPath == "" {
 				return nil
 			}
