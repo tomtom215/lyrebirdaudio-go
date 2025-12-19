@@ -47,9 +47,19 @@ type Source struct {
 	ID   string `json:"id,omitempty"`
 }
 
+// TrackType represents the type of media track.
+type TrackType string
+
+const (
+	// TrackTypeAudio represents an audio track.
+	TrackTypeAudio TrackType = "audio"
+	// TrackTypeVideo represents a video track.
+	TrackTypeVideo TrackType = "video"
+)
+
 // Track represents a media track in a stream.
 type Track struct {
-	Type       string `json:"type"`       // "audio" or "video"
+	Type       string `json:"type"`       // "audio" or "video" (use TrackTypeAudio/TrackTypeVideo constants)
 	Codec      string `json:"codec"`      // e.g., "opus", "aac"
 	ClockRate  int    `json:"clockRate"`  // e.g., 48000
 	Channels   int    `json:"channels"`   // Audio channels
@@ -332,7 +342,7 @@ func (c *Client) GetStreamStats(ctx context.Context, name string) (*StreamStats,
 
 	// Extract track info
 	for _, track := range path.Tracks {
-		if track.Type == "audio" {
+		if track.Type == string(TrackTypeAudio) {
 			stats.AudioCodec = track.Codec
 			stats.SampleRate = track.SampleRate
 			stats.Channels = track.Channels
