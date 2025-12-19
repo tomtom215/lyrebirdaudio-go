@@ -3,16 +3,21 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/tomtom215/lyrebirdaudio-go/internal/audio"
 	"github.com/tomtom215/lyrebirdaudio-go/internal/config"
+	"github.com/tomtom215/lyrebirdaudio-go/internal/menu"
 	"github.com/tomtom215/lyrebirdaudio-go/internal/udev"
+	"github.com/tomtom215/lyrebirdaudio-go/internal/updater"
 )
 
 // Version information (set via ldflags during build).
@@ -72,6 +77,10 @@ func run(args []string) error {
 		return runDiagnose(commandArgs)
 	case "check-system":
 		return runCheckSystem(commandArgs)
+	case "update":
+		return runUpdate(commandArgs)
+	case "menu":
+		return runMenu(commandArgs)
 	default:
 		return fmt.Errorf("unknown command: %s (run 'lyrebird help' for usage)", command)
 	}
@@ -98,6 +107,8 @@ COMMANDS:
     test              Test configuration without modifying system
     diagnose          Run system diagnostics
     check-system      Check system compatibility
+    update            Check for and install updates
+    menu              Launch interactive management menu
 
 OPTIONS:
     --config PATH     Path to configuration file (default: %s)
@@ -1030,9 +1041,17 @@ WantedBy=multi-user.target
 	return nil
 }
 
-// runTest tests configuration without modifying system (stub for now).
+// runTest tests configuration without modifying system.
+//
+// Tests:
+//  1. Config file syntax and validation
+//  2. Device availability
+//  3. FFmpeg command generation
+//  4. MediaMTX connectivity
+//  5. RTSP URL accessibility
 func runTest(args []string) error {
 	configPath := defaultConfigPath
+	verbose := false
 
 	// Parse flags
 	for i := 0; i < len(args); i++ {
@@ -1042,11 +1061,137 @@ func runTest(args []string) error {
 		case args[i] == "--config" && i+1 < len(args):
 			configPath = args[i+1]
 			i++
+		case args[i] == "-v" || args[i] == "--verbose":
+			verbose = true
 		}
 	}
 
-	fmt.Printf("Testing configuration: %s\n", configPath)
-	fmt.Println("Test command not yet implemented")
+	fmt.Printf("Testing configuration: %s\n\n", configPath)
+
+	allPassed := true
+
+	// Test 1: Config syntax and validation
+	fmt.Print("[1/5] Config syntax: ")
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		fmt.Printf("FAILED\n      %v\n", err)
+		// Can't continue without valid config
+		return fmt.Errorf("config test failed: %w", err)
+	}
+	fmt.Println("OK")
+	if verbose {
+		fmt.Printf("      Default: %dHz, %dch, %s, %s\n",
+			cfg.Default.SampleRate, cfg.Default.Channels, cfg.Default.Codec, cfg.Default.Bitrate)
+		if len(cfg.Devices) > 0 {
+			fmt.Printf("      Devices: %d configured\n", len(cfg.Devices))
+		}
+	}
+
+	// Test 2: Device availability
+	fmt.Print("[2/5] Device availability: ")
+	devices, err := audio.DetectDevices("/proc/asound")
+	if err != nil || len(devices) == 0 {
+		fmt.Println("WARNING - No USB audio devices found")
+		if verbose {
+			fmt.Println("      Connect a USB audio device to stream")
+		}
+	} else {
+		fmt.Printf("OK (%d device(s))\n", len(devices))
+		if verbose {
+			for _, d := range devices {
+				devCfg := cfg.GetDeviceConfig(d.FriendlyName())
+				fmt.Printf("      - %s (hw:%d,0) -> %dHz, %dch, %s\n",
+					d.Name, d.CardNumber, devCfg.SampleRate, devCfg.Channels, devCfg.Codec)
+			}
+		}
+	}
+
+	// Test 3: FFmpeg command generation
+	fmt.Print("[3/5] FFmpeg command: ")
+	ffmpegPath, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		fmt.Println("FAILED - FFmpeg not found")
+		allPassed = false
+	} else {
+		// Test that FFmpeg can at least parse a basic command
+		testArgs := []string{
+			"-hide_banner",
+			"-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
+			"-t", "0.1",
+			"-c:a", cfg.Default.Codec,
+			"-b:a", cfg.Default.Bitrate,
+			"-f", "null", "-",
+		}
+		// #nosec G204 -- ffmpegPath is from exec.LookPath, not user input
+		cmd := exec.Command(ffmpegPath, testArgs...)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			fmt.Println("WARNING - FFmpeg test failed")
+			if verbose {
+				fmt.Printf("      %s\n", strings.TrimSpace(string(output)))
+			}
+		} else {
+			fmt.Println("OK")
+			if verbose {
+				fmt.Printf("      Codec: %s, Bitrate: %s\n", cfg.Default.Codec, cfg.Default.Bitrate)
+			}
+		}
+	}
+
+	// Test 4: MediaMTX connectivity
+	fmt.Print("[4/5] MediaMTX API: ")
+	apiURL := cfg.MediaMTX.APIURL
+	if apiURL == "" {
+		apiURL = "http://localhost:9997"
+	}
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(apiURL + "/v3/paths/list")
+	if err != nil {
+		fmt.Println("WARNING - Not reachable")
+		if verbose {
+			fmt.Printf("      URL: %s\n", apiURL)
+			fmt.Printf("      Error: %v\n", err)
+		}
+	} else {
+		_ = resp.Body.Close()
+		if resp.StatusCode == 200 {
+			fmt.Println("OK")
+		} else {
+			fmt.Printf("WARNING - Status %d\n", resp.StatusCode)
+		}
+	}
+
+	// Test 5: RTSP URL accessibility
+	fmt.Print("[5/5] RTSP port: ")
+	rtspURL := cfg.MediaMTX.RTSPURL
+	if rtspURL == "" {
+		rtspURL = "rtsp://localhost:8554"
+	}
+	// Extract host:port from RTSP URL
+	rtspHost := strings.TrimPrefix(rtspURL, "rtsp://")
+	if idx := strings.Index(rtspHost, "/"); idx != -1 {
+		rtspHost = rtspHost[:idx]
+	}
+	conn, err := net.DialTimeout("tcp", rtspHost, 2*time.Second)
+	if err != nil {
+		fmt.Println("WARNING - Not accessible")
+		if verbose {
+			fmt.Printf("      Address: %s\n", rtspHost)
+		}
+	} else {
+		_ = conn.Close()
+		fmt.Println("OK")
+		if verbose {
+			fmt.Printf("      RTSP URL: %s\n", rtspURL)
+		}
+	}
+
+	fmt.Println()
+	if allPassed {
+		fmt.Println("All tests passed!")
+	} else {
+		fmt.Println("Some tests failed. Check the output above for details.")
+	}
+
 	return nil
 }
 
@@ -1272,4 +1417,118 @@ func setupSignalHandler() context.Context {
 	}()
 
 	return ctx
+}
+
+// runUpdate checks for and installs updates.
+func runUpdate(args []string) error {
+	// Parse flags
+	checkOnly := false
+	force := false
+
+	for _, arg := range args {
+		switch arg {
+		case "--check":
+			checkOnly = true
+		case "--force":
+			force = true
+		}
+	}
+
+	fmt.Println("LyreBirdAudio Update")
+	fmt.Println("====================")
+	fmt.Println()
+
+	// Create updater
+	u := updater.New(
+		updater.WithOwner("tomtom215"),
+		updater.WithRepo("lyrebirdaudio-go"),
+		updater.WithCurrentVersion(Version),
+	)
+
+	ctx := context.Background()
+
+	// Check for updates
+	fmt.Println("Checking for updates...")
+	info, err := u.CheckForUpdates(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to check for updates: %w", err)
+	}
+
+	// Display update info
+	fmt.Println(updater.FormatUpdateInfo(info))
+
+	if !info.UpdateAvailable {
+		return nil
+	}
+
+	if checkOnly {
+		fmt.Println("\nRun 'lyrebird update' without --check to install the update.")
+		return nil
+	}
+
+	// Prompt for confirmation unless forced
+	if !force {
+		fmt.Print("Download and install update? [y/N]: ")
+		var response string
+		_, _ = fmt.Scanln(&response)
+		if strings.ToLower(response) != "y" {
+			fmt.Println("Update cancelled.")
+			return nil
+		}
+	}
+
+	// Find current binary path
+	binaryPath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("failed to determine binary path: %w", err)
+	}
+	binaryPath, err = filepath.EvalSymlinks(binaryPath)
+	if err != nil {
+		return fmt.Errorf("failed to resolve binary path: %w", err)
+	}
+
+	// Check if we need root for system binary
+	if strings.HasPrefix(binaryPath, "/usr/") && os.Geteuid() != 0 {
+		return fmt.Errorf("update requires root privileges for %s (run with sudo)", binaryPath)
+	}
+
+	fmt.Println()
+	fmt.Println("Downloading update...")
+
+	// Progress callback
+	lastPercent := 0
+	progress := func(downloaded, total int64) {
+		if total > 0 {
+			percent := int(float64(downloaded) / float64(total) * 100)
+			if percent > lastPercent+5 || percent == 100 {
+				fmt.Printf("\rProgress: %d%%", percent)
+				lastPercent = percent
+			}
+		}
+	}
+
+	if err := u.Update(ctx, info, binaryPath, progress); err != nil {
+		fmt.Println()
+		// Check if there's a backup to rollback to
+		if u.HasBackup(binaryPath) {
+			fmt.Println("Update failed. Rolling back...")
+			if rbErr := u.Rollback(binaryPath); rbErr != nil {
+				return fmt.Errorf("update failed (%w) and rollback failed (%w)", err, rbErr)
+			}
+			fmt.Println("Rolled back to previous version.")
+		}
+		return fmt.Errorf("update failed: %w", err)
+	}
+
+	fmt.Println()
+	fmt.Printf("Successfully updated to %s!\n", info.LatestVersion)
+	fmt.Println("Restart lyrebird to use the new version.")
+
+	return nil
+}
+
+// runMenu launches the interactive management menu.
+func runMenu(args []string) error {
+	m := menu.CreateMainMenu()
+	return m.Display()
 }
