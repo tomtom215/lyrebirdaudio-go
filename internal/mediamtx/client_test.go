@@ -332,3 +332,213 @@ func TestWaitForStreamSuccess(t *testing.T) {
 		t.Errorf("WaitForStream() error: %v", err)
 	}
 }
+
+func TestWithHTTPClient(t *testing.T) {
+	customClient := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+
+	client := NewClient("http://localhost:9997", WithHTTPClient(customClient))
+	if client == nil {
+		t.Fatal("NewClient() returned nil")
+	}
+	if client.httpClient != customClient {
+		t.Error("WithHTTPClient did not set the custom client")
+	}
+	if client.httpClient.Timeout != 30*time.Second {
+		t.Errorf("Timeout = %v, want %v", client.httpClient.Timeout, 30*time.Second)
+	}
+}
+
+func TestListPathsDecodeError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Return invalid JSON
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("invalid json"))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL)
+	_, err := client.ListPaths(context.Background())
+	if err == nil {
+		t.Error("ListPaths() expected error for invalid JSON")
+	}
+}
+
+func TestGetPathDecodeError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Return invalid JSON
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("not valid json"))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL)
+	_, err := client.GetPath(context.Background(), "test")
+	if err == nil {
+		t.Error("GetPath() expected error for invalid JSON")
+	}
+}
+
+func TestGetPathServerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("server error"))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL)
+	_, err := client.GetPath(context.Background(), "test")
+	if err == nil {
+		t.Error("GetPath() expected error for 500 response")
+	}
+}
+
+func TestIsStreamHealthyError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL)
+	healthy, err := client.IsStreamHealthy(context.Background(), "test")
+	if err == nil {
+		t.Error("IsStreamHealthy() expected error for 404 response")
+	}
+	if healthy {
+		t.Error("healthy should be false when error occurs")
+	}
+}
+
+func TestPingServerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL)
+	err := client.Ping(context.Background())
+	if err == nil {
+		t.Error("Ping() expected error for 503 response")
+	}
+}
+
+func TestHealthCheckError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL)
+	status, err := client.HealthCheck(context.Background())
+	if err != nil {
+		t.Fatalf("HealthCheck() should not return error: %v", err)
+	}
+	if status.APIReachable {
+		t.Error("status.APIReachable should be false when API errors")
+	}
+	if status.Healthy {
+		t.Error("status.Healthy should be false when API errors")
+	}
+}
+
+func TestHealthCheckNoStreams(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := PathList{
+			Items: []Path{},
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL)
+	status, err := client.HealthCheck(context.Background())
+	if err != nil {
+		t.Fatalf("HealthCheck() error: %v", err)
+	}
+
+	if !status.APIReachable {
+		t.Error("status.APIReachable should be true")
+	}
+	if status.TotalStreams != 0 {
+		t.Errorf("status.TotalStreams = %d, want 0", status.TotalStreams)
+	}
+	// With no streams, Healthy depends on implementation
+}
+
+func TestGetStreamStatsError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL)
+	_, err := client.GetStreamStats(context.Background(), "nonexistent")
+	if err == nil {
+		t.Error("GetStreamStats() expected error for 404 response")
+	}
+}
+
+func TestGetStreamStatsNoTracks(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := Path{
+			Name:          "test_stream",
+			Ready:         true,
+			BytesReceived: 1000,
+			Tracks:        []Track{}, // No tracks
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL)
+	stats, err := client.GetStreamStats(context.Background(), "test_stream")
+	if err != nil {
+		t.Fatalf("GetStreamStats() error: %v", err)
+	}
+
+	if stats.AudioCodec != "" {
+		t.Errorf("stats.AudioCodec = %q, want empty", stats.AudioCodec)
+	}
+	if stats.SampleRate != 0 {
+		t.Errorf("stats.SampleRate = %d, want 0", stats.SampleRate)
+	}
+}
+
+func TestWaitForStreamContextCancelled(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := Path{Name: "test", Ready: false, BytesReceived: 0}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	// Cancel after a short delay
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+
+	err := client.WaitForStream(ctx, "test", 10*time.Second)
+	if err == nil {
+		t.Error("WaitForStream() expected error when context cancelled")
+	}
+}
+
+func TestListPathsNetworkError(t *testing.T) {
+	client := NewClient("http://localhost:1") // Invalid port
+	_, err := client.ListPaths(context.Background())
+	if err == nil {
+		t.Error("ListPaths() expected error for network failure")
+	}
+}
+
+func TestGetPathNetworkError(t *testing.T) {
+	client := NewClient("http://localhost:1") // Invalid port
+	_, err := client.GetPath(context.Background(), "test")
+	if err == nil {
+		t.Error("GetPath() expected error for network failure")
+	}
+}

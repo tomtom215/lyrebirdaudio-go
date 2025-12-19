@@ -607,3 +607,403 @@ func TestGetChecks(t *testing.T) {
 		t.Errorf("expected 24 debug checks, got %d", len(debugChecks))
 	}
 }
+
+func TestCheckConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	tests := []struct {
+		name           string
+		configPath     string
+		createConfig   bool
+		expectedStatus CheckStatus
+	}{
+		{
+			name:           "config exists",
+			configPath:     tmpDir + "/config.yaml",
+			createConfig:   true,
+			expectedStatus: StatusOK,
+		},
+		{
+			name:           "config not found",
+			configPath:     tmpDir + "/nonexistent.yaml",
+			createConfig:   false,
+			expectedStatus: StatusWarning,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.createConfig {
+				err := os.WriteFile(tt.configPath, []byte("test: true"), 0644)
+				if err != nil {
+					t.Fatalf("failed to create config file: %v", err)
+				}
+			}
+
+			opts := DefaultOptions()
+			opts.ConfigPath = tt.configPath
+			runner := NewRunner(opts)
+
+			result := runner.checkConfig(context.Background())
+			if result.Status != tt.expectedStatus {
+				t.Errorf("expected status %s, got %s", tt.expectedStatus, result.Status)
+			}
+		})
+	}
+}
+
+func TestCheckLogFiles(t *testing.T) {
+	// Test with non-existent log directory
+	opts := DefaultOptions()
+	opts.LogDir = "/nonexistent/log/dir"
+	runner := NewRunner(opts)
+
+	result := runner.checkLogFiles(context.Background())
+	if result.Status != StatusOK {
+		t.Errorf("expected status OK for non-existent log dir, got %s", result.Status)
+	}
+
+	// Test with existing log directory
+	tmpDir := t.TempDir()
+	opts.LogDir = tmpDir
+	runner = NewRunner(opts)
+
+	result = runner.checkLogFiles(context.Background())
+	if result.Status != StatusOK {
+		t.Errorf("expected status OK for empty log dir, got %s", result.Status)
+	}
+
+	// Create some log files
+	_ = os.WriteFile(tmpDir+"/test.log", []byte("log content"), 0644)
+	_ = os.WriteFile(tmpDir+"/test.log.1", []byte("rotated log"), 0644)
+
+	result = runner.checkLogFiles(context.Background())
+	// Status depends on size thresholds
+	if result.Status != StatusOK && result.Status != StatusWarning {
+		t.Errorf("unexpected status %s for log files", result.Status)
+	}
+}
+
+func TestCheckPrerequisites(t *testing.T) {
+	opts := DefaultOptions()
+	runner := NewRunner(opts)
+
+	result := runner.checkPrerequisites(context.Background())
+	if result.Name != "Prerequisites" {
+		t.Errorf("expected Name 'Prerequisites', got %q", result.Name)
+	}
+	if result.Category != "System" {
+		t.Errorf("expected Category 'System', got %q", result.Category)
+	}
+	if result.Duration <= 0 {
+		t.Error("expected Duration to be positive")
+	}
+}
+
+func TestCheckVersions(t *testing.T) {
+	opts := DefaultOptions()
+	runner := NewRunner(opts)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result := runner.checkVersions(ctx)
+	if result.Name != "Versions" {
+		t.Errorf("expected Name 'Versions', got %q", result.Name)
+	}
+	if result.Status != StatusOK {
+		t.Errorf("expected status OK, got %s", result.Status)
+	}
+}
+
+func TestCheckSystemInfo(t *testing.T) {
+	opts := DefaultOptions()
+	runner := NewRunner(opts)
+
+	result := runner.checkSystemInfo(context.Background())
+	if result.Status != StatusOK {
+		t.Errorf("expected status OK, got %s", result.Status)
+	}
+	if result.Name != "System Info" {
+		t.Errorf("expected Name 'System Info', got %q", result.Name)
+	}
+}
+
+func TestCheckUSBAudio(t *testing.T) {
+	opts := DefaultOptions()
+	runner := NewRunner(opts)
+
+	result := runner.checkUSBAudio(context.Background())
+	if result.Name != "USB Audio" {
+		t.Errorf("expected Name 'USB Audio', got %q", result.Name)
+	}
+	if result.Duration <= 0 {
+		t.Error("expected Duration to be positive")
+	}
+}
+
+func TestCheckUdevRules(t *testing.T) {
+	opts := DefaultOptions()
+	runner := NewRunner(opts)
+
+	result := runner.checkUdevRules(context.Background())
+	if result.Name != "udev Rules" {
+		t.Errorf("expected Name 'udev Rules', got %q", result.Name)
+	}
+	if result.Duration <= 0 {
+		t.Error("expected Duration to be positive")
+	}
+}
+
+func TestCheckLockDir(t *testing.T) {
+	opts := DefaultOptions()
+	runner := NewRunner(opts)
+
+	result := runner.checkLockDir(context.Background())
+	if result.Name != "Lock Directory" {
+		t.Errorf("expected Name 'Lock Directory', got %q", result.Name)
+	}
+	if result.Duration <= 0 {
+		t.Error("expected Duration to be positive")
+	}
+}
+
+func TestCheckDiskSpace(t *testing.T) {
+	opts := DefaultOptions()
+	runner := NewRunner(opts)
+
+	result := runner.checkDiskSpace(context.Background())
+	if result.Name != "Disk Space" {
+		t.Errorf("expected Name 'Disk Space', got %q", result.Name)
+	}
+	if result.Duration <= 0 {
+		t.Error("expected Duration to be positive")
+	}
+}
+
+func TestCheckMemory(t *testing.T) {
+	opts := DefaultOptions()
+	runner := NewRunner(opts)
+
+	result := runner.checkMemory(context.Background())
+	if result.Name != "Memory" {
+		t.Errorf("expected Name 'Memory', got %q", result.Name)
+	}
+	if result.Duration <= 0 {
+		t.Error("expected Duration to be positive")
+	}
+}
+
+func TestCheckNetworkPorts(t *testing.T) {
+	opts := DefaultOptions()
+	runner := NewRunner(opts)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	result := runner.checkNetworkPorts(ctx)
+	if result.Name != "Network Ports" {
+		t.Errorf("expected Name 'Network Ports', got %q", result.Name)
+	}
+	if result.Duration <= 0 {
+		t.Error("expected Duration to be positive")
+	}
+}
+
+func TestCheckFFmpeg(t *testing.T) {
+	opts := DefaultOptions()
+	runner := NewRunner(opts)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	result := runner.checkFFmpeg(ctx)
+	if result.Name != "FFmpeg" {
+		t.Errorf("expected Name 'FFmpeg', got %q", result.Name)
+	}
+	if result.Duration <= 0 {
+		t.Error("expected Duration to be positive")
+	}
+}
+
+func TestCheckALSA(t *testing.T) {
+	opts := DefaultOptions()
+	runner := NewRunner(opts)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result := runner.checkALSA(ctx)
+	if result.Name != "ALSA" {
+		t.Errorf("expected Name 'ALSA', got %q", result.Name)
+	}
+}
+
+func TestCheckMediaMTXService(t *testing.T) {
+	opts := DefaultOptions()
+	runner := NewRunner(opts)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result := runner.checkMediaMTXService(ctx)
+	if result.Name != "MediaMTX Service" {
+		t.Errorf("expected Name 'MediaMTX Service', got %q", result.Name)
+	}
+}
+
+func TestCheckMediaMTXAPI(t *testing.T) {
+	opts := DefaultOptions()
+	runner := NewRunner(opts)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result := runner.checkMediaMTXAPI(ctx)
+	if result.Name != "MediaMTX API" {
+		t.Errorf("expected Name 'MediaMTX API', got %q", result.Name)
+	}
+}
+
+func TestCheckTimeSynchronization(t *testing.T) {
+	opts := DefaultOptions()
+	runner := NewRunner(opts)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result := runner.checkTimeSynchronization(ctx)
+	if result.Name != "Time Sync" {
+		t.Errorf("expected Name 'Time Sync', got %q", result.Name)
+	}
+}
+
+func TestCheckSystemdServices(t *testing.T) {
+	opts := DefaultOptions()
+	runner := NewRunner(opts)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result := runner.checkSystemdServices(ctx)
+	if result.Name != "Systemd Services" {
+		t.Errorf("expected Name 'Systemd Services', got %q", result.Name)
+	}
+}
+
+func TestCheckProcessStability(t *testing.T) {
+	opts := DefaultOptions()
+	runner := NewRunner(opts)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result := runner.checkProcessStability(ctx)
+	if result.Name != "Process Stability" {
+		t.Errorf("expected Name 'Process Stability', got %q", result.Name)
+	}
+}
+
+func TestCheckAudioConflicts(t *testing.T) {
+	opts := DefaultOptions()
+	runner := NewRunner(opts)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result := runner.checkAudioConflicts(ctx)
+	if result.Name != "Audio Conflicts" {
+		t.Errorf("expected Name 'Audio Conflicts', got %q", result.Name)
+	}
+}
+
+func TestCheckInotifyLimits(t *testing.T) {
+	opts := DefaultOptions()
+	runner := NewRunner(opts)
+
+	result := runner.checkInotifyLimits(context.Background())
+	if result.Name != "inotify Limits" {
+		t.Errorf("expected Name 'inotify Limits', got %q", result.Name)
+	}
+}
+
+func TestCheckTCPResources(t *testing.T) {
+	opts := DefaultOptions()
+	runner := NewRunner(opts)
+
+	result := runner.checkTCPResources(context.Background())
+	if result.Name != "TCP Resources" {
+		t.Errorf("expected Name 'TCP Resources', got %q", result.Name)
+	}
+}
+
+func TestCheckEntropy(t *testing.T) {
+	opts := DefaultOptions()
+	runner := NewRunner(opts)
+
+	result := runner.checkEntropy(context.Background())
+	if result.Name != "Entropy" {
+		t.Errorf("expected Name 'Entropy', got %q", result.Name)
+	}
+}
+
+func TestCheckFileDescriptors(t *testing.T) {
+	opts := DefaultOptions()
+	runner := NewRunner(opts)
+
+	result := runner.checkFileDescriptors(context.Background())
+	if result.Name != "File Descriptors" {
+		t.Errorf("expected Name 'File Descriptors', got %q", result.Name)
+	}
+}
+
+func TestCheckAudioCapabilities(t *testing.T) {
+	opts := DefaultOptions()
+	runner := NewRunner(opts)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result := runner.checkAudioCapabilities(ctx)
+	if result.Name != "Audio Capabilities" {
+		t.Errorf("expected Name 'Audio Capabilities', got %q", result.Name)
+	}
+}
+
+func TestRunDebugMode(t *testing.T) {
+	opts := DefaultOptions()
+	opts.Mode = ModeDebug
+	opts.Verbose = true
+	runner := NewRunner(opts)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	report, err := runner.Run(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if report == nil {
+		t.Fatal("expected report to be non-nil")
+	}
+
+	// Debug mode should have same checks as full mode
+	if len(report.Checks) < 10 {
+		t.Errorf("expected at least 10 checks in debug mode, got %d", len(report.Checks))
+	}
+}
+
+func TestIsPortOpenWithValidAddress(t *testing.T) {
+	// Test with localhost on a typically closed port
+	result := isPortOpen("127.0.0.1:1")
+	if result {
+		t.Log("Port 1 appears open (unexpected)")
+	}
+
+	// Test with explicit localhost port
+	result = isPortOpen("localhost:65534")
+	if result {
+		t.Log("Port 65534 appears open (unexpected)")
+	}
+}
