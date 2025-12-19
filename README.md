@@ -263,24 +263,22 @@ lyrebird test --config=/etc/lyrebird/config.yaml
 ```
 lyrebirdaudio-go/
 ├── cmd/                        # Command-line applications
-│   ├── lyrebird/              # Main CLI (replaces orchestrator.sh)
-│   ├── lyrebird-stream/       # Stream manager daemon
-│   ├── lyrebird-usb/          # USB mapper utility
-│   └── lyrebird-install/      # MediaMTX installer
+│   ├── lyrebird/              # Main CLI (all commands)
+│   └── lyrebird-stream/       # Stream manager daemon
 ├── internal/                   # Internal packages (not importable)
-│   ├── audio/                 # ALSA device detection
-│   ├── config/                # Configuration management
+│   ├── audio/                 # ALSA device detection & capabilities
+│   ├── config/                # Configuration management (koanf)
+│   ├── diagnostics/           # System health checks (24 checks)
+│   ├── lock/                  # File-based locking (flock)
+│   ├── mediamtx/              # MediaMTX REST API client
+│   ├── menu/                  # Interactive TUI menus (huh)
+│   ├── stream/                # Stream lifecycle & backoff
+│   ├── supervisor/            # Erlang-style supervisor trees (suture)
 │   ├── udev/                  # udev rule generation
-│   ├── stream/                # Stream lifecycle management
-│   ├── mediamtx/              # MediaMTX integration
-│   ├── systemd/               # systemd service management
-│   ├── lock/                  # File-based locking
-│   └── diagnostics/           # Health checks and diagnostics
-├── pkg/                        # Public packages (importable)
-│   └── lyrebird/              # Public API
-├── scripts/                    # Installation and helper scripts
+│   ├── updater/               # Self-update from GitHub releases
+│   └── util/                  # Panic recovery, resources
 ├── systemd/                    # systemd service templates
-├── testdata/                   # Test fixtures and data
+├── testdata/                   # Test fixtures and mock data
 ├── .github/workflows/          # CI/CD pipelines
 ├── Makefile                    # Build automation
 ├── go.mod                      # Go module definition
@@ -314,7 +312,9 @@ make coverage-html
 **Testing Requirements**:
 - Every new function requires corresponding tests
 - Critical paths require table-driven tests with edge cases
-- Minimum 80% code coverage (aim for 90%+)
+- Minimum 65% overall code coverage (enforced by CI)
+- Internal packages: ~87% coverage (aim for 90%+)
+- CLI packages: Lower coverage acceptable (root/interactive requirements)
 - Integration tests for USB/udev/systemd components
 - Race detection enabled in CI/CD
 
@@ -420,22 +420,52 @@ Typical resource consumption (per stream):
 
 ### Benchmarks
 
-See [BENCHMARKS.md](docs/BENCHMARKS.md) for detailed performance comparisons:
-- Bash vs Go startup time
-- Stream initialization latency
-- Memory footprint comparison
-- CPU utilization under load
+Run benchmarks locally with:
+
+```bash
+make bench
+```
+
+Typical performance characteristics:
+- **Startup time**: ~50ms (vs ~500ms for bash version)
+- **Stream initialization**: <100ms per device
+- **Memory footprint**: ~10-20MB per stream
+- **CPU utilization**: 1-3% idle, 5-15% encoding
 
 ## Contributing
 
 Contributions are welcome! This project follows industrial-grade development practices:
 
-1. **Test-Driven Development**: Write tests first, then implementation
-2. **Documentation**: Update README and godoc comments
-3. **Code Review**: All changes require review before merge
-4. **CI/CD**: All tests must pass, coverage must not decrease
+### Development Workflow
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
+1. **Fork and clone** the repository
+2. **Create a feature branch**: `git checkout -b feature/your-feature`
+3. **Write tests first** (TDD is mandatory)
+4. **Implement the feature** to make tests pass
+5. **Run all checks**: `make check`
+6. **Commit with clear messages** following [Conventional Commits](https://www.conventionalcommits.org/)
+7. **Open a pull request** with description of changes
+
+### Code Standards
+
+- **Test-Driven Development**: Write tests first, then implementation
+- **Documentation**: Update README and godoc comments for public APIs
+- **Code Review**: All changes require review before merge
+- **CI/CD**: All tests must pass, coverage must not decrease
+- **Minimum coverage**: 65% overall, 90%+ for internal packages
+- **Race detection**: Code must pass `go test -race`
+
+### Commit Message Format
+
+```
+type(scope): description
+
+[optional body]
+
+[optional footer]
+```
+
+Types: `feat`, `fix`, `docs`, `style`, `refactor`, `test`, `chore`
 
 ## License
 

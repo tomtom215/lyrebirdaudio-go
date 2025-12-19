@@ -369,7 +369,11 @@ monitor:
 	defer cancel()
 
 	go func() {
-		_ = kc.Watch(ctx, func(event string) {
+		_ = kc.Watch(ctx, func(event string, err error) {
+			if err != nil {
+				watchCalled <- "error: " + err.Error()
+				return
+			}
 			watchCalled <- event
 		})
 	}()
@@ -788,7 +792,7 @@ func TestKoanfConfig_WatchNoFile(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	err = kc.Watch(ctx, func(event string) {
+	err = kc.Watch(ctx, func(event string, watchErr error) {
 		t.Error("Callback should not be called when no file is set")
 	})
 
@@ -839,7 +843,7 @@ monitor:
 
 	done := make(chan struct{})
 	go func() {
-		_ = kc.Watch(ctx, func(event string) {})
+		_ = kc.Watch(ctx, func(event string, err error) {})
 		close(done)
 	}()
 

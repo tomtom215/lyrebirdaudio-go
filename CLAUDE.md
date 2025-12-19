@@ -318,7 +318,11 @@ devCfg := cfg.GetDeviceConfig("blue_yeti")
 
 // Hot-reload on file changes
 ctx, cancel := context.WithCancel(context.Background())
-go kc.Watch(ctx, func(event string) {
+go kc.Watch(ctx, func(event string, err error) {
+    if err != nil {
+        log.Println("Config watch error:", err)
+        return
+    }
     log.Println("Config reloaded:", event)
     // Restart affected streams...
 })

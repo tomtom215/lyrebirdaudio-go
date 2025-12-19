@@ -294,8 +294,19 @@ func (m *Manager) Run(ctx context.Context) error {
 }
 
 // State returns the current manager state.
+//
+// Returns StateIdle if the manager was not properly initialized
+// (e.g., created via &Manager{} instead of NewManager()).
+// This provides safe, defensive behavior for edge cases.
 func (m *Manager) State() State {
-	return m.state.Load().(State)
+	if m == nil {
+		return StateIdle
+	}
+	v := m.state.Load()
+	if v == nil {
+		return StateIdle
+	}
+	return v.(State)
 }
 
 // Attempts returns the total number of start attempts.
@@ -309,7 +320,13 @@ func (m *Manager) Failures() int {
 }
 
 // Metrics returns current manager metrics.
+//
+// Returns zero-value Metrics if manager is nil.
 func (m *Manager) Metrics() Metrics {
+	if m == nil {
+		return Metrics{State: StateIdle}
+	}
+
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -318,9 +335,15 @@ func (m *Manager) Metrics() Metrics {
 		uptime = time.Since(m.startTime)
 	}
 
+	var deviceName, streamName string
+	if m.cfg != nil {
+		deviceName = m.cfg.DeviceName
+		streamName = m.cfg.StreamName
+	}
+
 	return Metrics{
-		DeviceName: m.cfg.DeviceName,
-		StreamName: m.cfg.StreamName,
+		DeviceName: deviceName,
+		StreamName: streamName,
 		State:      m.State(),
 		StartTime:  m.startTime,
 		Uptime:     uptime,

@@ -7,10 +7,26 @@ import (
 	"time"
 )
 
+const (
+	// MaxDeviceNameLength is the maximum length for sanitized device names.
+	// This matches the bash implementation's 64 character limit.
+	MaxDeviceNameLength = 64
+
+	// MaxRawInputLength is the maximum raw input length we'll process.
+	// Inputs longer than this are immediately rejected to prevent
+	// memory exhaustion from malicious inputs.
+	MaxRawInputLength = 1024
+)
+
 // SanitizeDeviceName sanitizes a device name for safe use in configuration and file paths.
 //
 // This implementation MUST match the bash version in lyrebird-mic-check.sh (lines 395-426)
 // exactly, as config lookups depend on identical output.
+//
+// Input validation:
+//   - Empty input returns timestamped fallback
+//   - Input longer than 1024 bytes returns timestamped fallback (security measure)
+//   - Control characters (0x00-0x1F) trigger timestamped fallback
 //
 // Sanitization rules:
 //  1. Reject suspicious patterns (path traversal, command injection): return timestamped fallback
@@ -27,9 +43,26 @@ import (
 //	"USB-Audio-Device" → "USB_Audio_Device"
 //	"5GHz" → "dev_5GHz"
 //	"../etc/passwd" → "unknown_device_1234567890"
+//	"" → "unknown_device_1234567890"
 //
 // Reference: lyrebird-mic-check.sh sanitize_device_name()
 func SanitizeDeviceName(name string) string {
+	// Early validation: reject empty input
+	if name == "" {
+		return timestampFallback()
+	}
+
+	// Security: reject excessively long input to prevent memory exhaustion
+	if len(name) > MaxRawInputLength {
+		return timestampFallback()
+	}
+
+	// Security: reject input containing control characters (0x00-0x1F except tab/newline)
+	// These could cause issues in various contexts (file systems, terminals, configs)
+	if containsControlChars(name) {
+		return timestampFallback()
+	}
+
 	// Security: Reject suspicious patterns
 	// Matches bash: if [[ "$name" =~ \.\. ]] || [[ "$name" =~ [/$] ]] || [[ "$name" =~ ^- ]]
 	if strings.Contains(name, "..") ||
@@ -38,10 +71,10 @@ func SanitizeDeviceName(name string) string {
 		return timestampFallback()
 	}
 
-	// Truncate to 64 characters
+	// Truncate to MaxDeviceNameLength characters
 	// Matches bash: if [[ ${#name} -gt 64 ]]; then name="${name:0:64}"; fi
-	if len(name) > 64 {
-		name = name[:64]
+	if len(name) > MaxDeviceNameLength {
+		name = name[:MaxDeviceNameLength]
 	}
 
 	// Replace non-alphanumeric with underscore
@@ -109,4 +142,22 @@ func isDigit(c byte) bool {
 // Matches bash: printf 'unknown_device_%s\n' "$(date +%s)"
 func timestampFallback() string {
 	return fmt.Sprintf("unknown_device_%d", time.Now().Unix())
+}
+
+// containsControlChars checks if a string contains control characters (0x00-0x1F)
+// except for common whitespace (tab 0x09, newline 0x0A, carriage return 0x0D).
+// Control characters can cause issues in file paths, terminals, and config files.
+func containsControlChars(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		// Check for control characters (0x00-0x1F) except tab, newline, carriage return
+		if c < 0x20 && c != 0x09 && c != 0x0A && c != 0x0D {
+			return true
+		}
+		// Also check for DEL (0x7F)
+		if c == 0x7F {
+			return true
+		}
+	}
+	return false
 }

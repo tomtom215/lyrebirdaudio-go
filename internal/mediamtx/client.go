@@ -146,7 +146,10 @@ func (c *Client) ListPaths(ctx context.Context) ([]Path, error) {
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return nil, fmt.Errorf("API returned status %d (failed to read body: %v)", resp.StatusCode, readErr)
+		}
 		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -188,7 +191,10 @@ func (c *Client) GetPath(ctx context.Context, name string) (*Path, error) {
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return nil, fmt.Errorf("API returned status %d (failed to read body: %v)", resp.StatusCode, readErr)
+		}
 		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -283,7 +289,11 @@ func (c *Client) Ping(ctx context.Context) error {
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("MediaMTX API returned status %d", resp.StatusCode)
+		body, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return fmt.Errorf("MediaMTX API returned status %d (failed to read body: %v)", resp.StatusCode, readErr)
+		}
+		return fmt.Errorf("MediaMTX API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
 	return nil

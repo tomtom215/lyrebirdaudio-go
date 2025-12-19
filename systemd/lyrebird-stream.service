@@ -10,8 +10,23 @@
 #   sudo systemctl enable lyrebird-stream
 #   sudo systemctl start lyrebird-stream
 #
-# Configuration: /etc/lyrebird/config.yaml
+# Configuration:
+#   Primary: /etc/lyrebird/config.yaml
+#   Overrides: /etc/lyrebird/environment (optional)
+#
 # Logs: journalctl -u lyrebird-stream -f
+#
+# Hot-reload configuration (no restart required):
+#   sudo systemctl reload lyrebird-stream
+#
+# User Configuration:
+#   The service runs as root by default for reliable ALSA device access.
+#   To run as a dedicated user (recommended for production):
+#   1. Create user: sudo useradd -r -s /usr/sbin/nologin -G audio lyrebird
+#   2. Create directories: sudo mkdir -p /var/run/lyrebird /etc/lyrebird
+#   3. Set ownership: sudo chown lyrebird:audio /var/run/lyrebird
+#   4. Change User=root to User=lyrebird in this file
+#   5. Reload: sudo systemctl daemon-reload && sudo systemctl restart lyrebird-stream
 
 [Unit]
 Description=LyreBirdAudio Stream Manager
@@ -26,8 +41,21 @@ Type=simple
 User=root
 Group=audio
 
+# Optional environment file for configuration overrides
+# Create /etc/lyrebird/environment with:
+#   LYREBIRD_CONFIG=/etc/lyrebird/config.yaml
+#   LYREBIRD_LOG_LEVEL=info
+EnvironmentFile=-/etc/lyrebird/environment
+
+# Default configuration (can be overridden via environment file)
+Environment=LYREBIRD_CONFIG=/etc/lyrebird/config.yaml
+Environment=LYREBIRD_LOG_LEVEL=info
+
 # Main executable
-ExecStart=/usr/local/bin/lyrebird-stream --config=/etc/lyrebird/config.yaml --log-level=info
+ExecStart=/usr/local/bin/lyrebird-stream --config=${LYREBIRD_CONFIG} --log-level=${LYREBIRD_LOG_LEVEL}
+
+# Hot-reload configuration without stopping streams
+ExecReload=/bin/kill -HUP $MAINPID
 
 # Graceful shutdown
 ExecStop=/bin/kill -SIGTERM $MAINPID
