@@ -1,3 +1,24 @@
+// Package stream provides FFmpeg process lifecycle management for audio streaming.
+//
+// This package implements the core streaming functionality of LyreBirdAudio,
+// managing FFmpeg processes that capture audio from ALSA devices and stream
+// them to MediaMTX via RTSP.
+//
+// Key components:
+//   - Manager: Manages FFmpeg process lifecycle with automatic restart
+//   - Backoff: Implements exponential backoff for process restarts
+//   - RotatingWriter: Log rotation for FFmpeg output
+//   - ResourceMetrics: Process resource monitoring
+//
+// The Manager uses a state machine with the following states:
+//   - StateIdle: Not started
+//   - StateStarting: Acquiring lock and starting FFmpeg
+//   - StateRunning: FFmpeg process running
+//   - StateStopping: Gracefully stopping FFmpeg
+//   - StateFailed: FFmpeg failed, waiting for backoff
+//   - StateStopped: Stopped (terminal state)
+//
+// Reference: mediamtx-stream-manager.sh from the original bash implementation
 package stream
 
 import (
@@ -49,21 +70,24 @@ func (s State) String() string {
 
 // ManagerConfig contains configuration for a stream manager.
 type ManagerConfig struct {
-	DeviceName   string    // Sanitized device name (e.g., "blue_yeti")
-	ALSADevice   string    // ALSA device identifier (e.g., "hw:0,0") or lavfi source
-	InputFormat  string    // Input format: "alsa" or "lavfi" (default: "alsa")
-	StreamName   string    // Stream name for MediaMTX path
-	SampleRate   int       // Sample rate in Hz
-	Channels     int       // Number of channels
-	Bitrate      string    // Bitrate (e.g., "128k")
-	Codec        string    // Codec ("opus" or "aac")
-	ThreadQueue  int       // FFmpeg thread queue size (optional)
-	RTSPURL      string    // Full RTSP URL or file path for output
-	OutputFormat string    // Output format: "rtsp", "null", or empty for auto-detect (default: "rtsp")
-	LockDir      string    // Directory for lock files
-	FFmpegPath   string    // Path to ffmpeg binary
-	Backoff      *Backoff  // Backoff policy for restarts
-	Logger       io.Writer // Optional logger for debug output (nil = no logging)
+	DeviceName      string              // Sanitized device name (e.g., "blue_yeti")
+	ALSADevice      string              // ALSA device identifier (e.g., "hw:0,0") or lavfi source
+	InputFormat     string              // Input format: "alsa" or "lavfi" (default: "alsa")
+	StreamName      string              // Stream name for MediaMTX path
+	SampleRate      int                 // Sample rate in Hz
+	Channels        int                 // Number of channels
+	Bitrate         string              // Bitrate (e.g., "128k")
+	Codec           string              // Codec ("opus" or "aac")
+	ThreadQueue     int                 // FFmpeg thread queue size (optional)
+	RTSPURL         string              // Full RTSP URL or file path for output
+	OutputFormat    string              // Output format: "rtsp", "null", or empty for auto-detect (default: "rtsp")
+	LockDir         string              // Directory for lock files
+	FFmpegPath      string              // Path to ffmpeg binary
+	Backoff         *Backoff            // Backoff policy for restarts
+	Logger          io.Writer           // Optional logger for debug output (nil = no logging)
+	LogDir          string              // Directory for FFmpeg log files (empty = no logging)
+	MonitorInterval time.Duration       // Interval for resource monitoring (0 = disabled)
+	AlertCallback   func([]ResourceAlert) // Optional callback for resource alerts
 }
 
 // Manager manages a single audio stream's lifecycle.
@@ -96,10 +120,17 @@ type Manager struct {
 
 	// State management
 	state   atomic.Value // State
-	mu      sync.RWMutex // Protects cmd, lock, startTime
+	mu      sync.RWMutex // Protects cmd, lock, startTime, logWriter
 	cmd     *exec.Cmd
 	lock    *lock.FileLock
 	backoff *Backoff
+
+	// Log rotation for FFmpeg stderr
+	logWriter io.WriteCloser
+
+	// Resource monitoring for FFmpeg process
+	resourceMonitor *ResourceMonitor
+	monitorCancel   context.CancelFunc
 
 	// Metrics
 	startTime time.Time
@@ -153,6 +184,25 @@ func NewManager(cfg *ManagerConfig) (*Manager, error) {
 	}
 
 	mgr.state.Store(StateIdle)
+
+	// Create rotating log writer if LogDir is specified
+	if cfg.LogDir != "" {
+		logWriter, err := LogWriter(cfg.LogDir, cfg.StreamName,
+			WithMaxSize(DefaultMaxLogSize),
+			WithMaxFiles(DefaultMaxLogFiles),
+			WithCompression(true))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create log writer: %w", err)
+		}
+		mgr.logWriter = logWriter
+	}
+
+	// Create resource monitor if monitoring is enabled
+	if cfg.MonitorInterval > 0 {
+		mgr.resourceMonitor = NewResourceMonitor(
+			WithLogger(cfg.Logger),
+		)
+	}
 
 	return mgr, nil
 }
@@ -352,6 +402,27 @@ func (m *Manager) Metrics() Metrics {
 	}
 }
 
+// Close releases resources held by the manager.
+//
+// This should be called after Run() returns to clean up resources such as
+// the rotating log writer. It is safe to call multiple times.
+//
+// Returns:
+//   - error: if closing the log writer fails
+func (m *Manager) Close() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.logWriter != nil {
+		if err := m.logWriter.Close(); err != nil {
+			return fmt.Errorf("failed to close log writer: %w", err)
+		}
+		m.logWriter = nil
+	}
+
+	return nil
+}
+
 // setState atomically updates the manager state.
 func (m *Manager) setState(s State) {
 	m.state.Store(s)
@@ -405,7 +476,11 @@ func (m *Manager) startFFmpeg(ctx context.Context) error {
 	// Build command with context for automatic cancellation
 	cmd := buildFFmpegCommand(ctx, m.cfg)
 
+	// Redirect stderr to rotating log writer if configured
 	m.mu.Lock()
+	if m.logWriter != nil {
+		cmd.Stderr = m.logWriter
+	}
 	m.cmd = cmd
 	m.startTime = time.Now()
 	m.mu.Unlock()
@@ -418,6 +493,21 @@ func (m *Manager) startFFmpeg(ctx context.Context) error {
 	// Transition to running
 	m.setState(StateRunning)
 
+	// Start resource monitoring if configured
+	if m.resourceMonitor != nil && cmd.Process != nil && m.cfg.MonitorInterval > 0 {
+		monitorCtx, cancel := context.WithCancel(ctx)
+		m.mu.Lock()
+		m.monitorCancel = cancel
+		m.mu.Unlock()
+
+		go m.resourceMonitor.MonitorProcess(
+			monitorCtx,
+			cmd.Process.Pid,
+			m.cfg.MonitorInterval,
+			m.cfg.AlertCallback,
+		)
+	}
+
 	// Wait for exit (or context cancellation)
 	done := make(chan error, 1)
 	go func() {
@@ -427,12 +517,14 @@ func (m *Manager) startFFmpeg(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		// Context cancelled - stop FFmpeg gracefully
+		m.stopMonitoring()
 		m.stop()
 		<-done // Wait for process to exit
 		return context.Canceled
 
 	case err := <-done:
-		// FFmpeg exited
+		// FFmpeg exited - stop monitoring
+		m.stopMonitoring()
 		m.mu.Lock()
 		m.cmd = nil
 		m.mu.Unlock()
@@ -464,6 +556,17 @@ func (m *Manager) stop() {
 				_ = cmd.Process.Kill()
 			}
 		}()
+	}
+}
+
+// stopMonitoring stops the resource monitor goroutine.
+func (m *Manager) stopMonitoring() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.monitorCancel != nil {
+		m.monitorCancel()
+		m.monitorCancel = nil
 	}
 }
 
@@ -553,9 +656,6 @@ func buildFFmpegCommand(ctx context.Context, cfg *ManagerConfig) *exec.Cmd {
 
 	// #nosec G204 - FFmpegPath is from validated configuration, not user input
 	cmd := exec.CommandContext(ctx, cfg.FFmpegPath, args...)
-
-	// Redirect stderr for logging (optional)
-	// cmd.Stderr = os.Stderr
 
 	return cmd
 }
