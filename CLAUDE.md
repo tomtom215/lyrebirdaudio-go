@@ -41,7 +41,7 @@ go mod tidy
 
 | Package | Coverage | Notes |
 |---------|----------|-------|
-| internal/supervisor | 94.3% | Supervisor tree for service management |
+| internal/supervisor | 94.2% | Erlang-style supervisor tree using suture |
 | internal/util | 94.0% | Panic recovery, resource tracking |
 | internal/config | 89.1% | YAML config + migration |
 | internal/udev | 86.0% | udev rule generation + file writing |
@@ -183,7 +183,7 @@ lyrebirdaudio-go/
 │   │   ├── backoff.go      # Exponential backoff
 │   │   └── *_test.go
 │   ├── supervisor/         # Service supervision (NEW)
-│   │   ├── supervisor.go   # Erlang-style supervisor tree
+│   │   ├── supervisor.go   # Erlang-style supervisor tree (suture v4.0.6)
 │   │   └── *_test.go
 │   ├── udev/               # udev rule generation
 │   │   ├── mapper.go       # USB port path detection
@@ -638,6 +638,7 @@ golangci-lint run ./...
   - `koanf/parsers/yaml` - YAML parser
   - `koanf/providers/file` - File provider with watch capability
   - `koanf/providers/env/v2` - Environment variable provider
+- **github.com/thejerf/suture/v4** - Erlang-style supervisor trees for 24/7 reliability
 - **github.com/fsnotify/fsnotify** - File system notifications (via koanf)
 
 **Runtime Dependencies:**
@@ -653,7 +654,8 @@ golangci-lint run ./...
 - [FFmpeg Documentation](https://ffmpeg.org/documentation.html)
 - [ALSA Documentation](https://www.alsa-project.org/wiki/Main_Page)
 - [koanf - Configuration Management](https://github.com/knadh/koanf)
+- [suture - Erlang-style Supervisor Trees](https://github.com/thejerf/suture)
 
 ---
 
-*Last updated: 2025-12-14*
+*Last updated: 2025-12-19*
