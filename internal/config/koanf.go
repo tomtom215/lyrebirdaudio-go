@@ -20,11 +20,9 @@ import (
 //   - Override precedence (env vars override YAML)
 //   - Backward compatibility with existing LoadConfig() API
 type KoanfConfig struct {
-	k           *koanf.Koanf
-	filePath    string
-	envPrefix   string
-	watchCtx    context.Context
-	watchCancel context.CancelFunc
+	k         *koanf.Koanf
+	filePath  string
+	envPrefix string
 }
 
 // Option configures a KoanfConfig.
