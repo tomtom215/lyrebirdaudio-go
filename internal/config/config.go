@@ -14,50 +14,50 @@ const ConfigFilePath = "/etc/lyrebird/config.yaml"
 // Config represents the complete LyreBird configuration.
 type Config struct {
 	// Devices contains device-specific configuration keyed by sanitized device name.
-	Devices map[string]DeviceConfig `yaml:"devices"`
+	Devices map[string]DeviceConfig `yaml:"devices" koanf:"devices"`
 
 	// Default configuration used when device-specific config not found.
-	Default DeviceConfig `yaml:"default"`
+	Default DeviceConfig `yaml:"default" koanf:"default"`
 
 	// Stream manager settings.
-	Stream StreamConfig `yaml:"stream"`
+	Stream StreamConfig `yaml:"stream" koanf:"stream"`
 
 	// MediaMTX integration settings.
-	MediaMTX MediaMTXConfig `yaml:"mediamtx"`
+	MediaMTX MediaMTXConfig `yaml:"mediamtx" koanf:"mediamtx"`
 
 	// Monitor settings for health checks.
-	Monitor MonitorConfig `yaml:"monitor"`
+	Monitor MonitorConfig `yaml:"monitor" koanf:"monitor"`
 }
 
 // DeviceConfig contains FFmpeg encoding parameters for a device.
 type DeviceConfig struct {
-	SampleRate  int    `yaml:"sample_rate"`  // Sample rate in Hz (e.g., 48000)
-	Channels    int    `yaml:"channels"`     // Number of audio channels (1=mono, 2=stereo)
-	Bitrate     string `yaml:"bitrate"`      // Bitrate (e.g., "128k", "192k")
-	Codec       string `yaml:"codec"`        // Audio codec ("opus" or "aac")
-	ThreadQueue int    `yaml:"thread_queue"` // FFmpeg thread queue size
+	SampleRate  int    `yaml:"sample_rate" koanf:"sample_rate"`   // Sample rate in Hz (e.g., 48000)
+	Channels    int    `yaml:"channels" koanf:"channels"`         // Number of audio channels (1=mono, 2=stereo)
+	Bitrate     string `yaml:"bitrate" koanf:"bitrate"`           // Bitrate (e.g., "128k", "192k")
+	Codec       string `yaml:"codec" koanf:"codec"`               // Audio codec ("opus" or "aac")
+	ThreadQueue int    `yaml:"thread_queue" koanf:"thread_queue"` // FFmpeg thread queue size
 }
 
 // StreamConfig contains stream lifecycle management settings.
 type StreamConfig struct {
-	InitialRestartDelay   time.Duration `yaml:"initial_restart_delay"`   // First restart delay
-	MaxRestartDelay       time.Duration `yaml:"max_restart_delay"`       // Maximum backoff delay
-	MaxRestartAttempts    int           `yaml:"max_restart_attempts"`    // Max attempts before giving up
-	USBStabilizationDelay time.Duration `yaml:"usb_stabilization_delay"` // Wait after USB changes
+	InitialRestartDelay   time.Duration `yaml:"initial_restart_delay" koanf:"initial_restart_delay"`     // First restart delay
+	MaxRestartDelay       time.Duration `yaml:"max_restart_delay" koanf:"max_restart_delay"`             // Maximum backoff delay
+	MaxRestartAttempts    int           `yaml:"max_restart_attempts" koanf:"max_restart_attempts"`       // Max attempts before giving up
+	USBStabilizationDelay time.Duration `yaml:"usb_stabilization_delay" koanf:"usb_stabilization_delay"` // Wait after USB changes
 }
 
 // MediaMTXConfig contains MediaMTX server integration settings.
 type MediaMTXConfig struct {
-	APIURL     string `yaml:"api_url"`     // API endpoint (e.g., "http://localhost:9997")
-	RTSPURL    string `yaml:"rtsp_url"`    // RTSP server URL (e.g., "rtsp://localhost:8554")
-	ConfigPath string `yaml:"config_path"` // Path to mediamtx.yml
+	APIURL     string `yaml:"api_url" koanf:"api_url"`         // API endpoint (e.g., "http://localhost:9997")
+	RTSPURL    string `yaml:"rtsp_url" koanf:"rtsp_url"`       // RTSP server URL (e.g., "rtsp://localhost:8554")
+	ConfigPath string `yaml:"config_path" koanf:"config_path"` // Path to mediamtx.yml
 }
 
 // MonitorConfig contains health monitoring settings.
 type MonitorConfig struct {
-	Enabled          bool          `yaml:"enabled"`           // Enable health monitoring
-	Interval         time.Duration `yaml:"interval"`          // Health check interval
-	RestartUnhealthy bool          `yaml:"restart_unhealthy"` // Auto-restart failed streams
+	Enabled          bool          `yaml:"enabled" koanf:"enabled"`                       // Enable health monitoring
+	Interval         time.Duration `yaml:"interval" koanf:"interval"`                     // Health check interval
+	RestartUnhealthy bool          `yaml:"restart_unhealthy" koanf:"restart_unhealthy"`   // Auto-restart failed streams
 }
 
 // LoadConfig reads and parses the configuration file.

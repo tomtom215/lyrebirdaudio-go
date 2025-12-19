@@ -62,9 +62,11 @@ LyreBirdAudio captures audio from USB microphones and streams them via RTSP usin
 
 - Automatic USB audio device detection
 - Persistent device identification via USB port mapping
-- YAML configuration with bash migration support
+- Multi-source configuration (YAML + environment variables + hot-reload)
 - Stream lifecycle management with exponential backoff
 - File-based locking to prevent duplicate streams
+- Configuration hot-reload via SIGHUP (no downtime)
+- Environment variable overrides for 12-factor app deployment
 
 ---
 
@@ -231,7 +233,11 @@ type Device struct {
 
 ### 2. Configuration (`internal/config`)
 
-YAML-based configuration with device-specific overrides.
+**Multi-source configuration system** using [koanf v2.3.0](https://github.com/knadh/koanf) with support for:
+- YAML configuration files
+- Environment variable overrides
+- Hot-reload via SIGHUP signal
+- Backward compatibility with original LoadConfig API
 
 **Config Structure:**
 ```yaml
@@ -258,11 +264,83 @@ mediamtx:
   rtsp_url: rtsp://localhost:8554
 ```
 
+**Environment Variable Overrides:**
+```bash
+# Override default settings
+export LYREBIRD_DEFAULT_SAMPLE_RATE=44100
+export LYREBIRD_DEFAULT_CODEC=aac
+export LYREBIRD_DEFAULT_BITRATE=256k
+
+# Override device-specific settings
+export LYREBIRD_DEVICES_BLUE_YETI_SAMPLE_RATE=96000
+export LYREBIRD_DEVICES_BLUE_YETI_CODEC=aac
+
+# Override stream settings
+export LYREBIRD_STREAM_MAX_RESTART_DELAY=600s
+
+# Override MediaMTX settings
+export LYREBIRD_MEDIAMTX_API_URL=http://custom-host:9997
+```
+
+**Precedence Order** (highest to lowest):
+1. Environment variables (`LYREBIRD_*`)
+2. YAML configuration file
+3. Built-in defaults
+
 **Key Functions:**
-- `LoadConfig(path)` - Loads and validates YAML
+
+*Legacy API (backward compatible):*
+- `LoadConfig(path)` - Loads and validates YAML (yaml.v3)
 - `MigrateFromBash(path)` - Converts bash env vars to YAML
 - `GetDeviceConfig(name)` - Returns device config with defaults merged
 - `DefaultConfig()` - Returns production defaults
+
+*Enhanced API (koanf-based):*
+- `NewKoanfConfig(opts...)` - Creates koanf config loader
+- `WithYAMLFile(path)` - Option: specify YAML file
+- `WithEnvPrefix(prefix)` - Option: set env var prefix (default: LYREBIRD)
+- `kc.Load()` - Loads and unmarshals config
+- `kc.Reload()` - Reloads config from all sources
+- `kc.Watch(ctx, callback)` - Watches file for changes
+- `kc.GetString(key)`, `kc.GetInt(key)`, etc. - Type-safe getters
+
+**Example Usage:**
+```go
+// Load with YAML + env vars
+kc, err := config.NewKoanfConfig(
+    config.WithYAMLFile("/etc/lyrebird/config.yaml"),
+    config.WithEnvPrefix("LYREBIRD"),
+)
+
+// Access configuration
+cfg, err := kc.Load()
+devCfg := cfg.GetDeviceConfig("blue_yeti")
+
+// Hot-reload on file changes
+ctx, cancel := context.WithCancel(context.Background())
+go kc.Watch(ctx, func(event string) {
+    log.Println("Config reloaded:", event)
+    // Restart affected streams...
+})
+
+// Manual reload (e.g., on SIGHUP)
+kc.Reload()
+```
+
+**Hot-Reload Support:**
+
+The daemon now supports configuration hot-reload via SIGHUP:
+```bash
+# Edit configuration
+vim /etc/lyrebird/config.yaml
+
+# Reload without restart
+sudo systemctl reload lyrebird-stream
+# OR
+sudo pkill -HUP lyrebird-stream
+```
+
+Configuration changes are reloaded without stopping streams (planned: restart only affected streams).
 
 ### 3. Stream Manager (`internal/stream`)
 
@@ -554,9 +632,17 @@ golangci-lint run ./...
 
 ## External Dependencies
 
-- **gopkg.in/yaml.v3** - YAML parsing
-- **FFmpeg** - Audio encoding (runtime dependency)
-- **MediaMTX** - RTSP server (runtime dependency)
+**Go Libraries:**
+- **gopkg.in/yaml.v3** - YAML parsing (backward compatibility)
+- **github.com/knadh/koanf/v2** - Multi-source configuration management
+  - `koanf/parsers/yaml` - YAML parser
+  - `koanf/providers/file` - File provider with watch capability
+  - `koanf/providers/env/v2` - Environment variable provider
+- **github.com/fsnotify/fsnotify** - File system notifications (via koanf)
+
+**Runtime Dependencies:**
+- **FFmpeg** - Audio encoding
+- **MediaMTX** - RTSP server
 
 ---
 
@@ -566,6 +652,7 @@ golangci-lint run ./...
 - [MediaMTX Documentation](https://github.com/bluenviron/mediamtx)
 - [FFmpeg Documentation](https://ffmpeg.org/documentation.html)
 - [ALSA Documentation](https://www.alsa-project.org/wiki/Main_Page)
+- [koanf - Configuration Management](https://github.com/knadh/koanf)
 
 ---
 

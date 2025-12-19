@@ -180,6 +180,60 @@ monitor:
   restart_unhealthy: true   # Auto-restart failed streams
 ```
 
+#### Environment Variable Overrides
+
+Configuration values can be overridden using environment variables with the `LYREBIRD_` prefix:
+
+```bash
+# Override default settings
+export LYREBIRD_DEFAULT_SAMPLE_RATE=44100
+export LYREBIRD_DEFAULT_CODEC=aac
+export LYREBIRD_DEFAULT_BITRATE=256k
+
+# Override device-specific settings
+export LYREBIRD_DEVICES_BLUE_YETI_SAMPLE_RATE=96000
+export LYREBIRD_DEVICES_BLUE_YETI_CODEC=aac
+
+# Override stream settings
+export LYREBIRD_STREAM_MAX_RESTART_DELAY=600s
+
+# Override MediaMTX settings
+export LYREBIRD_MEDIAMTX_API_URL=http://custom-host:9997
+```
+
+**Precedence Order** (highest to lowest):
+1. Environment variables (`LYREBIRD_*`)
+2. YAML configuration file (`/etc/lyrebird/config.yaml`)
+3. Built-in defaults
+
+This makes LyreBird a true [12-factor app](https://12factor.net/config), perfect for Docker/Kubernetes deployments:
+
+```yaml
+# Kubernetes example
+env:
+  - name: LYREBIRD_DEFAULT_BITRATE
+    value: "256k"
+  - name: LYREBIRD_MEDIAMTX_API_URL
+    value: "http://mediamtx-service:9997"
+```
+
+#### Hot-Reload Configuration
+
+The daemon supports configuration hot-reload without downtime via SIGHUP:
+
+```bash
+# Edit configuration
+sudo vim /etc/lyrebird/config.yaml
+
+# Reload configuration without stopping streams
+sudo systemctl reload lyrebird-stream
+
+# Or send SIGHUP directly
+sudo pkill -HUP lyrebird-stream
+```
+
+Configuration changes are reloaded immediately. Future enhancements will restart only affected streams.
+
 ### Migration from Bash
 
 **Timeline**: The bash version will be supported until this Go implementation reaches feature parity and completes field testing (estimated: Q2 2025).
