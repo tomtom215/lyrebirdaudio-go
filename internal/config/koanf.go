@@ -20,10 +20,10 @@ import (
 //   - Override precedence (env vars override YAML)
 //   - Backward compatibility with existing LoadConfig() API
 type KoanfConfig struct {
-	k        *koanf.Koanf
-	filePath string
-	envPrefix string
-	watchCtx context.Context
+	k           *koanf.Koanf
+	filePath    string
+	envPrefix   string
+	watchCtx    context.Context
 	watchCancel context.CancelFunc
 }
 
@@ -49,9 +49,9 @@ func WithEnvPrefix(prefix string) Option {
 // NewKoanfConfig creates a new koanf-based configuration loader.
 //
 // It loads configuration from multiple sources with the following precedence (highest to lowest):
-//   1. Environment variables (LYREBIRD_*)
-//   2. YAML configuration file
-//   3. Built-in defaults
+//  1. Environment variables (LYREBIRD_*)
+//  2. YAML configuration file
+//  3. Built-in defaults
 //
 // Parameters:
 //   - opts: Configuration options (WithYAMLFile, WithEnvPrefix, etc.)

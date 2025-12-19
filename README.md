@@ -53,7 +53,7 @@ LyreBirdAudio-Go is a complete rewrite of [LyreBirdAudio](https://github.com/tom
 ### Prerequisites
 
 - Linux kernel 4.4+ (Ubuntu 20.04+, Debian 11+, Raspberry Pi OS)
-- Go 1.21+ (for building from source)
+- Go 1.24+ (for building from source; required for koanf hot-reload features)
 - FFmpeg with ALSA support
 - systemd (for service management)
 - udev (for device persistence)

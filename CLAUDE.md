@@ -1,7 +1,7 @@
 # CLAUDE.md - LyreBirdAudio Go Codebase Guide
 
 **Project**: LyreBirdAudio - USB audio streaming to RTSP (Go port)
-**Go Version**: 1.23
+**Go Version**: 1.24+ (required for koanf file watching via fsnotify)
 **Repository**: github.com/tomtom215/lyrebirdaudio-go
 
 ---

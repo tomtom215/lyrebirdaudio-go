@@ -55,9 +55,9 @@ type MediaMTXConfig struct {
 
 // MonitorConfig contains health monitoring settings.
 type MonitorConfig struct {
-	Enabled          bool          `yaml:"enabled" koanf:"enabled"`                       // Enable health monitoring
-	Interval         time.Duration `yaml:"interval" koanf:"interval"`                     // Health check interval
-	RestartUnhealthy bool          `yaml:"restart_unhealthy" koanf:"restart_unhealthy"`   // Auto-restart failed streams
+	Enabled          bool          `yaml:"enabled" koanf:"enabled"`                     // Enable health monitoring
+	Interval         time.Duration `yaml:"interval" koanf:"interval"`                   // Health check interval
+	RestartUnhealthy bool          `yaml:"restart_unhealthy" koanf:"restart_unhealthy"` // Auto-restart failed streams
 }
 
 // LoadConfig reads and parses the configuration file.
