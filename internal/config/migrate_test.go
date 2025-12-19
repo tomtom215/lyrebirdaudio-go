@@ -257,6 +257,82 @@ func TestParseBashEnvLine(t *testing.T) {
 	}
 }
 
+// TestMigrateFromBashInvalidValues tests error handling for invalid values during migration.
+func TestMigrateFromBashInvalidValues(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		wantErr bool
+	}{
+		{
+			name:    "invalid default sample rate",
+			content: "DEFAULT_SAMPLE_RATE=not_a_number",
+			wantErr: true,
+		},
+		{
+			name:    "invalid default channels",
+			content: "DEFAULT_CHANNELS=abc",
+			wantErr: true,
+		},
+		{
+			name:    "invalid default thread queue",
+			content: "DEFAULT_THREAD_QUEUE_SIZE=xyz",
+			wantErr: true,
+		},
+		{
+			name:    "invalid device sample rate",
+			content: "SAMPLE_RATE_test_device=not_a_number",
+			wantErr: true,
+		},
+		{
+			name:    "invalid device channels",
+			content: "CHANNELS_test_device=abc",
+			wantErr: true,
+		},
+		{
+			name:    "invalid device thread queue",
+			content: "THREAD_QUEUE_SIZE_test_device=xyz",
+			wantErr: true,
+		},
+		{
+			name:    "valid default bitrate (string)",
+			content: "DEFAULT_BITRATE=128k",
+			wantErr: false,
+		},
+		{
+			name:    "valid default codec",
+			content: "DEFAULT_CODEC=aac",
+			wantErr: false,
+		},
+		{
+			name:    "valid device bitrate (string)",
+			content: "BITRATE_test_device=256k",
+			wantErr: false,
+		},
+		{
+			name:    "valid device codec",
+			content: "CODEC_test_device=opus",
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			bashPath := filepath.Join(tmpDir, "config.conf")
+
+			if err := os.WriteFile(bashPath, []byte(tt.content), 0644); err != nil {
+				t.Fatalf("Failed to create test file: %v", err)
+			}
+
+			_, err := MigrateFromBash(bashPath)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("MigrateFromBash() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 // BenchmarkMigrateFromBash measures migration performance.
 func BenchmarkMigrateFromBash(b *testing.B) {
 	bashConfigPath := filepath.Join("..", "..", "testdata", "config", "bash-env.conf")

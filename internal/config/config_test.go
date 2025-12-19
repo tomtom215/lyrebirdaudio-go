@@ -587,6 +587,125 @@ func TestDeviceConfigValidatePartial(t *testing.T) {
 	}
 }
 
+// TestValidateConfigWithInvalidDevice tests Config.Validate() with invalid device config.
+func TestValidateConfigWithInvalidDevice(t *testing.T) {
+	tests := []struct {
+		name    string
+		config  *Config
+		wantErr bool
+		errPart string
+	}{
+		{
+			name: "valid config with devices",
+			config: &Config{
+				Default: DeviceConfig{
+					SampleRate:  48000,
+					Channels:    2,
+					Bitrate:     "128k",
+					Codec:       "opus",
+					ThreadQueue: 8192,
+				},
+				Devices: map[string]DeviceConfig{
+					"blue_yeti": {
+						SampleRate: 96000,
+						Channels:   1,
+						Codec:      "aac",
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "invalid device - negative sample rate",
+			config: &Config{
+				Default: DeviceConfig{
+					SampleRate:  48000,
+					Channels:    2,
+					Bitrate:     "128k",
+					Codec:       "opus",
+					ThreadQueue: 8192,
+				},
+				Devices: map[string]DeviceConfig{
+					"bad_device": {
+						SampleRate: -1,
+					},
+				},
+			},
+			wantErr: true,
+			errPart: "device \"bad_device\"",
+		},
+		{
+			name: "invalid device - invalid codec",
+			config: &Config{
+				Default: DeviceConfig{
+					SampleRate:  48000,
+					Channels:    2,
+					Bitrate:     "128k",
+					Codec:       "opus",
+					ThreadQueue: 8192,
+				},
+				Devices: map[string]DeviceConfig{
+					"bad_device": {
+						Codec: "mp3",
+					},
+				},
+			},
+			wantErr: true,
+			errPart: "device \"bad_device\": codec must be opus or aac",
+		},
+		{
+			name: "invalid device - too many channels",
+			config: &Config{
+				Default: DeviceConfig{
+					SampleRate:  48000,
+					Channels:    2,
+					Bitrate:     "128k",
+					Codec:       "opus",
+					ThreadQueue: 8192,
+				},
+				Devices: map[string]DeviceConfig{
+					"bad_device": {
+						Channels: 50,
+					},
+				},
+			},
+			wantErr: true,
+			errPart: "device \"bad_device\": channels must be between 1 and 32",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.config.Validate()
+
+			if tt.wantErr {
+				if err == nil {
+					t.Error("Validate() expected error, got nil")
+				} else if tt.errPart != "" && !contains(err.Error(), tt.errPart) {
+					t.Errorf("Validate() error = %q, want to contain %q", err.Error(), tt.errPart)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Validate() unexpected error: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsHelper(s, substr))
+}
+
+func containsHelper(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
+
 // BenchmarkGetDeviceConfig measures device lookup performance.
 func BenchmarkGetDeviceConfig(b *testing.B) {
 	configPath := filepath.Join("..", "..", "testdata", "config", "valid.yaml")
