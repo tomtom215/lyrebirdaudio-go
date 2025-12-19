@@ -116,20 +116,44 @@ OPTIONS:
     --help, -h        Show help for specific command
 
 EXAMPLES:
-    # Interactive setup
+    # Interactive setup (recommended for first-time users)
     sudo lyrebird setup
 
-    # List detected devices
+    # Non-interactive setup
+    sudo lyrebird setup --auto
+
+    # List detected USB audio devices
     lyrebird devices
 
-    # Create USB device mappings
+    # Detect device capabilities
+    lyrebird detect
+
+    # Create persistent USB device mappings (requires reboot)
     sudo lyrebird usb-map
+
+    # Show stream status
+    lyrebird status
+
+    # Show stream status as JSON (for scripting)
+    lyrebird status --json
 
     # Migrate from bash configuration
     lyrebird migrate --from=/etc/mediamtx/audio-devices.conf --to=/etc/lyrebird/config.yaml
 
     # Validate configuration
     lyrebird validate --config=/etc/lyrebird/config.yaml
+
+    # Test configuration without making changes
+    lyrebird test --config=/etc/lyrebird/config.yaml
+
+    # Run system diagnostics
+    lyrebird diagnose
+
+    # Install MediaMTX RTSP server
+    sudo lyrebird install-mediamtx
+
+    # Check for updates
+    lyrebird update --check
 
 For more information, visit: https://github.com/tomtom215/lyrebirdaudio-go
 `, Version, defaultConfigPath)
