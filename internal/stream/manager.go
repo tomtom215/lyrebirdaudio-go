@@ -70,23 +70,23 @@ func (s State) String() string {
 
 // ManagerConfig contains configuration for a stream manager.
 type ManagerConfig struct {
-	DeviceName      string              // Sanitized device name (e.g., "blue_yeti")
-	ALSADevice      string              // ALSA device identifier (e.g., "hw:0,0") or lavfi source
-	InputFormat     string              // Input format: "alsa" or "lavfi" (default: "alsa")
-	StreamName      string              // Stream name for MediaMTX path
-	SampleRate      int                 // Sample rate in Hz
-	Channels        int                 // Number of channels
-	Bitrate         string              // Bitrate (e.g., "128k")
-	Codec           string              // Codec ("opus" or "aac")
-	ThreadQueue     int                 // FFmpeg thread queue size (optional)
-	RTSPURL         string              // Full RTSP URL or file path for output
-	OutputFormat    string              // Output format: "rtsp", "null", or empty for auto-detect (default: "rtsp")
-	LockDir         string              // Directory for lock files
-	FFmpegPath      string              // Path to ffmpeg binary
-	Backoff         *Backoff            // Backoff policy for restarts
-	Logger          io.Writer           // Optional logger for debug output (nil = no logging)
-	LogDir          string              // Directory for FFmpeg log files (empty = no logging)
-	MonitorInterval time.Duration       // Interval for resource monitoring (0 = disabled)
+	DeviceName      string                // Sanitized device name (e.g., "blue_yeti")
+	ALSADevice      string                // ALSA device identifier (e.g., "hw:0,0") or lavfi source
+	InputFormat     string                // Input format: "alsa" or "lavfi" (default: "alsa")
+	StreamName      string                // Stream name for MediaMTX path
+	SampleRate      int                   // Sample rate in Hz
+	Channels        int                   // Number of channels
+	Bitrate         string                // Bitrate (e.g., "128k")
+	Codec           string                // Codec ("opus" or "aac")
+	ThreadQueue     int                   // FFmpeg thread queue size (optional)
+	RTSPURL         string                // Full RTSP URL or file path for output
+	OutputFormat    string                // Output format: "rtsp", "null", or empty for auto-detect (default: "rtsp")
+	LockDir         string                // Directory for lock files
+	FFmpegPath      string                // Path to ffmpeg binary
+	Backoff         *Backoff              // Backoff policy for restarts
+	Logger          io.Writer             // Optional logger for debug output (nil = no logging)
+	LogDir          string                // Directory for FFmpeg log files (empty = no logging)
+	MonitorInterval time.Duration         // Interval for resource monitoring (0 = disabled)
 	AlertCallback   func([]ResourceAlert) // Optional callback for resource alerts
 }
 

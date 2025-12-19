@@ -513,11 +513,11 @@ func runValidate(args []string) error {
 
 // StatusOutput represents the JSON output format for status command.
 type StatusOutput struct {
-	ServiceStatus  string         `json:"service_status"`
-	DeviceCount    int            `json:"device_count"`
-	ActiveStreams  []StreamStatus `json:"active_streams"`
-	AvailableURLs  []StreamURL    `json:"available_urls"`
-	Error          string         `json:"error,omitempty"`
+	ServiceStatus string         `json:"service_status"`
+	DeviceCount   int            `json:"device_count"`
+	ActiveStreams []StreamStatus `json:"active_streams"`
+	AvailableURLs []StreamURL    `json:"available_urls"`
+	Error         string         `json:"error,omitempty"`
 }
 
 // StreamStatus represents the status of an individual stream.
