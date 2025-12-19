@@ -9,8 +9,6 @@
 # Build variables
 BINARY_NAME := lyrebird
 STREAM_BINARY := lyrebird-stream
-USB_BINARY := lyrebird-usb
-INSTALL_BINARY := lyrebird-install
 
 BUILD_DIR := bin
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -36,7 +34,7 @@ help:
 	@echo "  make <target>"
 	@echo ""
 	@echo "Targets:"
-	@awk 'BEGIN {FS = ":.*##"; printf "\n"} /^[a-zA-Z_-]+:.*?##/ { printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2 } /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) } ' $(MAKEFILE_LIST)
+	@awk '/^## [a-zA-Z_-]+:/ { split($$0, a, ": "); target=substr(a[1], 4); desc=a[2]; printf "  \033[36m%-20s\033[0m %s\n", target, desc }' $(MAKEFILE_LIST)
 
 ## build: Build all binaries for current platform
 build:
