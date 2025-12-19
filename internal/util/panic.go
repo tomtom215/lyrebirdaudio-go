@@ -28,7 +28,7 @@ func SafeGo(name string, logger io.Writer, fn func(), onPanic func(interface{}, 
 
 				// Log the panic
 				if logger != nil {
-					fmt.Fprintf(logger, "[PANIC in %s] %v\n%s\n", name, r, stack)
+					_, _ = fmt.Fprintf(logger, "[PANIC in %s] %v\n%s\n", name, r, stack)
 				}
 
 				// Call panic callback if provided
@@ -67,7 +67,7 @@ func SafeGoWithRecover(name string, logger io.Writer, fn func() error, errCh cha
 
 				// Log the panic
 				if logger != nil {
-					fmt.Fprintf(logger, "[PANIC in %s] %v\n%s\n", name, r, stack)
+					_, _ = fmt.Fprintf(logger, "[PANIC in %s] %v\n%s\n", name, r, stack)
 				}
 
 				// Call panic callback if provided

@@ -140,7 +140,7 @@ func New(cfg Config) *Supervisor {
 func (s *Supervisor) logf(format string, args ...interface{}) {
 	if s.cfg.Logger != nil {
 		s.logMu.Lock()
-		fmt.Fprintf(s.cfg.Logger, "[Supervisor] "+format+"\n", args...)
+		_, _ = fmt.Fprintf(s.cfg.Logger, "[Supervisor] "+format+"\n", args...)
 		s.logMu.Unlock()
 	}
 }

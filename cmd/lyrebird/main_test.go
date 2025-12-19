@@ -63,9 +63,9 @@ func TestRun(t *testing.T) {
 			wantErr: false, // Stub command doesn't error
 		},
 		{
-			name:    "test command (stub)",
+			name:    "test command (needs config)",
 			args:    []string{"test"},
-			wantErr: false, // Stub command doesn't error
+			wantErr: true, // Will fail because default config doesn't exist in test
 		},
 		{
 			name:    "diagnose command (stub)",

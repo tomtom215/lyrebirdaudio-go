@@ -201,11 +201,29 @@ func main() {
 					continue
 				}
 				logger.Println("Configuration reloaded successfully")
-				// Note: In a full implementation, we would:
-				// 1. Compare old vs new config
-				// 2. Restart only changed streams
-				// 3. Add/remove streams for new/removed devices
-				// For now, we just reload the config and log it
+
+				// Re-detect devices and log configuration changes
+				newDevices, err := audio.DetectDevices("/proc/asound")
+				if err != nil {
+					logger.Printf("Warning: Failed to re-detect devices: %v", err)
+				} else {
+					// Get updated config
+					newCfg, err := koanfCfg.Load()
+					if err != nil {
+						logger.Printf("Warning: Failed to load updated config: %v", err)
+					} else {
+						// Log configuration for detected devices
+						for _, dev := range newDevices {
+							devName := audio.SanitizeDeviceName(dev.Name)
+							devCfg := newCfg.GetDeviceConfig(devName)
+							logger.Printf("[SIGHUP] Device %s config: %dHz, %dch, %s, %s",
+								devName, devCfg.SampleRate, devCfg.Channels, devCfg.Codec, devCfg.Bitrate)
+						}
+					}
+				}
+
+				logger.Println("Note: Stream restart required for config changes to take effect")
+				logger.Println("      Use 'systemctl restart lyrebird-stream' to apply changes")
 			case <-ctx.Done():
 				return
 			}
@@ -342,7 +360,7 @@ func printUsage() {
 	fmt.Println()
 	fmt.Println("Signals:")
 	fmt.Println("  SIGINT, SIGTERM  Graceful shutdown")
-	fmt.Println("  SIGHUP           Reload configuration")
+	fmt.Println("  SIGHUP           Reload configuration and log new settings")
 	fmt.Println()
 	fmt.Println("Environment Variables:")
 	fmt.Println("  LYREBIRD_DEFAULT_SAMPLE_RATE     Override default sample rate")
