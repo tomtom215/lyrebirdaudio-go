@@ -84,7 +84,7 @@ func TestGetLatestRelease(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Request failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var gotRelease Release
 	if err := json.NewDecoder(resp.Body).Decode(&gotRelease); err != nil {
@@ -508,7 +508,7 @@ func TestGetReleaseNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Request failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("Expected 404, got %d", resp.StatusCode)

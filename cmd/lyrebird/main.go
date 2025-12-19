@@ -895,7 +895,7 @@ func runInstallMediaMTX(args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create temp directory: %w", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	tarPath := filepath.Join(tmpDir, "mediamtx.tar.gz")
 

@@ -160,7 +160,7 @@ func NewManager(cfg *ManagerConfig) (*Manager, error) {
 // logf writes a formatted log message if Logger is configured.
 func (m *Manager) logf(format string, args ...interface{}) {
 	if m.cfg.Logger != nil {
-		fmt.Fprintf(m.cfg.Logger, "[Manager %s] "+format+"\n", append([]interface{}{m.cfg.DeviceName}, args...)...)
+		_, _ = fmt.Fprintf(m.cfg.Logger, "[Manager %s] "+format+"\n", append([]interface{}{m.cfg.DeviceName}, args...)...)
 	}
 }
 

@@ -257,7 +257,7 @@ func (w *RotatingWriter) compressFile(path string) {
 	if err != nil {
 		return
 	}
-	defer gzFile.Close()
+	defer func() { _ = gzFile.Close() }()
 
 	// Write compressed data
 	gzWriter := gzip.NewWriter(gzFile)

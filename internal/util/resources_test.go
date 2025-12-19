@@ -36,8 +36,8 @@ func TestResourceTrackerFiles(t *testing.T) {
 	}
 
 	// Clean up
-	file.Close()
-	os.Remove(tmpFile)
+	_ = file.Close()
+	_ = os.Remove(tmpFile)
 }
 
 // TestResourceTrackerProcesses verifies process tracking.
@@ -109,8 +109,8 @@ func TestResourceTrackerLeaks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create test file: %v", err)
 	}
-	defer file.Close()
-	defer os.Remove(tmpFile)
+	defer func() { _ = file.Close() }()
+	defer func() { _ = os.Remove(tmpFile) }()
 
 	tracker.TrackFile("leaked-file", file)
 	tracker.TrackResource("leaked-lock", "lock")
@@ -203,8 +203,8 @@ func TestResourceTrackerCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create test file: %v", err)
 	}
-	defer file.Close()
-	defer os.Remove(tmpFile)
+	defer func() { _ = file.Close() }()
+	defer func() { _ = os.Remove(tmpFile) }()
 
 	tracker.TrackFile("file", file)
 	tracker.TrackProcess("process", &os.Process{})

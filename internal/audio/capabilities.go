@@ -195,7 +195,7 @@ func parseStreamFile(path string, caps *Capabilities) error {
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	scanner := bufio.NewScanner(file)
 	inCaptureSection := false

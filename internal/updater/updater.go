@@ -169,7 +169,7 @@ func (u *Updater) GetLatestRelease(ctx context.Context) (*Release, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, fmt.Errorf("no releases found")
@@ -201,7 +201,7 @@ func (u *Updater) ListReleases(ctx context.Context) ([]Release, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("GitHub API returned status %d", resp.StatusCode)
@@ -241,7 +241,7 @@ func (u *Updater) GetRelease(ctx context.Context, tag string) (*Release, error) 
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, fmt.Errorf("release %s not found", tag)
@@ -270,7 +270,7 @@ func (u *Updater) Download(ctx context.Context, url, destPath string, progress f
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("download failed with status %d", resp.StatusCode)
@@ -282,7 +282,7 @@ func (u *Updater) Download(ctx context.Context, url, destPath string, progress f
 	if err != nil {
 		return fmt.Errorf("failed to create file: %w", err)
 	}
-	defer out.Close()
+	defer func() { _ = out.Close() }()
 
 	// Download with progress
 	var downloaded int64
@@ -327,7 +327,7 @@ func (u *Updater) Update(ctx context.Context, info *UpdateInfo, binaryPath strin
 	if err != nil {
 		return fmt.Errorf("failed to create temp directory: %w", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	// Download to temp file
 	downloadPath := filepath.Join(tmpDir, info.AssetName)
@@ -459,13 +459,13 @@ func extractBinaryFromTarGz(archivePath, destDir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	gzReader, err := gzip.NewReader(file)
 	if err != nil {
 		return "", err
 	}
-	defer gzReader.Close()
+	defer func() { _ = gzReader.Close() }()
 
 	tarReader := tar.NewReader(gzReader)
 
@@ -522,7 +522,7 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer source.Close()
+	defer func() { _ = source.Close() }()
 
 	// Get source file info for permissions
 	info, err := source.Stat()
@@ -535,7 +535,7 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer dest.Close()
+	defer func() { _ = dest.Close() }()
 
 	_, err = io.Copy(dest, source)
 	return err

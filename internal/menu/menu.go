@@ -99,7 +99,7 @@ func (m *Menu) Display() error {
 
 		m.render()
 
-		fmt.Fprint(m.output, "\nSelect option: ")
+		_, _ = fmt.Fprint(m.output, "\nSelect option: ")
 
 		if !scanner.Scan() {
 			return nil // EOF or input closed
@@ -119,8 +119,8 @@ func (m *Menu) Display() error {
 					}
 				} else if item.Action != nil {
 					if err := item.Action(); err != nil {
-						fmt.Fprintf(m.output, "\nError: %v\n", err)
-						fmt.Fprint(m.output, "Press Enter to continue...")
+						_, _ = fmt.Fprintf(m.output, "\nError: %v\n", err)
+						_, _ = fmt.Fprint(m.output, "Press Enter to continue...")
 						scanner.Scan()
 					}
 				}
@@ -151,27 +151,27 @@ func (m *Menu) render() {
 
 	// Draw box
 	border := strings.Repeat("═", width)
-	fmt.Fprintf(m.output, "╔%s╗\n", border)
-	fmt.Fprintf(m.output, "║%s║\n", centerText(m.Title, width))
-	fmt.Fprintf(m.output, "╠%s╣\n", border)
+	_, _ = fmt.Fprintf(m.output, "╔%s╗\n", border)
+	_, _ = fmt.Fprintf(m.output, "║%s║\n", centerText(m.Title, width))
+	_, _ = fmt.Fprintf(m.output, "╠%s╣\n", border)
 
 	// Draw items
 	for _, item := range m.Items {
 		if item.Key == "" && item.Label == "" {
 			// Separator
-			fmt.Fprintf(m.output, "╟%s╢\n", strings.Repeat("─", width))
+			_, _ = fmt.Fprintf(m.output, "╟%s╢\n", strings.Repeat("─", width))
 		} else if item.Hidden {
 			continue
 		} else {
 			text := fmt.Sprintf("  %s. %s", item.Key, item.Label)
-			fmt.Fprintf(m.output, "║%-*s║\n", width, text)
+			_, _ = fmt.Fprintf(m.output, "║%-*s║\n", width, text)
 		}
 	}
 
-	fmt.Fprintf(m.output, "╚%s╝\n", border)
+	_, _ = fmt.Fprintf(m.output, "╚%s╝\n", border)
 
 	if m.Footer != "" {
-		fmt.Fprintf(m.output, "\n%s\n", m.Footer)
+		_, _ = fmt.Fprintf(m.output, "\n%s\n", m.Footer)
 	}
 }
 
@@ -187,7 +187,7 @@ func centerText(text string, width int) string {
 // clearScreen clears the terminal screen.
 func clearScreen(w io.Writer) {
 	// ANSI escape sequence to clear screen and move cursor to top-left
-	fmt.Fprint(w, "\033[2J\033[H")
+	_, _ = fmt.Fprint(w, "\033[2J\033[H")
 }
 
 // WaitForKey waits for the user to press Enter.
@@ -195,13 +195,13 @@ func WaitForKey(r io.Reader, w io.Writer, prompt string) {
 	if prompt == "" {
 		prompt = "Press Enter to continue..."
 	}
-	fmt.Fprint(w, prompt)
+	_, _ = fmt.Fprint(w, prompt)
 	bufio.NewScanner(r).Scan()
 }
 
 // Confirm asks the user for confirmation.
 func Confirm(r io.Reader, w io.Writer, prompt string) bool {
-	fmt.Fprintf(w, "%s [y/N]: ", prompt)
+	_, _ = fmt.Fprintf(w, "%s [y/N]: ", prompt)
 
 	scanner := bufio.NewScanner(r)
 	if !scanner.Scan() {
@@ -214,11 +214,11 @@ func Confirm(r io.Reader, w io.Writer, prompt string) bool {
 
 // Select presents options and returns the selected index.
 func Select(r io.Reader, w io.Writer, prompt string, options []string) int {
-	fmt.Fprintln(w, prompt)
+	_, _ = fmt.Fprintln(w, prompt)
 	for i, opt := range options {
-		fmt.Fprintf(w, "  %d. %s\n", i+1, opt)
+		_, _ = fmt.Fprintf(w, "  %d. %s\n", i+1, opt)
 	}
-	fmt.Fprint(w, "Selection: ")
+	_, _ = fmt.Fprint(w, "Selection: ")
 
 	scanner := bufio.NewScanner(r)
 	if !scanner.Scan() {

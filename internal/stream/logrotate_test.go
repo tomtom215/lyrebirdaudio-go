@@ -15,7 +15,7 @@ func TestNewRotatingWriter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRotatingWriter failed: %v", err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	if w.Path() != logPath {
 		t.Errorf("Path() = %q, want %q", w.Path(), logPath)
@@ -34,7 +34,7 @@ func TestNewRotatingWriterWithOptions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRotatingWriter failed: %v", err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	if w.Path() != logPath {
 		t.Errorf("Path() = %q, want %q", w.Path(), logPath)
@@ -49,7 +49,7 @@ func TestRotatingWriterWrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRotatingWriter failed: %v", err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	// Write some data
 	testData := "Hello, World!\n"
@@ -76,7 +76,7 @@ func TestRotatingWriterRotate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRotatingWriter failed: %v", err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	// Write data to trigger rotation
 	for i := 0; i < 5; i++ {
@@ -219,7 +219,7 @@ func TestRotatingWriterCompression(t *testing.T) {
 		}
 	}
 
-	w.Close()
+	_ = w.Close()
 
 	// Check for compressed files
 	matches, _ := filepath.Glob(logPath + ".*.gz")
@@ -265,7 +265,7 @@ func TestRotatingWriterCreatesDirs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRotatingWriter failed: %v", err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	// Parent directories should be created
 	if _, err := os.Stat(filepath.Dir(logPath)); os.IsNotExist(err) {

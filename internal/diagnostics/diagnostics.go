@@ -553,7 +553,7 @@ func (r *Runner) checkMediaMTXAPI(ctx context.Context) CheckResult {
 		result.Duration = time.Since(start)
 		return result
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == 200 {
 		result.Status = StatusOK
@@ -1099,13 +1099,13 @@ func isPortOpen(addr string) bool {
 
 // PrintReport prints a formatted diagnostic report.
 func PrintReport(w io.Writer, report *DiagnosticReport) {
-	fmt.Fprintf(w, "LyreBirdAudio Diagnostics Report\n")
-	fmt.Fprintf(w, "================================\n\n")
+	_, _ = fmt.Fprintf(w, "LyreBirdAudio Diagnostics Report\n")
+	_, _ = fmt.Fprintf(w, "================================\n\n")
 
-	fmt.Fprintf(w, "System: %s (%s/%s)\n", report.SystemInfo.Hostname, report.SystemInfo.OS, report.SystemInfo.Architecture)
-	fmt.Fprintf(w, "Kernel: %s\n", report.SystemInfo.Kernel)
-	fmt.Fprintf(w, "Uptime: %s\n", report.SystemInfo.Uptime)
-	fmt.Fprintf(w, "Time: %s\n\n", report.Timestamp.Format(time.RFC3339))
+	_, _ = fmt.Fprintf(w, "System: %s (%s/%s)\n", report.SystemInfo.Hostname, report.SystemInfo.OS, report.SystemInfo.Architecture)
+	_, _ = fmt.Fprintf(w, "Kernel: %s\n", report.SystemInfo.Kernel)
+	_, _ = fmt.Fprintf(w, "Uptime: %s\n", report.SystemInfo.Uptime)
+	_, _ = fmt.Fprintf(w, "Time: %s\n\n", report.Timestamp.Format(time.RFC3339))
 
 	// Group checks by category
 	categories := make(map[string][]CheckResult)
@@ -1114,7 +1114,7 @@ func PrintReport(w io.Writer, report *DiagnosticReport) {
 	}
 
 	for category, checks := range categories {
-		fmt.Fprintf(w, "\n%s\n%s\n", category, strings.Repeat("-", len(category)))
+		_, _ = fmt.Fprintf(w, "\n%s\n%s\n", category, strings.Repeat("-", len(category)))
 		for _, check := range checks {
 			status := "✓"
 			switch check.Status {
@@ -1127,26 +1127,26 @@ func PrintReport(w io.Writer, report *DiagnosticReport) {
 			case StatusSkipped:
 				status = "○"
 			}
-			fmt.Fprintf(w, "[%s] %s: %s\n", status, check.Name, check.Message)
+			_, _ = fmt.Fprintf(w, "[%s] %s: %s\n", status, check.Name, check.Message)
 			if check.Details != "" {
-				fmt.Fprintf(w, "    %s\n", check.Details)
+				_, _ = fmt.Fprintf(w, "    %s\n", check.Details)
 			}
 			for _, suggestion := range check.Suggestions {
-				fmt.Fprintf(w, "    → %s\n", suggestion)
+				_, _ = fmt.Fprintf(w, "    → %s\n", suggestion)
 			}
 		}
 	}
 
-	fmt.Fprintf(w, "\n\nSummary\n-------\n")
-	fmt.Fprintf(w, "Total: %d | OK: %d | Warning: %d | Critical: %d | Error: %d | Skipped: %d\n",
+	_, _ = fmt.Fprintf(w, "\n\nSummary\n-------\n")
+	_, _ = fmt.Fprintf(w, "Total: %d | OK: %d | Warning: %d | Critical: %d | Error: %d | Skipped: %d\n",
 		report.Summary.Total, report.Summary.OK, report.Summary.Warning,
 		report.Summary.Critical, report.Summary.Error, report.Summary.Skipped)
-	fmt.Fprintf(w, "Duration: %v\n", report.Duration)
+	_, _ = fmt.Fprintf(w, "Duration: %v\n", report.Duration)
 
 	if report.Healthy {
-		fmt.Fprintf(w, "\nSystem Status: HEALTHY\n")
+		_, _ = fmt.Fprintf(w, "\nSystem Status: HEALTHY\n")
 	} else {
-		fmt.Fprintf(w, "\nSystem Status: ISSUES DETECTED\n")
+		_, _ = fmt.Fprintf(w, "\nSystem Status: ISSUES DETECTED\n")
 	}
 }
 

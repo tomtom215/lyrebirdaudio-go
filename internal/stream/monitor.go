@@ -270,7 +270,7 @@ func (m *ResourceMonitor) MonitorProcess(ctx context.Context, pid int, interval 
 			if err != nil {
 				// Process may have exited
 				if m.logger != nil {
-					fmt.Fprintf(m.logger, "Failed to get metrics for PID %d: %v\n", pid, err)
+					_, _ = fmt.Fprintf(m.logger, "Failed to get metrics for PID %d: %v\n", pid, err)
 				}
 				return
 			}
@@ -279,7 +279,7 @@ func (m *ResourceMonitor) MonitorProcess(ctx context.Context, pid int, interval 
 			if len(alerts) > 0 {
 				if m.logger != nil {
 					for _, alert := range alerts {
-						fmt.Fprintf(m.logger, "[%s] PID %d: %s\n", alert.Level, pid, alert.Message)
+						_, _ = fmt.Fprintf(m.logger, "[%s] PID %d: %s\n", alert.Level, pid, alert.Message)
 					}
 				}
 				if alertCallback != nil {
