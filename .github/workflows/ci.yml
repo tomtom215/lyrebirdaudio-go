@@ -23,7 +23,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.24'
           cache: true
 
       - name: Verify go.mod is tidy
@@ -46,8 +46,7 @@ jobs:
         run: go vet ./...
 
       - name: Install golangci-lint
-        run: |
-          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.62.2
+        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.62.2
 
       - name: Run golangci-lint
         run: $(go env GOPATH)/bin/golangci-lint run --timeout 5m ./...
@@ -63,7 +62,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.24'
           cache: true
 
       - name: Install gosec
@@ -83,7 +82,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        go-version: ['1.23']
+        go-version: ['1.24']
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -152,17 +151,58 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.24'
           cache: true
 
-      - name: Build ${{ matrix.goos }}/${{ matrix.goarch }}${{ matrix.goarm && format('v{0}', matrix.goarm) || '' }}
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Get version info
+        id: version
+        run: |
+          echo "VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo 'dev')" >> $GITHUB_OUTPUT
+          echo "COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo 'unknown')" >> $GITHUB_OUTPUT
+          echo "BUILD_TIME=$(date -u '+%Y-%m-%d_%H:%M:%S')" >> $GITHUB_OUTPUT
+
+      - name: Build lyrebird CLI for ${{ matrix.goos }}/${{ matrix.goarch }}${{ matrix.goarm && format('v{0}', matrix.goarm) || '' }}
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           GOARM: ${{ matrix.goarm }}
         run: |
-          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/lyrebird-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goarm && format('v{0}', matrix.goarm) || '' }} ./cmd/lyrebird
+          CGO_ENABLED=0 go build -trimpath \
+            -ldflags "-s -w -X main.Version=${{ steps.version.outputs.VERSION }} -X main.Commit=${{ steps.version.outputs.COMMIT }} -X main.BuildTime=${{ steps.version.outputs.BUILD_TIME }}" \
+            -o bin/lyrebird-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goarm && format('v{0}', matrix.goarm) || '' }} \
+            ./cmd/lyrebird
+
+      - name: Build lyrebird-stream daemon for ${{ matrix.goos }}/${{ matrix.goarch }}${{ matrix.goarm && format('v{0}', matrix.goarm) || '' }}
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+        run: |
+          CGO_ENABLED=0 go build -trimpath \
+            -ldflags "-s -w -X main.Version=${{ steps.version.outputs.VERSION }} -X main.Commit=${{ steps.version.outputs.COMMIT }} -X main.BuildTime=${{ steps.version.outputs.BUILD_TIME }}" \
+            -o bin/lyrebird-stream-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goarm && format('v{0}', matrix.goarm) || '' }} \
+            ./cmd/lyrebird-stream
+
+      - name: Verify builds
+        run: |
           ls -lh bin/
+          # Verify binaries are not empty
+          [ -s bin/lyrebird-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goarm && format('v{0}', matrix.goarm) || '' }} ] || exit 1
+          [ -s bin/lyrebird-stream-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goarm && format('v{0}', matrix.goarm) || '' }} ] || exit 1
+          # For amd64, verify binary can run (only works on native arch)
+          if [ "${{ matrix.goarch }}" = "amd64" ]; then
+            ./bin/lyrebird-${{ matrix.goos }}-${{ matrix.goarch }} version || ./bin/lyrebird-${{ matrix.goos }}-${{ matrix.goarch }} --version || echo "Version check skipped"
+          fi
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goarm && format('v{0}', matrix.goarm) || '' }}
+          path: bin/*
+          retention-days: 7
 
   # Integration tests (requires self-hosted runner with USB devices)
   integration:
@@ -177,7 +217,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.24'
           cache: true
 
       - name: Install ffmpeg
@@ -196,19 +236,18 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     needs: [quality, security, test, build]
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
         with:
-          fetch-depth: 0
+          path: artifacts
+          pattern: binaries-*
+          merge-multiple: false
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.23'
-          cache: true
-
-      - name: Build all platforms
-        run: make build-all
+      - name: Organize binaries
+        run: |
+          mkdir -p bin
+          find artifacts -type f -name 'lyrebird-*' -exec cp {} bin/ \;
+          ls -lh bin/
 
       - name: Create checksums
         run: |

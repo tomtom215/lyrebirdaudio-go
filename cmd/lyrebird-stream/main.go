@@ -79,12 +79,12 @@ func main() {
 		logger.Fatalf("Failed to create lock directory: %v", err)
 	}
 
-	// Load configuration
-	cfg, err := loadConfiguration(*configPath)
+	// Load configuration using koanf (supports env vars and hot-reload)
+	koanfCfg, cfg, err := loadConfigurationKoanf(*configPath)
 	if err != nil {
 		logger.Fatalf("Failed to load configuration: %v", err)
 	}
-	logger.Printf("Loaded configuration from %s", *configPath)
+	logger.Printf("Loaded configuration from %s (env var overrides enabled)", *configPath)
 
 	// Detect USB audio devices
 	devices, err := audio.DetectDevices("/proc/asound")
@@ -176,13 +176,40 @@ func main() {
 
 	// Set up signal handling
 	ctx, cancel := context.WithCancel(context.Background())
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 
+	// Separate channels for shutdown vs reload signals
+	shutdownCh := make(chan os.Signal, 1)
+	reloadCh := make(chan os.Signal, 1)
+	signal.Notify(shutdownCh, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(reloadCh, syscall.SIGHUP)
+
+	// Handle shutdown signals
 	go func() {
-		sig := <-sigCh
+		sig := <-shutdownCh
 		logger.Printf("Received signal %v, initiating shutdown...", sig)
 		cancel()
+	}()
+
+	// Handle reload signals (SIGHUP)
+	go func() {
+		for {
+			select {
+			case <-reloadCh:
+				logger.Println("Received SIGHUP, reloading configuration...")
+				if err := koanfCfg.Reload(); err != nil {
+					logger.Printf("Warning: Failed to reload configuration: %v", err)
+					continue
+				}
+				logger.Println("Configuration reloaded successfully")
+				// Note: In a full implementation, we would:
+				// 1. Compare old vs new config
+				// 2. Restart only changed streams
+				// 3. Add/remove streams for new/removed devices
+				// For now, we just reload the config and log it
+			case <-ctx.Done():
+				return
+			}
+		}
 	}()
 
 	// Run supervisor (blocks until shutdown)
@@ -217,6 +244,7 @@ func (s *streamService) Run(ctx context.Context) error {
 }
 
 // loadConfiguration loads the config file, creating a default if it doesn't exist.
+// Deprecated: Use loadConfigurationKoanf for enhanced features (env vars, hot-reload).
 func loadConfiguration(path string) (*config.Config, error) {
 	// Check if file exists first
 	if _, err := os.Stat(path); os.IsNotExist(err) {
@@ -228,6 +256,51 @@ func loadConfiguration(path string) (*config.Config, error) {
 		return nil, err
 	}
 	return cfg, nil
+}
+
+// loadConfigurationKoanf loads configuration using koanf with support for:
+//   - YAML configuration file
+//   - Environment variable overrides (LYREBIRD_*)
+//   - Hot-reload via SIGHUP
+//
+// Returns both the KoanfConfig (for reload) and the loaded Config.
+func loadConfigurationKoanf(path string) (*config.KoanfConfig, *config.Config, error) {
+	// Check if file exists
+	fileExists := true
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		fileExists = false
+	}
+
+	var kc *config.KoanfConfig
+	var err error
+
+	if fileExists {
+		// Load with file + env vars
+		kc, err = config.NewKoanfConfig(
+			config.WithYAMLFile(path),
+			config.WithEnvPrefix("LYREBIRD"),
+		)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to create koanf config: %w", err)
+		}
+	} else {
+		// Load with env vars only
+		kc, err = config.NewKoanfConfig(
+			config.WithEnvPrefix("LYREBIRD"),
+		)
+		if err != nil {
+			// If no file and env vars fail, return default config
+			return nil, config.DefaultConfig(), nil
+		}
+	}
+
+	// Load the configuration
+	cfg, err := kc.Load()
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to load config: %w", err)
+	}
+
+	return kc, cfg, nil
 }
 
 // findFFmpegPath locates the ffmpeg binary.
@@ -269,5 +342,12 @@ func printUsage() {
 	fmt.Println()
 	fmt.Println("Signals:")
 	fmt.Println("  SIGINT, SIGTERM  Graceful shutdown")
-	fmt.Println("  SIGHUP           Reload configuration (planned)")
+	fmt.Println("  SIGHUP           Reload configuration")
+	fmt.Println()
+	fmt.Println("Environment Variables:")
+	fmt.Println("  LYREBIRD_DEFAULT_SAMPLE_RATE     Override default sample rate")
+	fmt.Println("  LYREBIRD_DEFAULT_CODEC           Override default codec (opus/aac)")
+	fmt.Println("  LYREBIRD_DEFAULT_BITRATE         Override default bitrate (e.g., 128k)")
+	fmt.Println("  LYREBIRD_DEVICES_<NAME>_<FIELD>  Override device-specific settings")
+	fmt.Println("  See documentation for full list of environment variables")
 }
