@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package stream
 
 import (
@@ -172,6 +174,17 @@ func (b *Backoff) MaxAttempts() int {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return b.maxAttempts
+}
+
+// SuccessThreshold returns the run time threshold that constitutes a successful run.
+// Returns 0 if receiver is nil.
+func (b *Backoff) SuccessThreshold() time.Duration {
+	if b == nil {
+		return 0
+	}
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.successThreshold
 }
 
 // ConsecutiveFailures returns the number of consecutive failures.

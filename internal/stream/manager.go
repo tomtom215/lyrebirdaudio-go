@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Package stream provides FFmpeg process lifecycle management for audio streaming.
 //
 // This package implements the core streaming functionality of LyreBirdAudio,
@@ -25,6 +27,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -84,7 +87,7 @@ type ManagerConfig struct {
 	LockDir         string                // Directory for lock files
 	FFmpegPath      string                // Path to ffmpeg binary
 	Backoff         *Backoff              // Backoff policy for restarts
-	Logger          io.Writer             // Optional logger for debug output (nil = no logging)
+	Logger          *slog.Logger          // Optional structured logger (nil = no logging)
 	LogDir          string                // Directory for FFmpeg log files (empty = no logging)
 	MonitorInterval time.Duration         // Interval for resource monitoring (0 = disabled)
 	AlertCallback   func([]ResourceAlert) // Optional callback for resource alerts
@@ -210,7 +213,7 @@ func NewManager(cfg *ManagerConfig) (*Manager, error) {
 // logf writes a formatted log message if Logger is configured.
 func (m *Manager) logf(format string, args ...interface{}) {
 	if m.cfg.Logger != nil {
-		_, _ = fmt.Fprintf(m.cfg.Logger, "[Manager %s] "+format+"\n", append([]interface{}{m.cfg.DeviceName}, args...)...)
+		m.cfg.Logger.Info(fmt.Sprintf(format, args...), "device", m.cfg.DeviceName)
 	}
 }
 
@@ -307,13 +310,15 @@ func (m *Manager) Run(ctx context.Context) error {
 		}
 
 		// FFmpeg exited cleanly - check if it was a "successful" run
-		if runTime < 300*time.Second {
-			// Short run - treat as failure
+		successThreshold := m.backoff.SuccessThreshold()
+		if runTime < successThreshold {
+			// Short run - treat as failure (use RecordFailure, not RecordSuccess,
+			// to avoid double-counting attempts since RecordSuccess also increments)
 			m.failures.Add(1)
-			m.backoff.RecordSuccess(runTime)
+			m.backoff.RecordFailure()
 
 			m.setState(StateFailed)
-			m.logf("FFmpeg ran for %v (< 300s threshold), treating as failure", runTime)
+			m.logf("FFmpeg ran for %v (< %v threshold), treating as failure", runTime, successThreshold)
 
 			// Wait for backoff
 			if err := m.backoff.WaitContext(ctx); err != nil {
@@ -455,7 +460,9 @@ func (m *Manager) releaseLock() {
 	defer m.mu.Unlock()
 
 	if m.lock != nil {
-		_ = m.lock.Release()
+		if err := m.lock.Release(); err != nil {
+			m.logf("Warning: failed to release lock: %v", err)
+		}
 		m.lock = nil
 	}
 }
@@ -545,16 +552,20 @@ func (m *Manager) stop() {
 	m.mu.Unlock()
 
 	if cmd != nil && cmd.Process != nil {
+		// Capture the process pointer before launching the goroutine to avoid
+		// a race where cmd.Process becomes invalid after Wait() returns.
+		proc := cmd.Process
+
 		// Send SIGINT for graceful shutdown
-		_ = cmd.Process.Signal(os.Interrupt)
+		_ = proc.Signal(os.Interrupt)
 
 		// Give process a brief moment to handle SIGINT gracefully
 		// Then force kill if still running
 		go func() {
 			time.Sleep(2 * time.Second)
-			if cmd.Process != nil {
-				_ = cmd.Process.Kill()
-			}
+			// Use the captured proc pointer; Kill on an already-exited process
+			// returns an error which we intentionally ignore.
+			_ = proc.Kill()
 		}()
 	}
 }

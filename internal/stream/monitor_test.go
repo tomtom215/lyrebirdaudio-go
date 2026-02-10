@@ -2,6 +2,8 @@ package stream
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -417,13 +419,6 @@ func TestParseMemoryBytes(t *testing.T) {
 	}
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 func TestFormatBytes(t *testing.T) {
 	tests := []struct {
 		bytes int64
@@ -452,15 +447,10 @@ func TestFormatBytes(t *testing.T) {
 }
 
 func TestWithLogger(t *testing.T) {
-	// Create a test logger (io.Writer)
-	// The option should set the logger field on ResourceMonitor
-	tmpFile, err := os.CreateTemp(t.TempDir(), "test-log")
-	if err != nil {
-		t.Fatalf("Failed to create temp file: %v", err)
-	}
-	defer tmpFile.Close()
+	// Create a test logger using slog
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	m := NewResourceMonitor(WithLogger(tmpFile))
+	m := NewResourceMonitor(WithLogger(logger))
 	if m == nil {
 		t.Fatal("NewResourceMonitor with WithLogger returned nil")
 	}
@@ -526,7 +516,7 @@ func TestMonitorProcess(t *testing.T) {
 
 	// Create a logger buffer to capture output
 	logBuf := &strings.Builder{}
-	m := NewResourceMonitor(WithProcPath(tmpDir), WithLogger(logBuf))
+	m := NewResourceMonitor(WithProcPath(tmpDir), WithLogger(slog.New(slog.NewTextHandler(logBuf, nil))))
 
 	// Create context with cancellation
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
@@ -578,7 +568,7 @@ func TestMonitorProcessWithAlerts(t *testing.T) {
 	}
 
 	logBuf := &strings.Builder{}
-	m := NewResourceMonitor(WithProcPath(tmpDir), WithLogger(logBuf))
+	m := NewResourceMonitor(WithProcPath(tmpDir), WithLogger(slog.New(slog.NewTextHandler(logBuf, nil))))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()
@@ -606,7 +596,7 @@ func TestMonitorProcessExitedProcess(t *testing.T) {
 	// Use a non-existent PID to test error handling
 	tmpDir := t.TempDir()
 	logBuf := &strings.Builder{}
-	m := NewResourceMonitor(WithProcPath(tmpDir), WithLogger(logBuf))
+	m := NewResourceMonitor(WithProcPath(tmpDir), WithLogger(slog.New(slog.NewTextHandler(logBuf, nil))))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
@@ -797,4 +787,92 @@ func TestParseMemoryBytesEdgeCases(t *testing.T) {
 			}
 		})
 	}
+}
+
+// FuzzParseThreadCount fuzz tests parseThreadCount with arbitrary /proc/pid/stat content.
+//
+// Invariants verified:
+//   - No panics on any input
+//   - Return value is always >= 0
+func FuzzParseThreadCount(f *testing.F) {
+	// Seed corpus: realistic /proc/pid/stat formats and edge cases
+	seeds := []string{
+		// Valid stat lines with various thread counts
+		"1 (test) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 5 0 1 0\n",
+		"12345 (test) S 1 12345 12345 0 -1 4194304 100 0 0 0 10 5 0 0 20 0 3 0 1000 1000000 100\n",
+		"999 (ffmpeg) R 1 999 999 0 -1 0 0 0 0 0 100 50 0 0 20 0 12 0 5000 2000000 200\n",
+		"1 (test process) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 7 0 1 0\n",
+
+		// Edge cases
+		"",
+		"invalid",
+		"no_closing_paren",
+		"1 (test) S 1 2", // Too few fields after comm
+		"1 (test) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 abc 0", // Non-numeric thread count
+		"1 () S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 1 0\n",      // Empty comm field
+		") S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 1 0\n",         // Leading closing paren
+		"1 (a)b) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 2 0 1 0\n",   // Paren in comm name
+		"1 (test) S",                             // Minimal fields
+		"1 (test)",                               // Just pid and comm
+		"\n\n\n",                                 // Only newlines
+		"1 (test) S " + strings.Repeat("0 ", 50), // Many fields
+		"1 (test) S " + strings.Repeat("999999999 ", 20), // Large numeric values
+	}
+
+	for _, seed := range seeds {
+		f.Add(seed)
+	}
+
+	f.Fuzz(func(t *testing.T, stat string) {
+		result := parseThreadCount(stat)
+
+		// Invariant 1: Return value must be >= 0
+		if result < 0 {
+			t.Errorf("parseThreadCount(%q) = %d, want >= 0", stat, result)
+		}
+	})
+}
+
+// FuzzParseMemoryBytes fuzz tests parseMemoryBytes with arbitrary /proc/pid/statm content.
+//
+// Invariants verified:
+//   - No panics on any input
+//   - Return value is always >= 0
+func FuzzParseMemoryBytes(f *testing.F) {
+	// Seed corpus: realistic /proc/pid/statm formats and edge cases
+	seeds := []string{
+		// Valid statm lines: size resident shared text lib data dt
+		"1000 500 100 10 0 500 0",
+		"50000 25000 5000 100 0 20000 0",
+		"0 0 0 0 0 0 0",
+		"1 1 0 0 0 0 0",
+
+		// Edge cases
+		"",
+		"invalid",
+		"abc def",
+		"1000",                                // Single field, no resident field
+		"1000 abc",                            // Non-numeric resident field
+		"-1 -500 0 0 0 0 0",                   // Negative values
+		"0 0",                                 // Minimal valid (two fields)
+		"999999999999 999999999999 0 0 0 0 0", // Very large values
+		"\t100\t200\t300",                     // Tab-separated
+		"  100  200  300  ",                   // Extra whitespace
+		"\n",                                  // Just newline
+		"100 200\n",                           // Trailing newline (common in /proc)
+		"100 200 300 400 500 600 700 800 900", // Extra fields
+	}
+
+	for _, seed := range seeds {
+		f.Add(seed)
+	}
+
+	f.Fuzz(func(t *testing.T, statm string) {
+		result := parseMemoryBytes(statm)
+
+		// Invariant 1: Return value must be >= 0
+		if result < 0 {
+			t.Errorf("parseMemoryBytes(%q) = %d, want >= 0", statm, result)
+		}
+	})
 }

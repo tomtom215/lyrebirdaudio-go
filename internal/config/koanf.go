@@ -1,9 +1,12 @@
+// SPDX-License-Identifier: MIT
+
 package config
 
 import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/knadh/koanf/parsers/yaml"
@@ -21,6 +24,7 @@ import (
 //   - Backward compatibility with existing LoadConfig() API
 type KoanfConfig struct {
 	k         *koanf.Koanf
+	mu        sync.RWMutex
 	filePath  string
 	envPrefix string
 }
@@ -97,8 +101,12 @@ func NewKoanfConfig(opts ...Option) (*KoanfConfig, error) {
 func (kc *KoanfConfig) Load() (*Config, error) {
 	var cfg Config
 
+	kc.mu.RLock()
+	k := kc.k
+	kc.mu.RUnlock()
+
 	// Unmarshal into struct
-	if err := kc.k.Unmarshal("", &cfg); err != nil {
+	if err := k.Unmarshal("", &cfg); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
 
@@ -191,8 +199,10 @@ func (kc *KoanfConfig) reload() error {
 		return fmt.Errorf("failed to load environment variables: %w", err)
 	}
 
-	// Atomic swap
+	// Atomic swap (protected by write lock)
+	kc.mu.Lock()
 	kc.k = newK
+	kc.mu.Unlock()
 
 	return nil
 }
@@ -263,30 +273,48 @@ func (kc *KoanfConfig) Watch(ctx context.Context, callback func(event string, er
 
 // GetString retrieves a string value from configuration.
 func (kc *KoanfConfig) GetString(key string) string {
-	return kc.k.String(key)
+	kc.mu.RLock()
+	k := kc.k
+	kc.mu.RUnlock()
+	return k.String(key)
 }
 
 // GetInt retrieves an integer value from configuration.
 func (kc *KoanfConfig) GetInt(key string) int {
-	return kc.k.Int(key)
+	kc.mu.RLock()
+	k := kc.k
+	kc.mu.RUnlock()
+	return k.Int(key)
 }
 
 // GetBool retrieves a boolean value from configuration.
 func (kc *KoanfConfig) GetBool(key string) bool {
-	return kc.k.Bool(key)
+	kc.mu.RLock()
+	k := kc.k
+	kc.mu.RUnlock()
+	return k.Bool(key)
 }
 
 // GetDuration retrieves a duration value from configuration.
 func (kc *KoanfConfig) GetDuration(key string) time.Duration {
-	return kc.k.Duration(key)
+	kc.mu.RLock()
+	k := kc.k
+	kc.mu.RUnlock()
+	return k.Duration(key)
 }
 
 // Exists checks if a configuration key exists.
 func (kc *KoanfConfig) Exists(key string) bool {
-	return kc.k.Exists(key)
+	kc.mu.RLock()
+	k := kc.k
+	kc.mu.RUnlock()
+	return k.Exists(key)
 }
 
 // All returns the entire configuration as a map.
 func (kc *KoanfConfig) All() map[string]interface{} {
-	return kc.k.All()
+	kc.mu.RLock()
+	k := kc.k
+	kc.mu.RUnlock()
+	return k.All()
 }

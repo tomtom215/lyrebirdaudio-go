@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -81,10 +82,10 @@ func TestNew(t *testing.T) {
 		{
 			name: "with restart policy",
 			cfg: Config{
-				ShutdownTimeout:  10 * time.Second,
-				RestartDelay:     2 * time.Second,
-				MaxRestartDelay:  60 * time.Second,
-				RestartMultipler: 2.0,
+				ShutdownTimeout:   10 * time.Second,
+				RestartDelay:      2 * time.Second,
+				MaxRestartDelay:   60 * time.Second,
+				RestartMultiplier: 2.0,
 			},
 		},
 	}
@@ -259,11 +260,11 @@ func TestSupervisor_Run_AlreadyRunning(t *testing.T) {
 func TestSupervisor_ServiceRestart(t *testing.T) {
 	var buf bytes.Buffer
 	sup := New(Config{
-		ShutdownTimeout:  2 * time.Second,
-		Logger:           &buf,
-		RestartDelay:     50 * time.Millisecond, // Fast restart for testing
-		MaxRestartDelay:  200 * time.Millisecond,
-		RestartMultipler: 1.5,
+		ShutdownTimeout:   2 * time.Second,
+		Logger:            slog.New(slog.NewTextHandler(&buf, nil)),
+		RestartDelay:      50 * time.Millisecond, // Fast restart for testing
+		MaxRestartDelay:   200 * time.Millisecond,
+		RestartMultiplier: 1.5,
 	})
 
 	svc := newMockService("failing-service")
@@ -495,8 +496,8 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.MaxRestartDelay != 5*time.Minute {
 		t.Errorf("MaxRestartDelay = %v, want %v", cfg.MaxRestartDelay, 5*time.Minute)
 	}
-	if cfg.RestartMultipler != 2.0 {
-		t.Errorf("RestartMultipler = %v, want %v", cfg.RestartMultipler, 2.0)
+	if cfg.RestartMultiplier != 2.0 {
+		t.Errorf("RestartMultiplier = %v, want %v", cfg.RestartMultiplier, 2.0)
 	}
 }
 
@@ -558,10 +559,10 @@ func TestSupervisor_ServiceStatusUpdates(t *testing.T) {
 
 func TestSupervisor_RestartCounter(t *testing.T) {
 	sup := New(Config{
-		ShutdownTimeout:  2 * time.Second,
-		RestartDelay:     10 * time.Millisecond,
-		MaxRestartDelay:  50 * time.Millisecond,
-		RestartMultipler: 1.5,
+		ShutdownTimeout:   2 * time.Second,
+		RestartDelay:      10 * time.Millisecond,
+		MaxRestartDelay:   50 * time.Millisecond,
+		RestartMultiplier: 1.5,
 	})
 
 	svc := newMockService("restart-counter")
@@ -615,7 +616,7 @@ func TestSupervisor_LoggingOutput(t *testing.T) {
 	var buf bytes.Buffer
 	sup := New(Config{
 		ShutdownTimeout: 2 * time.Second,
-		Logger:          &buf,
+		Logger:          slog.New(slog.NewTextHandler(&buf, nil)),
 	})
 
 	svc := newMockService("log-test")

@@ -2,4 +2,5 @@ coverage.out
 coverage-*.out
 coverage-*.txt
 /lyrebird
+/lyrebird-stream
 /bin/

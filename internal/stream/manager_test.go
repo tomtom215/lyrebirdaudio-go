@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,14 +12,19 @@ import (
 	"time"
 )
 
-// testLogger wraps *testing.T to implement io.Writer for logging.
-type testLogger struct {
+// testLogWriter wraps *testing.T to implement io.Writer for slog output.
+type testLogWriter struct {
 	t *testing.T
 }
 
-func (tl *testLogger) Write(p []byte) (n int, err error) {
+func (tl *testLogWriter) Write(p []byte) (n int, err error) {
 	tl.t.Log(string(p))
 	return len(p), nil
+}
+
+// newTestLogger creates an *slog.Logger that writes to testing.T.
+func newTestLogger(t *testing.T) *slog.Logger {
+	return slog.New(slog.NewTextHandler(&testLogWriter{t: t}, nil))
 }
 
 // TestFFmpegDiagnostic is a diagnostic test to see FFmpeg's actual error output.
@@ -129,7 +135,7 @@ func TestStreamManagerLifecycle(t *testing.T) {
 		LockDir:     t.TempDir(),
 		FFmpegPath:  findFFmpegOrSkip(t),
 		Backoff:     NewBackoff(1*time.Second, 10*time.Second, 5),
-		Logger:      &testLogger{t: t},
+		Logger:      newTestLogger(t),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

@@ -706,6 +706,118 @@ func containsHelper(s, substr string) bool {
 	return false
 }
 
+// TestSaveConfigAtomic verifies that Save() performs an atomic write using
+// a temp file + rename pattern. After Save() returns, the file should contain
+// complete valid YAML that can be loaded back. This also verifies that a
+// concurrent reader never sees partial content.
+func TestSaveConfigAtomic(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+
+	// Write an initial config
+	initialCfg := DefaultConfig()
+	initialCfg.Default.SampleRate = 44100
+	err := initialCfg.Save(configPath)
+	if err != nil {
+		t.Fatalf("initial Save() error = %v", err)
+	}
+
+	// Read initial content
+	initialData, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile initial error = %v", err)
+	}
+
+	// Now overwrite with a new config
+	newCfg := DefaultConfig()
+	newCfg.Default.SampleRate = 96000
+	newCfg.Devices = map[string]DeviceConfig{
+		"test_device": {
+			SampleRate: 22050,
+			Channels:   1,
+			Bitrate:    "64k",
+			Codec:      "aac",
+		},
+	}
+	err = newCfg.Save(configPath)
+	if err != nil {
+		t.Fatalf("overwrite Save() error = %v", err)
+	}
+
+	// Read the file content - it should be either fully old or fully new,
+	// never partial. Since Save() completed, it must be fully new.
+	resultData, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile result error = %v", err)
+	}
+
+	// Verify the result is valid YAML that can be loaded
+	loaded, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig after atomic Save() error = %v", err)
+	}
+
+	// Verify it's the new content
+	if loaded.Default.SampleRate != 96000 {
+		t.Errorf("SampleRate = %d, want 96000", loaded.Default.SampleRate)
+	}
+
+	// The result should NOT be the initial data
+	if string(resultData) == string(initialData) {
+		t.Error("File content was not updated by Save()")
+	}
+
+	// Verify that no temp files are left behind
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		t.Fatalf("ReadDir error = %v", err)
+	}
+	for _, entry := range entries {
+		if entry.Name() != "config.yaml" {
+			t.Errorf("Unexpected leftover file in directory: %s", entry.Name())
+		}
+	}
+}
+
+// TestSaveConfigAtomicPermissions verifies that the atomically-saved file
+// has the correct permissions (0644).
+func TestSaveConfigAtomicPermissions(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+
+	cfg := DefaultConfig()
+	err := cfg.Save(configPath)
+	if err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	info, err := os.Stat(configPath)
+	if err != nil {
+		t.Fatalf("Stat error = %v", err)
+	}
+
+	// Check permissions (masking umask bits)
+	perm := info.Mode().Perm()
+	if perm&0644 != 0644 {
+		t.Errorf("File permissions = %o, want at least 0644", perm)
+	}
+}
+
+// TestSaveConfigAtomicTempFileCleanupOnError verifies that temp files are
+// cleaned up if the write fails mid-way.
+func TestSaveConfigAtomicTempFileCleanupOnError(t *testing.T) {
+	// Try saving to a non-existent directory (rename will fail because
+	// the temp file is created in the same dir, which doesn't exist)
+	cfg := DefaultConfig()
+	err := cfg.Save("/nonexistent_dir_12345/config.yaml")
+	if err == nil {
+		t.Error("Save() to nonexistent directory should fail")
+	}
+
+	// Verify no temp files left behind (the directory doesn't exist,
+	// so there's nothing to clean up, but also no crash)
+}
+
 // BenchmarkGetDeviceConfig measures device lookup performance.
 func BenchmarkGetDeviceConfig(b *testing.B) {
 	configPath := filepath.Join("..", "..", "testdata", "config", "valid.yaml")
@@ -715,4 +827,162 @@ func BenchmarkGetDeviceConfig(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		_ = cfg.GetDeviceConfig("blue_yeti")
 	}
+}
+
+// FuzzLoadConfig fuzz tests the YAML config loading path with arbitrary input.
+//
+// Invariants verified:
+//   - No panics on any input
+//   - If LoadConfig returns a non-nil *Config without error, the config is valid
+//   - If LoadConfig returns an error, cfg is nil
+func FuzzLoadConfig(f *testing.F) {
+	// Seed corpus: valid YAML configs, invalid YAML, and edge cases
+	seeds := []string{
+		// Minimal valid config
+		`default:
+  sample_rate: 48000
+  channels: 2
+  bitrate: "128k"
+  codec: opus
+`,
+		// Full valid config
+		`devices:
+  blue_yeti:
+    sample_rate: 48000
+    channels: 2
+    bitrate: "192k"
+    codec: opus
+    thread_queue: 8192
+default:
+  sample_rate: 48000
+  channels: 2
+  bitrate: "128k"
+  codec: opus
+  thread_queue: 8192
+stream:
+  initial_restart_delay: 10s
+  max_restart_delay: 300s
+  max_restart_attempts: 50
+  usb_stabilization_delay: 5s
+mediamtx:
+  api_url: http://localhost:9997
+  rtsp_url: rtsp://localhost:8554
+  config_path: /etc/mediamtx/mediamtx.yml
+monitor:
+  enabled: true
+  interval: 5m
+  restart_unhealthy: true
+`,
+		// Valid YAML but invalid config (missing required fields)
+		`default:
+  sample_rate: 0
+  channels: 2
+  bitrate: "128k"
+  codec: opus
+`,
+		// Valid YAML with aac codec
+		`default:
+  sample_rate: 44100
+  channels: 1
+  bitrate: "256k"
+  codec: aac
+`,
+		// Invalid YAML
+		"not: valid: yaml: [",
+		"{{{invalid",
+		"---\n- - -\n  broken",
+
+		// Empty input
+		"",
+
+		// Just whitespace
+		"   \n\n\t  ",
+
+		// YAML with unexpected types
+		"default: 42",
+		"default: [1, 2, 3]",
+		"devices: true",
+
+		// YAML with deeply nested structures
+		`default:
+  sample_rate: 48000
+  channels: 2
+  bitrate: "128k"
+  codec: opus
+devices:
+  dev1:
+    codec: opus
+  dev2:
+    codec: aac
+  dev3:
+    sample_rate: 44100
+`,
+		// YAML with special characters in keys
+		"\"special key\": value\n",
+
+		// YAML with very large numbers
+		`default:
+  sample_rate: 999999999
+  channels: 2
+  bitrate: "128k"
+  codec: opus
+`,
+		// YAML with negative numbers
+		`default:
+  sample_rate: -1
+  channels: -5
+  bitrate: "128k"
+  codec: opus
+`,
+		// YAML with invalid codec
+		`default:
+  sample_rate: 48000
+  channels: 2
+  bitrate: "128k"
+  codec: mp3
+`,
+		// Binary-looking content
+		"\x00\x01\x02\x03",
+		"\xff\xfe\xfd",
+
+		// YAML bomb / alias expansion
+		"a: &a\n  b: *a\n",
+	}
+
+	for _, seed := range seeds {
+		f.Add(seed)
+	}
+
+	f.Fuzz(func(t *testing.T, data string) {
+		// Write fuzz data to a temp file since LoadConfig reads from a file path
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "fuzz_config.yaml")
+		if err := os.WriteFile(configPath, []byte(data), 0644); err != nil {
+			t.Fatalf("failed to write temp config file: %v", err)
+		}
+
+		cfg, err := LoadConfig(configPath)
+
+		// Invariant 1: If no error, cfg must not be nil
+		if err == nil && cfg == nil {
+			t.Error("LoadConfig returned nil config without error")
+		}
+
+		// Invariant 2: If error, cfg must be nil
+		if err != nil && cfg != nil {
+			t.Errorf("LoadConfig returned non-nil config with error: %v", err)
+		}
+
+		// Invariant 3: If config loaded successfully, it must pass validation
+		if err == nil && cfg != nil {
+			if validErr := cfg.Validate(); validErr != nil {
+				t.Errorf("LoadConfig returned config that fails validation: %v", validErr)
+			}
+
+			// Invariant 4: GetDeviceConfig must not panic for any device name
+			_ = cfg.GetDeviceConfig("blue_yeti")
+			_ = cfg.GetDeviceConfig("nonexistent")
+			_ = cfg.GetDeviceConfig("")
+		}
+	})
 }

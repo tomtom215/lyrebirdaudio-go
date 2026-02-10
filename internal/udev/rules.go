@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package udev
 
 import (
@@ -99,24 +101,20 @@ func (d *DeviceInfo) GenerateRule() string {
 // - Final newline (required by udev)
 //
 // Parameters:
-//   - devices: Slice of device info structs (can use anonymous structs)
+//   - devices: Slice of DeviceInfo pointers
 //
 // Returns:
 //   - Complete file content ready to write to /etc/udev/rules.d/
 //
 // Example:
 //
-//	devices := []struct{ portPath string; busNum, devNum int }{
-//	    {"1-1.4", 1, 5},
-//	    {"1-1.5", 1, 6},
+//	devices := []*DeviceInfo{
+//	    {PortPath: "1-1.4", BusNum: 1, DevNum: 5},
+//	    {PortPath: "1-1.5", BusNum: 1, DevNum: 6},
 //	}
 //	content := GenerateRulesFile(devices)
 //	// Write to /etc/udev/rules.d/99-usb-soundcards.rules
-func GenerateRulesFile(devices []struct {
-	portPath string
-	busNum   int
-	devNum   int
-}) string {
+func GenerateRulesFile(devices []*DeviceInfo) string {
 	var sb strings.Builder
 
 	// Header comment
@@ -133,7 +131,7 @@ func GenerateRulesFile(devices []struct {
 
 	// Generate rule for each device
 	for _, dev := range devices {
-		rule := GenerateRule(dev.portPath, dev.busNum, dev.devNum)
+		rule := GenerateRule(dev.PortPath, dev.BusNum, dev.DevNum)
 		sb.WriteString(rule)
 		sb.WriteString("\n")
 	}
@@ -190,26 +188,7 @@ func WriteRulesFileToPath(devices []*DeviceInfo, path string, reload bool) error
 		}
 	}
 
-	// Convert to anonymous struct slice for GenerateRulesFile
-	anonDevices := make([]struct {
-		portPath string
-		busNum   int
-		devNum   int
-	}, len(devices))
-
-	for i, dev := range devices {
-		anonDevices[i] = struct {
-			portPath string
-			busNum   int
-			devNum   int
-		}{
-			portPath: dev.PortPath,
-			busNum:   dev.BusNum,
-			devNum:   dev.DevNum,
-		}
-	}
-
-	content := GenerateRulesFile(anonDevices)
+	content := GenerateRulesFile(devices)
 
 	// Write to file with 0644 permissions (readable by all, writable by owner)
 	// #nosec G306 - udev rules must be world-readable (0644 is appropriate)

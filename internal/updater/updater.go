@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Package updater provides version management and self-update functionality.
 //
 // Unlike the bash version which uses git-based updates, this Go implementation
@@ -19,6 +21,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -416,20 +419,104 @@ func (r *progressReader) Close() error {
 	return r.reader.Close()
 }
 
+// parseSemver parses a version string into major, minor, patch components
+// and an optional pre-release suffix. Returns ok=false if the string cannot
+// be parsed as a valid semver-like version.
+//
+// Accepted formats: "1.2.3", "v1.2.3", "1.2.3-rc1", "1.2", "1"
+func parseSemver(version string) (major, minor, patch int, prerelease string, ok bool) {
+	// Strip 'v' prefix
+	version = strings.TrimPrefix(version, "v")
+
+	if version == "" {
+		return 0, 0, 0, "", false
+	}
+
+	// Split off pre-release suffix (e.g., "1.0.0-rc1" -> "1.0.0", "rc1")
+	versionCore := version
+	if idx := strings.IndexByte(version, '-'); idx >= 0 {
+		prerelease = version[idx+1:]
+		versionCore = version[:idx]
+	}
+
+	parts := strings.Split(versionCore, ".")
+
+	// Parse major (required)
+	maj, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return 0, 0, 0, "", false
+	}
+	major = maj
+
+	// Parse minor (optional, defaults to 0)
+	if len(parts) >= 2 {
+		min, err := strconv.Atoi(parts[1])
+		if err != nil {
+			return 0, 0, 0, "", false
+		}
+		minor = min
+	}
+
+	// Parse patch (optional, defaults to 0)
+	if len(parts) >= 3 {
+		pat, err := strconv.Atoi(parts[2])
+		if err != nil {
+			return 0, 0, 0, "", false
+		}
+		patch = pat
+	}
+
+	return major, minor, patch, prerelease, true
+}
+
 // isNewerVersion compares two version strings.
 // Returns true if latest is newer than current.
+// Properly handles multi-digit version components (e.g., 0.10.0 > 0.9.0)
+// and pre-release suffixes (e.g., 1.0.0 > 1.0.0-rc1).
 func isNewerVersion(latest, current string) bool {
-	// Handle "dev" version
+	// Handle "dev" / "unknown" current version -- always offer update
 	if current == "dev" || current == "unknown" {
 		return true
 	}
 
-	// Strip 'v' prefix
-	latest = strings.TrimPrefix(latest, "v")
-	current = strings.TrimPrefix(current, "v")
+	// Parse both versions
+	lMajor, lMinor, lPatch, lPre, lOk := parseSemver(latest)
+	cMajor, cMinor, cPatch, cPre, cOk := parseSemver(current)
 
-	// Simple string comparison (works for semver)
-	return latest > current
+	// If latest cannot be parsed as semver, it is not a valid newer version
+	if !lOk {
+		return false
+	}
+
+	// If current cannot be parsed, treat as unknown and offer update
+	if !cOk {
+		return true
+	}
+
+	// Compare major.minor.patch numerically
+	if lMajor != cMajor {
+		return lMajor > cMajor
+	}
+	if lMinor != cMinor {
+		return lMinor > cMinor
+	}
+	if lPatch != cPatch {
+		return lPatch > cPatch
+	}
+
+	// Same major.minor.patch: handle pre-release comparison.
+	// A release version (no pre-release) is considered newer than
+	// a pre-release version with the same numeric components.
+	// e.g., 1.0.0 > 1.0.0-rc1
+	if lPre == "" && cPre != "" {
+		return true // release is newer than pre-release
+	}
+	if lPre != "" && cPre == "" {
+		return false // pre-release is not newer than release
+	}
+
+	// Both have pre-release or both don't: same version, not newer
+	return false
 }
 
 // getAssetName returns the expected asset name for this platform.

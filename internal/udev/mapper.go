@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package udev
 
 import (
@@ -8,6 +10,11 @@ import (
 	"strconv"
 	"strings"
 )
+
+// usbPortPathRegex is pre-compiled at package level to avoid recompiling on every call.
+// Pattern: bus-port or bus-port.subport.subport...
+// Examples: "1-1", "1-1.4", "2-3.1.2"
+var usbPortPathRegex = regexp.MustCompile(`^[0-9]+-[0-9]+(\.[0-9]+)*$`)
 
 // USBPortInfo contains information about a USB device's physical port.
 type USBPortInfo struct {
@@ -112,9 +119,7 @@ func GetUSBPhysicalPort(sysfsPath string, busNum, devNum int) (portPath, product
 //
 // Reference: usb-audio-mapper.sh line 251
 func IsValidUSBPortPath(path string) bool {
-	// Pattern: bus-port or bus-port.subport.subport...
-	matched, _ := regexp.MatchString(`^[0-9]+-[0-9]+(\.[0-9]+)*$`, path)
-	return matched
+	return usbPortPathRegex.MatchString(path)
 }
 
 // SafeBase10 converts a string to base-10 integer, handling leading zeros.

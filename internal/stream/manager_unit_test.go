@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -589,32 +590,33 @@ func TestManagerMetricsInitialState(t *testing.T) {
 // TestManagerLogf verifies logging functionality.
 func TestManagerLogf(t *testing.T) {
 	tests := []struct {
-		name       string
-		hasLogger  bool
-		format     string
-		args       []interface{}
-		wantOutput string
+		name        string
+		hasLogger   bool
+		format      string
+		args        []interface{}
+		wantContain string // Structured log contains the message
+		wantEmpty   bool
 	}{
 		{
-			name:       "with logger",
-			hasLogger:  true,
-			format:     "test message %d",
-			args:       []interface{}{42},
-			wantOutput: "[Manager test] test message 42\n",
+			name:        "with logger",
+			hasLogger:   true,
+			format:      "test message %d",
+			args:        []interface{}{42},
+			wantContain: "test message 42",
 		},
 		{
-			name:       "with logger no args",
-			hasLogger:  true,
-			format:     "simple message",
-			args:       []interface{}{},
-			wantOutput: "[Manager test] simple message\n",
+			name:        "with logger no args",
+			hasLogger:   true,
+			format:      "simple message",
+			args:        []interface{}{},
+			wantContain: "simple message",
 		},
 		{
-			name:       "without logger",
-			hasLogger:  false,
-			format:     "test message",
-			args:       []interface{}{},
-			wantOutput: "",
+			name:      "without logger",
+			hasLogger: false,
+			format:    "test message",
+			args:      []interface{}{},
+			wantEmpty: true,
 		},
 	}
 
@@ -638,7 +640,7 @@ func TestManagerLogf(t *testing.T) {
 			}
 
 			if tt.hasLogger {
-				cfg.Logger = &buf
+				cfg.Logger = slog.New(slog.NewTextHandler(&buf, nil))
 			}
 
 			mgr, err := NewManager(cfg)
@@ -649,8 +651,12 @@ func TestManagerLogf(t *testing.T) {
 			mgr.logf(tt.format, tt.args...)
 
 			got := buf.String()
-			if got != tt.wantOutput {
-				t.Errorf("logf() output = %q, want %q", got, tt.wantOutput)
+			if tt.wantEmpty {
+				if got != "" {
+					t.Errorf("logf() output = %q, want empty", got)
+				}
+			} else if !strings.Contains(got, tt.wantContain) {
+				t.Errorf("logf() output = %q, want it to contain %q", got, tt.wantContain)
 			}
 		})
 	}
@@ -938,7 +944,7 @@ func TestManagerRunContextCancelledDuringRun(t *testing.T) {
 		LockDir:      lockDir,
 		FFmpegPath:   scriptPath,
 		Backoff:      NewBackoff(100*time.Millisecond, 1*time.Second, 3),
-		Logger:       &logBuf,
+		Logger:       slog.New(slog.NewTextHandler(&logBuf, nil)),
 	}
 
 	mgr, err := NewManager(cfg)
@@ -1000,7 +1006,7 @@ func TestManagerRunMaxAttemptsExceeded(t *testing.T) {
 		LockDir:      lockDir,
 		FFmpegPath:   "/bin/false", // Always fails immediately
 		Backoff:      NewBackoff(10*time.Millisecond, 50*time.Millisecond, 3),
-		Logger:       &logBuf,
+		Logger:       slog.New(slog.NewTextHandler(&logBuf, nil)),
 	}
 
 	mgr, err := NewManager(cfg)
@@ -1053,7 +1059,7 @@ func TestManagerRunShortRunTreatedAsFailure(t *testing.T) {
 		LockDir:      lockDir,
 		FFmpegPath:   "/bin/sleep", // Sleep for short duration
 		Backoff:      NewBackoff(10*time.Millisecond, 50*time.Millisecond, 2),
-		Logger:       &logBuf,
+		Logger:       slog.New(slog.NewTextHandler(&logBuf, nil)),
 	}
 
 	mgr, err := NewManager(cfg)
@@ -1096,7 +1102,7 @@ func TestManagerRunContextCancelledDuringBackoff(t *testing.T) {
 		LockDir:      lockDir,
 		FFmpegPath:   "/bin/false",                                  // Always fails
 		Backoff:      NewBackoff(5*time.Second, 10*time.Second, 10), // Long backoff
-		Logger:       &logBuf,
+		Logger:       slog.New(slog.NewTextHandler(&logBuf, nil)),
 	}
 
 	mgr, err := NewManager(cfg)
@@ -1301,7 +1307,7 @@ func TestManagerRunStateTransitions(t *testing.T) {
 		LockDir:      lockDir,
 		FFmpegPath:   scriptPath,
 		Backoff:      NewBackoff(10*time.Millisecond, 50*time.Millisecond, 5),
-		Logger:       &logBuf,
+		Logger:       slog.New(slog.NewTextHandler(&logBuf, nil)),
 	}
 
 	mgr, err := NewManager(cfg)
@@ -1366,7 +1372,7 @@ func TestManagerRunWithPanicsInFFmpeg(t *testing.T) {
 		LockDir:      lockDir,
 		FFmpegPath:   scriptPath,
 		Backoff:      NewBackoff(10*time.Millisecond, 50*time.Millisecond, 2),
-		Logger:       &logBuf,
+		Logger:       slog.New(slog.NewTextHandler(&logBuf, nil)),
 	}
 
 	mgr, err := NewManager(cfg)
