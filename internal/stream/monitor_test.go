@@ -807,16 +807,16 @@ func FuzzParseThreadCount(f *testing.F) {
 		"",
 		"invalid",
 		"no_closing_paren",
-		"1 (test) S 1 2",                    // Too few fields after comm
+		"1 (test) S 1 2", // Too few fields after comm
 		"1 (test) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 abc 0", // Non-numeric thread count
-		"1 () S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 1 0\n",     // Empty comm field
+		"1 () S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 1 0\n",      // Empty comm field
 		") S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 1 0\n",         // Leading closing paren
 		"1 (a)b) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 2 0 1 0\n",   // Paren in comm name
-		"1 (test) S",             // Minimal fields
-		"1 (test)",               // Just pid and comm
-		"\n\n\n",                 // Only newlines
+		"1 (test) S",                             // Minimal fields
+		"1 (test)",                               // Just pid and comm
+		"\n\n\n",                                 // Only newlines
 		"1 (test) S " + strings.Repeat("0 ", 50), // Many fields
-		"1 (test) S " + strings.Repeat("999999999 ", 20),  // Large numeric values
+		"1 (test) S " + strings.Repeat("999999999 ", 20), // Large numeric values
 	}
 
 	for _, seed := range seeds {
@@ -851,15 +851,15 @@ func FuzzParseMemoryBytes(f *testing.F) {
 		"",
 		"invalid",
 		"abc def",
-		"1000",          // Single field, no resident field
-		"1000 abc",      // Non-numeric resident field
-		"-1 -500 0 0 0 0 0", // Negative values
-		"0 0",           // Minimal valid (two fields)
+		"1000",                                // Single field, no resident field
+		"1000 abc",                            // Non-numeric resident field
+		"-1 -500 0 0 0 0 0",                   // Negative values
+		"0 0",                                 // Minimal valid (two fields)
 		"999999999999 999999999999 0 0 0 0 0", // Very large values
-		"\t100\t200\t300",    // Tab-separated
-		"  100  200  300  ",  // Extra whitespace
-		"\n",                 // Just newline
-		"100 200\n",         // Trailing newline (common in /proc)
+		"\t100\t200\t300",                     // Tab-separated
+		"  100  200  300  ",                   // Extra whitespace
+		"\n",                                  // Just newline
+		"100 200\n",                           // Trailing newline (common in /proc)
 		"100 200 300 400 500 600 700 800 900", // Extra fields
 	}
 

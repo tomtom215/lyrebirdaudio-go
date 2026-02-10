@@ -117,10 +117,10 @@ type Config struct {
 // DefaultConfig returns a Config with sensible defaults.
 func DefaultConfig() Config {
 	return Config{
-		Name:             "supervisor",
-		ShutdownTimeout:  10 * time.Second,
-		RestartDelay:     1 * time.Second,
-		MaxRestartDelay:  5 * time.Minute,
+		Name:              "supervisor",
+		ShutdownTimeout:   10 * time.Second,
+		RestartDelay:      1 * time.Second,
+		MaxRestartDelay:   5 * time.Minute,
 		RestartMultiplier: 2.0,
 	}
 }

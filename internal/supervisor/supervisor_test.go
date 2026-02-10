@@ -82,9 +82,9 @@ func TestNew(t *testing.T) {
 		{
 			name: "with restart policy",
 			cfg: Config{
-				ShutdownTimeout:  10 * time.Second,
-				RestartDelay:     2 * time.Second,
-				MaxRestartDelay:  60 * time.Second,
+				ShutdownTimeout:   10 * time.Second,
+				RestartDelay:      2 * time.Second,
+				MaxRestartDelay:   60 * time.Second,
 				RestartMultiplier: 2.0,
 			},
 		},
@@ -559,9 +559,9 @@ func TestSupervisor_ServiceStatusUpdates(t *testing.T) {
 
 func TestSupervisor_RestartCounter(t *testing.T) {
 	sup := New(Config{
-		ShutdownTimeout:  2 * time.Second,
-		RestartDelay:     10 * time.Millisecond,
-		MaxRestartDelay:  50 * time.Millisecond,
+		ShutdownTimeout:   2 * time.Second,
+		RestartDelay:      10 * time.Millisecond,
+		MaxRestartDelay:   50 * time.Millisecond,
 		RestartMultiplier: 1.5,
 	})
 
