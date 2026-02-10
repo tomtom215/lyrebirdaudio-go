@@ -2,19 +2,18 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
 
-func TestLoadConfiguration(t *testing.T) {
+func TestLoadConfigurationKoanf(t *testing.T) {
 	tests := []struct {
-		name        string
-		setup       func(t *testing.T) string
-		wantErr     bool
-		checkConfig func(t *testing.T, c interface{})
+		name    string
+		setup   func(t *testing.T) string
+		wantErr bool
 	}{
 		{
 			name: "valid config file",
@@ -65,7 +64,7 @@ mediamtx:
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			path := tt.setup(t)
-			cfg, err := loadConfiguration(path)
+			_, cfg, err := loadConfigurationKoanf(path)
 
 			if tt.wantErr {
 				if err == nil {
@@ -170,15 +169,15 @@ func TestFindFFmpegPathCommonLocations(t *testing.T) {
 	}
 }
 
-func TestLoadConfigurationDefaults(t *testing.T) {
+func TestLoadConfigurationKoanfDefaults(t *testing.T) {
 	// Test loading from non-existent path uses defaults
-	cfg, err := loadConfiguration("/nonexistent/path/config.yaml")
+	_, cfg, err := loadConfigurationKoanf("/nonexistent/path/config.yaml")
 	if err != nil {
-		t.Errorf("loadConfiguration should not error for non-existent file: %v", err)
+		t.Errorf("loadConfigurationKoanf should not error for non-existent file: %v", err)
 	}
 
 	if cfg == nil {
-		t.Fatal("loadConfiguration returned nil config")
+		t.Fatal("loadConfigurationKoanf returned nil config")
 	}
 
 	// Verify defaults are set
@@ -190,7 +189,7 @@ func TestLoadConfigurationDefaults(t *testing.T) {
 	}
 }
 
-func TestLoadConfigurationWithValidFile(t *testing.T) {
+func TestLoadConfigurationKoanfWithValidFile(t *testing.T) {
 	// Create a valid config file
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
@@ -210,13 +209,13 @@ mediamtx:
 		t.Fatalf("Failed to write test config: %v", err)
 	}
 
-	cfg, err := loadConfiguration(path)
+	_, cfg, err := loadConfigurationKoanf(path)
 	if err != nil {
-		t.Errorf("loadConfiguration should not error: %v", err)
+		t.Errorf("loadConfigurationKoanf should not error: %v", err)
 	}
 
 	if cfg == nil {
-		t.Fatal("loadConfiguration returned nil config")
+		t.Fatal("loadConfigurationKoanf returned nil config")
 	}
 
 	// Verify loaded values
@@ -233,7 +232,7 @@ mediamtx:
 
 func TestStreamServiceWithLogger(t *testing.T) {
 	// Test streamService with a logger
-	logger := log.New(os.Stderr, "test: ", 0)
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 
 	svc := &streamService{
 		name:    "test_device",
@@ -244,5 +243,32 @@ func TestStreamServiceWithLogger(t *testing.T) {
 	// Verify name works with logger set
 	if got := svc.Name(); got != "test_device" {
 		t.Errorf("Name() = %q, want %q", got, "test_device")
+	}
+}
+
+func TestParseSlogLevel(t *testing.T) {
+	tests := []struct {
+		input string
+		want  slog.Level
+	}{
+		{"debug", slog.LevelDebug},
+		{"DEBUG", slog.LevelDebug},
+		{"info", slog.LevelInfo},
+		{"INFO", slog.LevelInfo},
+		{"warn", slog.LevelWarn},
+		{"warning", slog.LevelWarn},
+		{"error", slog.LevelError},
+		{"ERROR", slog.LevelError},
+		{"", slog.LevelInfo},
+		{"unknown", slog.LevelInfo},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := parseSlogLevel(tt.input)
+			if got != tt.want {
+				t.Errorf("parseSlogLevel(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
 	}
 }

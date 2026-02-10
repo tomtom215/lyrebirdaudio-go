@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package lock
 
 import (
@@ -7,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -21,6 +24,7 @@ import (
 //
 // Reference: mediamtx-stream-manager.sh acquire_lock() lines 837-906
 type FileLock struct {
+	mu   sync.Mutex
 	path string
 	file *os.File
 	pid  int
@@ -133,7 +137,9 @@ func (fl *FileLock) Acquire(timeout time.Duration) error {
 		return fmt.Errorf("failed to sync lock file: %w", err)
 	}
 
+	fl.mu.Lock()
 	fl.file = file
+	fl.mu.Unlock()
 	return nil
 }
 
@@ -224,7 +230,9 @@ func (fl *FileLock) AcquireContext(ctx context.Context, timeout time.Duration) e
 		return fmt.Errorf("failed to sync lock file: %w", err)
 	}
 
+	fl.mu.Lock()
 	fl.file = file
+	fl.mu.Unlock()
 	return nil
 }
 
@@ -234,6 +242,9 @@ func (fl *FileLock) AcquireContext(ctx context.Context, timeout time.Duration) e
 //   - nil on success
 //   - error if lock not held or release fails
 func (fl *FileLock) Release() error {
+	fl.mu.Lock()
+	defer fl.mu.Unlock()
+
 	if fl.file == nil {
 		return fmt.Errorf("lock not held")
 	}
@@ -254,7 +265,11 @@ func (fl *FileLock) Release() error {
 
 // Close closes the lock file if held and releases the lock.
 func (fl *FileLock) Close() error {
-	if fl.file != nil {
+	fl.mu.Lock()
+	held := fl.file != nil
+	fl.mu.Unlock()
+
+	if held {
 		return fl.Release()
 	}
 	return nil

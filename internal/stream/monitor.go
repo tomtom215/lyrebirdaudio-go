@@ -1,9 +1,11 @@
+// SPDX-License-Identifier: MIT
+
 package stream
 
 import (
 	"context"
 	"fmt"
-	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -81,7 +83,7 @@ type ResourceAlert struct {
 // ResourceMonitor monitors resource usage for processes.
 type ResourceMonitor struct {
 	thresholds ResourceThresholds
-	logger     io.Writer
+	logger     *slog.Logger
 	mu         sync.RWMutex
 	metrics    map[int]*ResourceMetrics // PID -> metrics
 	procPath   string                   // Path to /proc (for testing)
@@ -97,10 +99,10 @@ func WithThresholds(t ResourceThresholds) MonitorOption {
 	}
 }
 
-// WithLogger sets a logger for the monitor.
-func WithLogger(w io.Writer) MonitorOption {
+// WithLogger sets a structured logger for the monitor.
+func WithLogger(l *slog.Logger) MonitorOption {
 	return func(m *ResourceMonitor) {
-		m.logger = w
+		m.logger = l
 	}
 }
 
@@ -270,7 +272,7 @@ func (m *ResourceMonitor) MonitorProcess(ctx context.Context, pid int, interval 
 			if err != nil {
 				// Process may have exited
 				if m.logger != nil {
-					_, _ = fmt.Fprintf(m.logger, "Failed to get metrics for PID %d: %v\n", pid, err)
+					m.logger.Warn("failed to get metrics", "pid", pid, "error", err)
 				}
 				return
 			}
@@ -279,7 +281,7 @@ func (m *ResourceMonitor) MonitorProcess(ctx context.Context, pid int, interval 
 			if len(alerts) > 0 {
 				if m.logger != nil {
 					for _, alert := range alerts {
-						_, _ = fmt.Fprintf(m.logger, "[%s] PID %d: %s\n", alert.Level, pid, alert.Message)
+						m.logger.Warn("resource alert", "level", alert.Level, "pid", pid, "message", alert.Message)
 					}
 				}
 				if alertCallback != nil {
@@ -356,7 +358,7 @@ func parseThreadCount(stat string) int {
 
 	// Field 17 (0-indexed from after comm) is num_threads
 	threads, err := strconv.Atoi(fields[17])
-	if err != nil {
+	if err != nil || threads < 0 {
 		return 0
 	}
 	return threads
@@ -371,7 +373,7 @@ func parseMemoryBytes(statm string) int64 {
 
 	// Second field is resident set size in pages
 	pages, err := strconv.ParseInt(fields[1], 10, 64)
-	if err != nil {
+	if err != nil || pages < 0 {
 		return 0
 	}
 

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Package menu provides an interactive terminal menu system using charmbracelet/huh.
 //
 // This implements a TUI menu matching the functionality of the

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package stream
 
 import (
@@ -39,6 +41,7 @@ type RotatingWriter struct {
 	compress bool
 
 	mu     sync.Mutex
+	wg     sync.WaitGroup
 	file   *os.File
 	size   int64
 	closed bool
@@ -141,8 +144,14 @@ func (w *RotatingWriter) Write(p []byte) (n int, err error) {
 	return n, err
 }
 
-// Close closes the log file.
+// Close closes the log file. It waits for any in-progress compression
+// goroutines to finish before closing.
 func (w *RotatingWriter) Close() error {
+	// Wait for all compression goroutines to complete before closing.
+	// This must happen outside the lock since compressFile may need to
+	// call cleanup which does not require the lock.
+	w.wg.Wait()
+
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -164,6 +173,15 @@ func (w *RotatingWriter) Rotate() error {
 
 // rotate performs the actual rotation (must hold lock).
 func (w *RotatingWriter) rotate() error {
+	// Wait for any in-progress compression goroutines to complete before
+	// shifting files, to avoid races between shiftFiles and compressFile
+	// operating on the same paths concurrently.
+	// We must release the lock while waiting to avoid deadlock, since
+	// compression goroutines may need to run cleanup.
+	w.mu.Unlock()
+	w.wg.Wait()
+	w.mu.Lock()
+
 	// Close current file
 	if w.file != nil {
 		if err := w.file.Close(); err != nil {
@@ -185,11 +203,18 @@ func (w *RotatingWriter) rotate() error {
 
 	// Compress if enabled
 	if w.compress {
-		go w.compressFile(rotatedPath) // Async compression
+		w.wg.Add(1)
+		go func() {
+			defer w.wg.Done()
+			w.compressFile(rotatedPath)
+			// Clean up old files after compression finishes to avoid
+			// deleting files that are still being compressed.
+			w.cleanup()
+		}()
+	} else {
+		// Clean up old files synchronously when compression is disabled
+		w.cleanup()
 	}
-
-	// Clean up old files
-	w.cleanup()
 
 	// Open new log file
 	return w.openFile()
@@ -280,6 +305,16 @@ func (w *RotatingWriter) cleanup() {
 		path := w.rotatedPath(i)
 		_ = os.Remove(path)
 		_ = os.Remove(path + ".gz")
+	}
+
+	// Also remove uncompressed duplicates where a .gz version exists at the same index.
+	// This handles the race between async compression and file shifts.
+	for i := 1; i <= w.maxFiles; i++ {
+		path := w.rotatedPath(i)
+		if _, err := os.Stat(path + ".gz"); err == nil {
+			// Compressed version exists, remove the uncompressed duplicate
+			_ = os.Remove(path)
+		}
 	}
 }
 

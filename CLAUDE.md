@@ -41,16 +41,21 @@ go mod tidy
 
 | Package | Coverage | Notes |
 |---------|----------|-------|
+| internal/audio | 94.7% | Device detection + sanitization |
 | internal/supervisor | 94.2% | Erlang-style supervisor tree using suture |
+| internal/health | 94.1% | HTTP health check endpoint |
 | internal/util | 94.0% | Panic recovery, resource tracking |
-| internal/config | 89.1% | YAML config + migration |
-| internal/udev | 86.0% | udev rule generation + file writing |
-| internal/stream | 85.5% | Stream manager with backoff |
-| internal/audio | 84.3% | Device detection |
-| internal/lock | 75.7% | File-based locking |
-| cmd/lyrebird | 50.5% | CLI (many commands require root/interactive) |
-| cmd/lyrebird-stream | 18.3% | Daemon (requires runtime environment) |
-| **Internal packages** | **~87%** | Core library code well-tested |
+| internal/mediamtx | 92.4% | MediaMTX API client |
+| internal/config | 90.3% | YAML config + koanf + hot-reload |
+| internal/updater | 90.4% | Version checking + semver comparison |
+| internal/udev | 85.4% | udev rule generation + file writing |
+| internal/stream | 85.0% | Stream manager with backoff + monitoring |
+| internal/lock | 78.6% | File-based locking |
+| internal/diagnostics | 65.5% | System diagnostics |
+| internal/menu | 55.6% | Interactive menu (requires terminal) |
+| cmd/lyrebird | 43.5% | CLI (many commands require root/interactive) |
+| cmd/lyrebird-stream | 30.4% | Daemon (requires runtime environment) |
+| **Internal packages** | **~85%** | Core library code well-tested |
 
 ---
 

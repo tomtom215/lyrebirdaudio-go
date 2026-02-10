@@ -436,6 +436,92 @@ func TestListRotatedFilesWithCompressed(t *testing.T) {
 	}
 }
 
+func TestRotatingWriterCloseWaitsForCompression(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "test.log")
+
+	w, err := NewRotatingWriter(logPath,
+		WithMaxSize(50),
+		WithMaxFiles(3),
+		WithCompression(true),
+	)
+	if err != nil {
+		t.Fatalf("NewRotatingWriter failed: %v", err)
+	}
+
+	// Write enough data to trigger rotation (and thus async compression)
+	for i := 0; i < 5; i++ {
+		data := strings.Repeat("y", 30) + "\n"
+		_, err := w.Write([]byte(data))
+		if err != nil {
+			t.Fatalf("Write failed: %v", err)
+		}
+	}
+
+	// Force a rotation which triggers async compression
+	err = w.Rotate()
+	if err != nil {
+		t.Fatalf("Rotate failed: %v", err)
+	}
+
+	// Close should block until compression goroutines finish
+	err = w.Close()
+	if err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	// After Close returns, compression must be complete.
+	// The .1.gz file should exist (compression finished).
+	gzPath := logPath + ".1.gz"
+	if _, err := os.Stat(gzPath); os.IsNotExist(err) {
+		t.Errorf("Expected compressed file %s to exist after Close()", gzPath)
+	}
+
+	// The uncompressed .1 file should have been removed by compression.
+	uncompressedPath := logPath + ".1"
+	if _, err := os.Stat(uncompressedPath); err == nil {
+		t.Errorf("Expected uncompressed file %s to be removed after compression", uncompressedPath)
+	}
+}
+
+func TestRotatingWriterCompressionCleanupOrder(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "test.log")
+
+	// Use maxFiles=2, so cleanup should remove files beyond index 2.
+	w, err := NewRotatingWriter(logPath,
+		WithMaxSize(30),
+		WithMaxFiles(2),
+		WithCompression(true),
+	)
+	if err != nil {
+		t.Fatalf("NewRotatingWriter failed: %v", err)
+	}
+
+	// Trigger enough rotations to exercise cleanup
+	for i := 0; i < 10; i++ {
+		data := strings.Repeat("z", 25) + "\n"
+		_, err := w.Write([]byte(data))
+		if err != nil {
+			t.Fatalf("Write %d failed: %v", i, err)
+		}
+	}
+
+	// Close waits for all compression goroutines
+	err = w.Close()
+	if err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	// After close, verify that the cleanup ran properly and did not delete
+	// files that were being actively compressed. There should be no more than
+	// maxFiles rotated files (either .gz or plain).
+	matches, _ := filepath.Glob(logPath + ".*")
+	if len(matches) > 2 {
+		t.Errorf("Expected at most 2 rotated files, got %d: %v", len(matches), matches)
+	}
+}
+
 func TestCleanupLogsWithCompressed(t *testing.T) {
 	tmpDir := t.TempDir()
 	logPath := filepath.Join(tmpDir, "test.log")

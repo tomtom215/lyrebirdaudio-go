@@ -114,14 +114,10 @@ func TestGenerateRuleInvalidInputs(t *testing.T) {
 // - Have one rule per device
 // - End with newline
 func TestGenerateRulesFile(t *testing.T) {
-	devices := []struct {
-		portPath string
-		busNum   int
-		devNum   int
-	}{
-		{"1-1.4", 1, 5},
-		{"1-1.5", 1, 6},
-		{"2-3.1", 2, 10},
+	devices := []*DeviceInfo{
+		{PortPath: "1-1.4", BusNum: 1, DevNum: 5},
+		{PortPath: "1-1.5", BusNum: 1, DevNum: 6},
+		{PortPath: "2-3.1", BusNum: 2, DevNum: 10},
 	}
 
 	content := GenerateRulesFile(devices)
@@ -133,9 +129,9 @@ func TestGenerateRulesFile(t *testing.T) {
 
 	// Verify all devices have rules
 	for _, dev := range devices {
-		expected := GenerateRule(dev.portPath, dev.busNum, dev.devNum)
+		expected := GenerateRule(dev.PortPath, dev.BusNum, dev.DevNum)
 		if !strings.Contains(content, expected) {
-			t.Errorf("GenerateRulesFile() missing rule for %s:\n%s", dev.portPath, expected)
+			t.Errorf("GenerateRulesFile() missing rule for %s:\n%s", dev.PortPath, expected)
 		}
 	}
 
@@ -167,12 +163,8 @@ func TestRulesFileConstants(t *testing.T) {
 	// This is a unit test - we test the generation logic, not actual file writing
 	// Actual file writing is tested in integration tests
 
-	devices := []struct {
-		portPath string
-		busNum   int
-		devNum   int
-	}{
-		{"1-1.4", 1, 5},
+	devices := []*DeviceInfo{
+		{PortPath: "1-1.4", BusNum: 1, DevNum: 5},
 	}
 
 	// Verify content generation
@@ -426,21 +418,13 @@ func BenchmarkGenerateRule(b *testing.B) {
 
 // BenchmarkGenerateRulesFile measures performance of full file generation.
 func BenchmarkGenerateRulesFile(b *testing.B) {
-	devices := make([]struct {
-		portPath string
-		busNum   int
-		devNum   int
-	}, 10)
+	devices := make([]*DeviceInfo, 10)
 
 	for i := range devices {
-		devices[i] = struct {
-			portPath string
-			busNum   int
-			devNum   int
-		}{
-			portPath: "1-1.4",
-			busNum:   1,
-			devNum:   i + 1,
+		devices[i] = &DeviceInfo{
+			PortPath: "1-1.4",
+			BusNum:   1,
+			DevNum:   i + 1,
 		}
 	}
 

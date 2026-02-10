@@ -64,6 +64,7 @@ TimeoutStopSec=30
 # Restart policy
 Restart=always
 RestartSec=10
+WatchdogSec=60
 
 # Security hardening
 NoNewPrivileges=true
@@ -73,6 +74,13 @@ PrivateTmp=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
 
 # Allow access to audio devices
 SupplementaryGroups=audio

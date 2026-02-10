@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Package supervisor provides a supervision tree for managing multiple stream managers.
 //
 // The supervisor implements Erlang/OTP-style process supervision using github.com/thejerf/suture,
@@ -29,8 +31,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -104,12 +105,13 @@ type Config struct {
 	// Default: 5 minutes.
 	MaxRestartDelay time.Duration
 
-	// RestartMultipler is the factor by which RestartDelay is multiplied after each failure.
+	// RestartMultiplier is the factor by which RestartDelay is multiplied after each failure.
 	// Default: 2.0.
-	RestartMultipler float64
+	RestartMultiplier float64
 
 	// Logger is optional; if set, supervisor events are logged here.
-	Logger io.Writer
+	// When nil, supervisor operates silently.
+	Logger *slog.Logger
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -119,7 +121,7 @@ func DefaultConfig() Config {
 		ShutdownTimeout:  10 * time.Second,
 		RestartDelay:     1 * time.Second,
 		MaxRestartDelay:  5 * time.Minute,
-		RestartMultipler: 2.0,
+		RestartMultiplier: 2.0,
 	}
 }
 
@@ -132,7 +134,7 @@ type Supervisor struct {
 	mu       sync.RWMutex
 	services map[string]*serviceEntry
 	running  bool
-	logger   *log.Logger
+	logger   *slog.Logger
 }
 
 // serviceEntry tracks a single service's lifecycle.
@@ -220,8 +222,8 @@ func New(cfg Config) *Supervisor {
 	if cfg.MaxRestartDelay == 0 {
 		cfg.MaxRestartDelay = 5 * time.Minute
 	}
-	if cfg.RestartMultipler == 0 {
-		cfg.RestartMultipler = 2.0
+	if cfg.RestartMultiplier == 0 {
+		cfg.RestartMultiplier = 2.0
 	}
 
 	// Create suture supervisor with configured backoff
@@ -238,7 +240,7 @@ func New(cfg Config) *Supervisor {
 
 	// Set up logging if configured
 	if cfg.Logger != nil {
-		s.logger = log.New(cfg.Logger, "", log.LstdFlags)
+		s.logger = cfg.Logger
 	}
 
 	return s
@@ -247,7 +249,7 @@ func New(cfg Config) *Supervisor {
 // logf writes a formatted log message if Logger is configured.
 func (s *Supervisor) logf(format string, args ...interface{}) {
 	if s.logger != nil {
-		s.logger.Printf("[Supervisor] "+format, args...)
+		s.logger.Info(fmt.Sprintf(format, args...), "component", "supervisor")
 	}
 }
 

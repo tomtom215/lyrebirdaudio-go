@@ -438,6 +438,33 @@ func TestIsValidUSBPortPathEdgeCases(t *testing.T) {
 	}
 }
 
+// TestUSBPortPathRegexPreCompiled verifies the regex is pre-compiled at package level.
+func TestUSBPortPathRegexPreCompiled(t *testing.T) {
+	// Verify the package-level compiled regex exists and works correctly
+	if usbPortPathRegex == nil {
+		t.Fatal("usbPortPathRegex should be pre-compiled at package level")
+	}
+
+	// Verify it matches the same patterns as IsValidUSBPortPath
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		{"1-1", true},
+		{"1-1.4", true},
+		{"2-3.1.2", true},
+		{"invalid", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		got := usbPortPathRegex.MatchString(tt.input)
+		if got != tt.want {
+			t.Errorf("usbPortPathRegex.MatchString(%q) = %v, want %v", tt.input, got, tt.want)
+		}
+	}
+}
+
 // BenchmarkGetUSBPhysicalPort measures performance of port detection.
 func BenchmarkGetUSBPhysicalPort(b *testing.B) {
 	sysfsPath := filepath.Join("..", "..", "testdata", "sys", "bus", "usb", "devices")

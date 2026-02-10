@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -858,4 +859,135 @@ monitor:
 	case <-time.After(2 * time.Second):
 		t.Error("Watch did not return when context was cancelled")
 	}
+}
+
+// TestKoanfConfig_ConcurrentReloadAndRead tests that concurrent Reload and
+// getter calls do not cause a data race on the internal koanf pointer.
+// This test is designed to be run with `go test -race` to detect races.
+func TestKoanfConfig_ConcurrentReloadAndRead(t *testing.T) {
+	// Create temp directory and config file
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+
+	testConfig := `
+default:
+  sample_rate: 48000
+  channels: 2
+  bitrate: 128k
+  codec: opus
+  thread_queue: 8192
+
+stream:
+  initial_restart_delay: 10s
+
+mediamtx:
+  api_url: http://localhost:9997
+
+monitor:
+  enabled: true
+  interval: 5m
+`
+	if err := os.WriteFile(configPath, []byte(testConfig), 0644); err != nil {
+		t.Fatalf("Failed to write test config: %v", err)
+	}
+
+	kc, err := NewKoanfConfig(WithYAMLFile(configPath))
+	if err != nil {
+		t.Fatalf("NewKoanfConfig failed: %v", err)
+	}
+
+	const numGoroutines = 10
+	const numIterations = 50
+
+	var wg sync.WaitGroup
+
+	// Start goroutines that continuously reload
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < numIterations; j++ {
+				_ = kc.Reload()
+			}
+		}()
+	}
+
+	// Start goroutines that continuously read via GetString
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < numIterations; j++ {
+				_ = kc.GetString("default.codec")
+			}
+		}()
+	}
+
+	// Start goroutines that continuously read via GetInt
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < numIterations; j++ {
+				_ = kc.GetInt("default.sample_rate")
+			}
+		}()
+	}
+
+	// Start goroutines that continuously read via GetBool
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < numIterations; j++ {
+				_ = kc.GetBool("monitor.enabled")
+			}
+		}()
+	}
+
+	// Start goroutines that continuously read via GetDuration
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < numIterations; j++ {
+				_ = kc.GetDuration("stream.initial_restart_delay")
+			}
+		}()
+	}
+
+	// Start goroutines that continuously read via Exists
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < numIterations; j++ {
+				_ = kc.Exists("default.codec")
+			}
+		}()
+	}
+
+	// Start goroutines that continuously read via All
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < numIterations; j++ {
+				_ = kc.All()
+			}
+		}()
+	}
+
+	// Start goroutines that continuously read via Load
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < numIterations; j++ {
+				_, _ = kc.Load()
+			}
+		}()
+	}
+
+	wg.Wait()
 }

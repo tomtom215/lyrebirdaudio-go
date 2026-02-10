@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Package mediamtx provides a client for the MediaMTX REST API.
 //
 // This enables health checking, stream monitoring, and runtime management

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Package main implements the lyrebird-stream daemon, the core audio streaming service.
 //
 // lyrebird-stream is designed for 24/7 unattended operation, managing multiple
@@ -33,11 +35,11 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"io"
-	"log"
+	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
-	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -70,114 +72,48 @@ func main() {
 		os.Exit(0)
 	}
 
-	// Initialize logger
-	logger := log.New(os.Stderr, "", log.LstdFlags)
-	logger.Printf("lyrebird-stream %s (%s) built %s", Version, Commit, BuildTime)
+	// Initialize structured logger
+	slogLevel := parseSlogLevel(*logLevel)
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slogLevel}))
+	slog.SetDefault(logger)
+	logger.Info("starting lyrebird-stream", "version", Version, "commit", Commit, "built", BuildTime)
 
 	// Create lock directory if it doesn't exist
 	if err := os.MkdirAll(*lockDir, 0750); err != nil { //nolint:gosec // Lock directory needs group read for service monitoring
-		logger.Fatalf("Failed to create lock directory: %v", err)
+		logger.Error("failed to create lock directory", "error", err)
+		os.Exit(1)
 	}
 
 	// Load configuration using koanf (supports env vars and hot-reload)
 	koanfCfg, cfg, err := loadConfigurationKoanf(*configPath)
 	if err != nil {
-		logger.Fatalf("Failed to load configuration: %v", err)
+		logger.Error("failed to load configuration", "error", err)
+		os.Exit(1)
 	}
-	logger.Printf("Loaded configuration from %s (env var overrides enabled)", *configPath)
-
-	// Detect USB audio devices
-	devices, err := audio.DetectDevices("/proc/asound")
-	if err != nil {
-		logger.Fatalf("Failed to detect audio devices: %v", err)
-	}
-
-	if len(devices) == 0 {
-		logger.Println("No USB audio devices found, waiting for devices...")
-	} else {
-		logger.Printf("Detected %d USB audio device(s)", len(devices))
-	}
+	logger.Info("loaded configuration", "path", *configPath)
 
 	// Create supervisor
-	var logWriter io.Writer
-	if *logLevel == "debug" {
-		logWriter = os.Stderr
+	var supLogger *slog.Logger
+	if slogLevel <= slog.LevelDebug {
+		supLogger = logger.With("component", "supervisor")
 	}
 
 	sup := supervisor.New(supervisor.Config{
 		ShutdownTimeout: 30 * time.Second,
-		Logger:          logWriter,
+		Logger:          supLogger,
 	})
 
 	// Find ffmpeg path
 	ffmpegPath, err := findFFmpegPath()
 	if err != nil {
-		logger.Fatalf("FFmpeg not found: %v", err)
+		logger.Error("ffmpeg not found", "error", err)
+		os.Exit(1)
 	}
-	logger.Printf("Using FFmpeg: %s", ffmpegPath)
-
-	// Register stream managers for each device
-	for _, dev := range devices {
-		devName := audio.SanitizeDeviceName(dev.Name)
-		devCfg := cfg.GetDeviceConfig(devName)
-
-		streamName := devName
-		rtspURL := fmt.Sprintf("%s/%s", cfg.MediaMTX.RTSPURL, streamName)
-		alsaDevice := fmt.Sprintf("hw:%d,0", dev.CardNumber)
-
-		mgrCfg := &stream.ManagerConfig{
-			DeviceName:  devName,
-			ALSADevice:  alsaDevice,
-			StreamName:  streamName,
-			SampleRate:  devCfg.SampleRate,
-			Channels:    devCfg.Channels,
-			Bitrate:     devCfg.Bitrate,
-			Codec:       devCfg.Codec,
-			ThreadQueue: devCfg.ThreadQueue,
-			RTSPURL:     rtspURL,
-			LockDir:     *lockDir,
-			FFmpegPath:  ffmpegPath,
-			Backoff: stream.NewBackoff(
-				cfg.Stream.InitialRestartDelay,
-				cfg.Stream.MaxRestartDelay,
-				cfg.Stream.MaxRestartAttempts,
-			),
-		}
-
-		if *logLevel == "debug" {
-			mgrCfg.Logger = os.Stderr
-		}
-
-		mgr, err := stream.NewManager(mgrCfg)
-		if err != nil {
-			logger.Printf("Warning: Failed to create manager for %s: %v", devName, err)
-			continue
-		}
-
-		// Wrap manager as a supervisor Service
-		svc := &streamService{
-			name:    devName,
-			manager: mgr,
-			logger:  logger,
-		}
-
-		if err := sup.Add(svc); err != nil {
-			logger.Printf("Warning: Failed to add service %s: %v", devName, err)
-			continue
-		}
-
-		logger.Printf("Registered stream: %s → %s", alsaDevice, rtspURL)
-	}
-
-	if sup.ServiceCount() == 0 {
-		logger.Println("No streams registered. Exiting.")
-		os.Exit(0)
-	}
+	logger.Info("using ffmpeg", "path", ffmpegPath)
 
 	// Set up signal handling
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// Separate channels for shutdown vs reload signals
 	shutdownCh := make(chan os.Signal, 1)
 	reloadCh := make(chan os.Signal, 1)
 	signal.Notify(shutdownCh, syscall.SIGINT, syscall.SIGTERM)
@@ -186,44 +122,152 @@ func main() {
 	// Handle shutdown signals
 	go func() {
 		sig := <-shutdownCh
-		logger.Printf("Received signal %v, initiating shutdown...", sig)
+		logger.Info("received shutdown signal", "signal", sig.String())
 		cancel()
 	}()
 
-	// Handle reload signals (SIGHUP)
+	// Track registered services by device name for hot-reload management
+	registeredServices := make(map[string]bool)
+
+	// registerDevices detects USB audio devices and registers new ones with the supervisor.
+	// Returns the number of newly registered devices.
+	registerDevices := func(cfg *config.Config) int {
+		devices, err := audio.DetectDevices("/proc/asound")
+		if err != nil {
+			logger.Warn("failed to detect audio devices", "error", err)
+			return 0
+		}
+
+		registered := 0
+		for _, dev := range devices {
+			devName := audio.SanitizeDeviceName(dev.Name)
+
+			// Skip already-registered devices
+			if registeredServices[devName] {
+				continue
+			}
+
+			devCfg := cfg.GetDeviceConfig(devName)
+			streamName := devName
+			rtspURL := fmt.Sprintf("%s/%s", cfg.MediaMTX.RTSPURL, streamName)
+			alsaDevice := fmt.Sprintf("hw:%d,0", dev.CardNumber)
+
+			mgrCfg := &stream.ManagerConfig{
+				DeviceName:  devName,
+				ALSADevice:  alsaDevice,
+				StreamName:  streamName,
+				SampleRate:  devCfg.SampleRate,
+				Channels:    devCfg.Channels,
+				Bitrate:     devCfg.Bitrate,
+				Codec:       devCfg.Codec,
+				ThreadQueue: devCfg.ThreadQueue,
+				RTSPURL:     rtspURL,
+				LockDir:     *lockDir,
+				FFmpegPath:  ffmpegPath,
+				Backoff: stream.NewBackoff(
+					cfg.Stream.InitialRestartDelay,
+					cfg.Stream.MaxRestartDelay,
+					cfg.Stream.MaxRestartAttempts,
+				),
+				Logger: logger.With("component", "manager", "device", devName),
+			}
+
+			mgr, err := stream.NewManager(mgrCfg)
+			if err != nil {
+				logger.Warn("failed to create manager", "device", devName, "error", err)
+				continue
+			}
+
+			svc := &streamService{
+				name:    devName,
+				manager: mgr,
+				logger:  logger,
+			}
+
+			if err := sup.Add(svc); err != nil {
+				logger.Warn("failed to add service", "device", devName, "error", err)
+				continue
+			}
+
+			registeredServices[devName] = true
+			registered++
+			logger.Info("registered stream", "alsa_device", alsaDevice, "rtsp_url", rtspURL)
+		}
+
+		return registered
+	}
+
+	// Initial device registration
+	registerDevices(cfg)
+
+	if sup.ServiceCount() == 0 {
+		logger.Info("no USB audio devices found, waiting for devices")
+	} else {
+		logger.Info("detected USB audio devices", "count", sup.ServiceCount())
+	}
+
+	// Device polling loop: periodically scan for new devices when none are registered.
+	// This handles the case where the daemon starts before devices are plugged in.
+	go func() {
+		const pollInterval = 10 * time.Second
+		ticker := time.NewTicker(pollInterval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				if sup.ServiceCount() == 0 {
+					// No streams yet — re-detect and register
+					newCfg, err := koanfCfg.Load()
+					if err != nil {
+						logger.Warn("failed to load config for device scan", "error", err)
+						continue
+					}
+					n := registerDevices(newCfg)
+					if n > 0 {
+						logger.Info("discovered new devices", "count", n)
+					}
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	// Handle reload signals (SIGHUP) — actually re-detect devices and register new ones
 	go func() {
 		for {
 			select {
 			case <-reloadCh:
-				logger.Println("Received SIGHUP, reloading configuration...")
+				logger.Info("received SIGHUP, reloading configuration")
 				if err := koanfCfg.Reload(); err != nil {
-					logger.Printf("Warning: Failed to reload configuration: %v", err)
+					logger.Warn("failed to reload configuration", "error", err)
 					continue
 				}
-				logger.Println("Configuration reloaded successfully")
+				logger.Info("configuration reloaded successfully")
 
-				// Re-detect devices and log configuration changes
-				newDevices, err := audio.DetectDevices("/proc/asound")
+				// Re-detect devices and register any new ones
+				newCfg, err := koanfCfg.Load()
 				if err != nil {
-					logger.Printf("Warning: Failed to re-detect devices: %v", err)
-				} else {
-					// Get updated config
-					newCfg, err := koanfCfg.Load()
-					if err != nil {
-						logger.Printf("Warning: Failed to load updated config: %v", err)
-					} else {
-						// Log configuration for detected devices
-						for _, dev := range newDevices {
-							devName := audio.SanitizeDeviceName(dev.Name)
-							devCfg := newCfg.GetDeviceConfig(devName)
-							logger.Printf("[SIGHUP] Device %s config: %dHz, %dch, %s, %s",
-								devName, devCfg.SampleRate, devCfg.Channels, devCfg.Codec, devCfg.Bitrate)
-						}
-					}
+					logger.Warn("failed to load updated config", "error", err)
+					continue
 				}
 
-				logger.Println("Note: Stream restart required for config changes to take effect")
-				logger.Println("      Use 'systemctl restart lyrebird-stream' to apply changes")
+				n := registerDevices(newCfg)
+				if n > 0 {
+					logger.Info("registered new devices on reload", "count", n)
+				}
+
+				// Log current configuration for all known devices
+				for devName := range registeredServices {
+					devCfg := newCfg.GetDeviceConfig(devName)
+					logger.Info("device config after reload",
+						"device", devName,
+						"sample_rate", devCfg.SampleRate,
+						"channels", devCfg.Channels,
+						"codec", devCfg.Codec,
+						"bitrate", devCfg.Bitrate)
+				}
 			case <-ctx.Done():
 				return
 			}
@@ -231,19 +275,19 @@ func main() {
 	}()
 
 	// Run supervisor (blocks until shutdown)
-	logger.Printf("Starting %d stream(s)...", sup.ServiceCount())
+	logger.Info("starting supervisor", "streams", sup.ServiceCount())
 	if err := sup.Run(ctx); err != nil && err != context.Canceled {
-		logger.Printf("Supervisor error: %v", err)
+		logger.Error("supervisor error", "error", err)
 	}
 
-	logger.Println("Shutdown complete")
+	logger.Info("shutdown complete")
 }
 
 // streamService wraps a stream.Manager to implement supervisor.Service.
 type streamService struct {
 	name    string
 	manager *stream.Manager
-	logger  *log.Logger
+	logger  *slog.Logger
 }
 
 func (s *streamService) Name() string {
@@ -251,29 +295,14 @@ func (s *streamService) Name() string {
 }
 
 func (s *streamService) Run(ctx context.Context) error {
-	s.logger.Printf("[%s] Starting stream", s.name)
+	s.logger.Info("starting stream", "service", s.name)
 	err := s.manager.Run(ctx)
 	if err != nil && err != context.Canceled {
-		s.logger.Printf("[%s] Stream stopped with error: %v", s.name, err)
+		s.logger.Error("stream stopped with error", "service", s.name, "error", err)
 	} else {
-		s.logger.Printf("[%s] Stream stopped", s.name)
+		s.logger.Info("stream stopped", "service", s.name)
 	}
 	return err
-}
-
-// loadConfiguration loads the config file, creating a default if it doesn't exist.
-// Deprecated: Use loadConfigurationKoanf for enhanced features (env vars, hot-reload).
-func loadConfiguration(path string) (*config.Config, error) {
-	// Check if file exists first
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return config.DefaultConfig(), nil
-	}
-
-	cfg, err := config.LoadConfig(path)
-	if err != nil {
-		return nil, err
-	}
-	return cfg, nil
 }
 
 // loadConfigurationKoanf loads configuration using koanf with support for:
@@ -302,7 +331,7 @@ func loadConfigurationKoanf(path string) (*config.KoanfConfig, *config.Config, e
 			return nil, nil, fmt.Errorf("failed to create koanf config: %w", err)
 		}
 	} else {
-		// Load with env vars only
+		// No config file — load with env vars only
 		kc, err = config.NewKoanfConfig(
 			config.WithEnvPrefix("LYREBIRD"),
 		)
@@ -315,36 +344,38 @@ func loadConfigurationKoanf(path string) (*config.KoanfConfig, *config.Config, e
 	// Load the configuration
 	cfg, err := kc.Load()
 	if err != nil {
+		if !fileExists {
+			// No file and env vars insufficient — use defaults
+			return kc, config.DefaultConfig(), nil
+		}
 		return nil, nil, fmt.Errorf("failed to load config: %w", err)
 	}
 
 	return kc, cfg, nil
 }
 
-// findFFmpegPath locates the ffmpeg binary.
+// findFFmpegPath locates the ffmpeg binary using exec.LookPath,
+// which respects PATH and verifies the file is executable.
 func findFFmpegPath() (string, error) {
-	// Check common locations
-	paths := []string{
-		"/usr/bin/ffmpeg",
-		"/usr/local/bin/ffmpeg",
-		"/opt/homebrew/bin/ffmpeg",
+	path, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		return "", fmt.Errorf("ffmpeg not found in PATH: %w", err)
 	}
+	return path, nil
+}
 
-	for _, p := range paths {
-		if _, err := os.Stat(p); err == nil {
-			return p, nil
-		}
+// parseSlogLevel converts a log level string to slog.Level.
+func parseSlogLevel(level string) slog.Level {
+	switch strings.ToLower(level) {
+	case "debug":
+		return slog.LevelDebug
+	case "warn", "warning":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
 	}
-
-	// Try PATH
-	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
-		p := filepath.Join(dir, "ffmpeg")
-		if _, err := os.Stat(p); err == nil {
-			return p, nil
-		}
-	}
-
-	return "", fmt.Errorf("ffmpeg not found in common locations or PATH")
 }
 
 func printUsage() {

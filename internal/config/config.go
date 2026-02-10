@@ -1,8 +1,11 @@
+// SPDX-License-Identifier: MIT
+
 package config
 
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -117,12 +120,54 @@ func (c *Config) Save(path string) error {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
 
-	// Write file with 0644 permissions (readable by all, writable by owner)
-	// #nosec G306 - Config file should be world-readable (0644 is appropriate)
-	if err := os.WriteFile(path, data, 0644); err != nil {
-		return fmt.Errorf("failed to write config file: %w", err)
+	// Atomic write: write to a temp file in the same directory, sync to disk,
+	// then rename to the target path. os.Rename is atomic on most filesystems,
+	// so a crash mid-write leaves either the old file or the new file, never
+	// a partially-written file.
+	dir := filepath.Dir(path)
+
+	// #nosec G304 -- path is from administrator-controlled configuration
+	tmpFile, err := os.CreateTemp(dir, ".config.*.yaml")
+	if err != nil {
+		return fmt.Errorf("failed to create temp config file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+
+	// Clean up temp file on any error
+	success := false
+	defer func() {
+		if !success {
+			_ = tmpFile.Close()
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	// Write data to temp file
+	if _, err := tmpFile.Write(data); err != nil {
+		return fmt.Errorf("failed to write temp config file: %w", err)
 	}
 
+	// Sync to disk to ensure data is persisted before rename
+	if err := tmpFile.Sync(); err != nil {
+		return fmt.Errorf("failed to sync temp config file: %w", err)
+	}
+
+	// Set permissions before rename (0644: readable by all, writable by owner)
+	// #nosec G302 - Config file should be world-readable (0644 is appropriate)
+	if err := tmpFile.Chmod(0644); err != nil {
+		return fmt.Errorf("failed to set config file permissions: %w", err)
+	}
+
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("failed to close temp config file: %w", err)
+	}
+
+	// Atomic rename
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("failed to rename temp config file: %w", err)
+	}
+
+	success = true
 	return nil
 }
 

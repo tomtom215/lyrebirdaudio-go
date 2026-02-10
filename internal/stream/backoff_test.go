@@ -315,6 +315,52 @@ func TestBackoffMaxAttemptsGetter(t *testing.T) {
 	}
 }
 
+// TestBackoffSuccessThresholdGetter verifies SuccessThreshold() getter method.
+func TestBackoffSuccessThresholdGetter(t *testing.T) {
+	backoff := NewBackoff(10*time.Second, 300*time.Second, 50)
+	if backoff.SuccessThreshold() != DefaultSuccessThreshold {
+		t.Errorf("SuccessThreshold() = %v, want %v", backoff.SuccessThreshold(), DefaultSuccessThreshold)
+	}
+
+	custom := 600 * time.Second
+	backoff2 := NewBackoffWithThreshold(10*time.Second, 300*time.Second, custom, 50)
+	if backoff2.SuccessThreshold() != custom {
+		t.Errorf("SuccessThreshold() = %v, want %v", backoff2.SuccessThreshold(), custom)
+	}
+}
+
+// TestBackoffSuccessThresholdNil verifies SuccessThreshold() returns 0 for nil.
+func TestBackoffSuccessThresholdNil(t *testing.T) {
+	var backoff *Backoff
+	if backoff.SuccessThreshold() != 0 {
+		t.Errorf("nil.SuccessThreshold() = %v, want 0", backoff.SuccessThreshold())
+	}
+}
+
+// TestBackoffShortRunDoesNotDoubleCount verifies that handling short runs
+// via RecordFailure (not RecordSuccess) avoids double-counting attempts.
+func TestBackoffShortRunDoesNotDoubleCount(t *testing.T) {
+	backoff := NewBackoff(10*time.Second, 300*time.Second, 50)
+
+	// Simulate what the manager does for a short run:
+	// call RecordFailure() so attempts increment only once per short run
+	backoff.RecordFailure()
+
+	if backoff.Attempts() != 1 {
+		t.Errorf("After one RecordFailure, Attempts() = %d, want 1", backoff.Attempts())
+	}
+
+	// Simulate a long successful run
+	backoff.RecordSuccess(400 * time.Second)
+
+	if backoff.Attempts() != 2 {
+		t.Errorf("After RecordFailure + RecordSuccess, Attempts() = %d, want 2", backoff.Attempts())
+	}
+	if backoff.ConsecutiveFailures() != 0 {
+		t.Errorf("After long success, ConsecutiveFailures() = %d, want 0", backoff.ConsecutiveFailures())
+	}
+}
+
 // BenchmarkBackoffRecordFailure measures performance of RecordFailure.
 func BenchmarkBackoffRecordFailure(b *testing.B) {
 	backoff := NewBackoff(10*time.Second, 300*time.Second, 10000)
