@@ -151,7 +151,7 @@ func (c *Client) ListPaths(ctx context.Context) ([]Path, error) {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.httpClient.Do(req) // #nosec G704 -- URL is from config (MediaMTX API base URL), not user HTTP input
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute request: %w", err)
 	}
@@ -192,7 +192,7 @@ func (c *Client) GetPath(ctx context.Context, name string) (*Path, error) {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.httpClient.Do(req) // #nosec G704 -- URL is from config (MediaMTX API base URL), not user HTTP input
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute request: %w", err)
 	}
@@ -294,7 +294,7 @@ func (c *Client) Ping(ctx context.Context) error {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.httpClient.Do(req) // #nosec G704 -- URL is from config (MediaMTX API base URL), not user HTTP input
 	if err != nil {
 		return fmt.Errorf("MediaMTX API not reachable: %w", err)
 	}

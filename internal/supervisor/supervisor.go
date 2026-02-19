@@ -150,17 +150,24 @@ type serviceEntry struct {
 
 // serviceWrapper adapts our Service interface to suture.Service.
 type serviceWrapper struct {
-	svc    Service
-	entry  *serviceEntry
-	sup    *Supervisor
-	ctx    context.Context
+	svc   Service
+	entry *serviceEntry
+	sup   *Supervisor
+
+	// mu protects cancel. Serve writes cancel; Stop reads it.
+	// Without this mutex, concurrent Serve + Stop calls race on the field.
+	mu     sync.Mutex
 	cancel context.CancelFunc
 }
 
 // Serve implements suture.Service.
 func (w *serviceWrapper) Serve(ctx context.Context) error {
-	// Create a cancellable context for this service
-	w.ctx, w.cancel = context.WithCancel(ctx)
+	// Create a cancellable context for this service and store cancel under mu
+	// so that a concurrent Stop() call cannot race with this assignment.
+	serviceCtx, cancel := context.WithCancel(ctx)
+	w.mu.Lock()
+	w.cancel = cancel
+	w.mu.Unlock()
 
 	// Update state to running
 	w.sup.mu.Lock()
@@ -171,11 +178,11 @@ func (w *serviceWrapper) Serve(ctx context.Context) error {
 	w.sup.logf("Service %s started", w.svc.Name())
 
 	// Run the actual service
-	err := w.svc.Run(w.ctx)
+	err := w.svc.Run(serviceCtx)
 
 	// Update state based on result
 	w.sup.mu.Lock()
-	if w.ctx.Err() != nil {
+	if serviceCtx.Err() != nil {
 		// Context was cancelled (graceful shutdown)
 		w.entry.state = ServiceStateStopped
 	} else if err != nil {
@@ -183,12 +190,14 @@ func (w *serviceWrapper) Serve(ctx context.Context) error {
 		w.entry.state = ServiceStateFailed
 		w.entry.lastError = err
 		w.entry.restarts++
-		w.sup.logf("Service %s failed (restarts=%d): %v", w.svc.Name(), w.entry.restarts, err)
+		// ME-7: use Warn level for non-fatal restarts; Error is reserved for
+		// unrecoverable supervisor-level failures.
+		w.sup.logWarn("Service %s failed (restarts=%d): %v", w.svc.Name(), w.entry.restarts, err)
 	} else {
 		// Service exited cleanly but unexpectedly
 		w.entry.state = ServiceStateFailed
 		w.entry.restarts++
-		w.sup.logf("Service %s exited unexpectedly (restarts=%d)", w.svc.Name(), w.entry.restarts)
+		w.sup.logWarn("Service %s exited unexpectedly (restarts=%d)", w.svc.Name(), w.entry.restarts)
 	}
 	w.sup.mu.Unlock()
 
@@ -201,9 +210,16 @@ func (w *serviceWrapper) String() string {
 }
 
 // Stop is called by suture when stopping the service.
+// It is safe to call concurrently with Serve: the mutex ensures that the
+// cancel function is either already set (cancel() is called) or not yet set
+// (the service context derived from suture's ctx will be cancelled by suture
+// itself when the supervisor shuts down).
 func (w *serviceWrapper) Stop() {
-	if w.cancel != nil {
-		w.cancel()
+	w.mu.Lock()
+	cancel := w.cancel
+	w.mu.Unlock()
+	if cancel != nil {
+		cancel()
 	}
 }
 
@@ -246,10 +262,17 @@ func New(cfg Config) *Supervisor {
 	return s
 }
 
-// logf writes a formatted log message if Logger is configured.
+// logf writes a formatted info-level log message if Logger is configured.
 func (s *Supervisor) logf(format string, args ...interface{}) {
 	if s.logger != nil {
 		s.logger.Info(fmt.Sprintf(format, args...), "component", "supervisor")
+	}
+}
+
+// logWarn writes a formatted warn-level log message if Logger is configured.
+func (s *Supervisor) logWarn(format string, args ...interface{}) {
+	if s.logger != nil {
+		s.logger.Warn(fmt.Sprintf(format, args...), "component", "supervisor")
 	}
 }
 
@@ -301,12 +324,13 @@ func (s *Supervisor) Remove(name string) error {
 
 	// Remove from suture (this stops the service)
 	if err := s.suture.Remove(entry.token); err != nil {
-		s.logf("Warning: error removing service %s: %v", name, err)
+		s.logWarn("error removing service from suture tree: %v (service=%s)", err, name)
 	}
 
-	// Cancel the service context to ensure it stops
-	if entry.wrapper != nil && entry.wrapper.cancel != nil {
-		entry.wrapper.cancel()
+	// Cancel the service context to ensure it stops.
+	// Delegate through Stop() so the wrapper mutex is respected.
+	if entry.wrapper != nil {
+		entry.wrapper.Stop()
 	}
 
 	delete(s.services, name)

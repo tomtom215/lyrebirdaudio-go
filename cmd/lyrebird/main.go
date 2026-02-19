@@ -268,7 +268,7 @@ func runUSBMapWithPath(asoundPath string, args []string) error {
 		case strings.HasPrefix(args[i], "--output="):
 			outputPath = strings.TrimPrefix(args[i], "--output=")
 		case args[i] == "--output" && i+1 < len(args):
-			outputPath = args[i+1]
+			outputPath = args[i+1] // #nosec G602 -- bounds checked by i+1 < len(args) in the case condition
 			i++
 		}
 	}
@@ -436,7 +436,7 @@ func runMigrate(args []string) error {
 	}
 
 	// Check if destination exists
-	if _, err := os.Stat(toPath); err == nil && !force {
+	if _, err := os.Stat(toPath); err == nil && !force { // #nosec G703 -- toPath is from CLI flag, not web request
 		return fmt.Errorf("destination file exists (use --force to overwrite): %s", toPath)
 	}
 
@@ -456,8 +456,7 @@ func runMigrate(args []string) error {
 	}
 
 	// Create directory if needed
-	// #nosec G301 - Config directory needs 0755 for system access
-	if err := os.MkdirAll(filepath.Dir(toPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(toPath), 0755); err != nil { // #nosec G301 G703 -- Config directory needs 0755; toPath is from CLI flag
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
@@ -669,7 +668,7 @@ func runStatus(args []string) error {
 // getServiceStatus checks systemd service status.
 func getServiceStatus(serviceName string) string {
 	// Try to run systemctl is-active
-	cmd := exec.Command("systemctl", "is-active", serviceName)
+	cmd := exec.Command("systemctl", "is-active", serviceName) // #nosec G204 G702 -- serviceName is a controlled constant, not user input
 	output, err := cmd.Output()
 	if err != nil {
 		return "not running (or systemd unavailable)"
@@ -690,7 +689,7 @@ func getServiceStatus(serviceName string) string {
 
 // readLockPID reads the PID from a lock file.
 func readLockPID(lockFile string) (int, error) {
-	data, err := os.ReadFile(lockFile) // #nosec G304 -- lock files are in controlled directory
+	data, err := os.ReadFile(lockFile) // #nosec G304 G703 -- lock files are in controlled directory
 	if err != nil {
 		return 0, err
 	}
@@ -1091,7 +1090,7 @@ func detectArch() string {
 func downloadFile(url, dest string) error {
 	// Try curl first
 	if _, err := exec.LookPath("curl"); err == nil {
-		cmd := exec.Command("curl", "-fsSL", "-o", dest, url)
+		cmd := exec.Command("curl", "-fsSL", "-o", dest, url) // #nosec G204 G702 -- "curl" is a literal, url/dest are from config, not web input
 		if output, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("curl failed: %w: %s", err, string(output))
 		}
@@ -1100,7 +1099,7 @@ func downloadFile(url, dest string) error {
 
 	// Fall back to wget
 	if _, err := exec.LookPath("wget"); err == nil {
-		cmd := exec.Command("wget", "-q", "-O", dest, url)
+		cmd := exec.Command("wget", "-q", "-O", dest, url) // #nosec G204 G702 -- "wget" is a literal, url/dest are from config, not web input
 		if output, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("wget failed: %w: %s", err, string(output))
 		}
@@ -1222,8 +1221,7 @@ func runTest(args []string) error {
 			"-b:a", cfg.Default.Bitrate,
 			"-f", "null", "-",
 		}
-		// #nosec G204 -- ffmpegPath is from exec.LookPath, not user input
-		cmd := exec.Command(ffmpegPath, testArgs...)
+		cmd := exec.Command(ffmpegPath, testArgs...) // #nosec G204 G702 -- ffmpegPath is from exec.LookPath, not user input
 		if output, err := cmd.CombinedOutput(); err != nil {
 			fmt.Println("WARNING - FFmpeg test failed")
 			if verbose {
@@ -1244,7 +1242,7 @@ func runTest(args []string) error {
 		apiURL = "http://localhost:9997"
 	}
 	client := &http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Get(apiURL + "/v3/paths/list")
+	resp, err := client.Get(apiURL + "/v3/paths/list") // #nosec G704 -- apiURL is from config, not user HTTP request input
 	if err != nil {
 		fmt.Println("WARNING - Not reachable")
 		if verbose {
@@ -1271,7 +1269,7 @@ func runTest(args []string) error {
 	if idx := strings.Index(rtspHost, "/"); idx != -1 {
 		rtspHost = rtspHost[:idx]
 	}
-	conn, err := net.DialTimeout("tcp", rtspHost, 2*time.Second)
+	conn, err := net.DialTimeout("tcp", rtspHost, 2*time.Second) // #nosec G704 -- rtspHost is from config, not user HTTP request input
 	if err != nil {
 		fmt.Println("WARNING - Not accessible")
 		if verbose {

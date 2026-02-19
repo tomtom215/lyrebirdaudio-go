@@ -33,6 +33,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -40,11 +41,13 @@ import (
 	"os/exec"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/tomtom215/lyrebirdaudio-go/internal/audio"
 	"github.com/tomtom215/lyrebirdaudio-go/internal/config"
+	"github.com/tomtom215/lyrebirdaudio-go/internal/health"
 	"github.com/tomtom215/lyrebirdaudio-go/internal/stream"
 	"github.com/tomtom215/lyrebirdaudio-go/internal/supervisor"
 )
@@ -126,8 +129,14 @@ func main() {
 		cancel()
 	}()
 
-	// Track registered services by device name for hot-reload management
-	registeredServices := make(map[string]bool)
+	// registeredServices tracks which device names have been registered with the
+	// supervisor.  It is accessed from the main goroutine, the poll goroutine,
+	// and the SIGHUP reload goroutine — a plain map would be a data race (C-2,
+	// L-14 fix).
+	var (
+		registeredMu       sync.RWMutex
+		registeredServices = make(map[string]bool)
+	)
 
 	// registerDevices detects USB audio devices and registers new ones with the supervisor.
 	// Returns the number of newly registered devices.
@@ -142,8 +151,11 @@ func main() {
 		for _, dev := range devices {
 			devName := audio.SanitizeDeviceName(dev.Name)
 
-			// Skip already-registered devices
-			if registeredServices[devName] {
+			// Skip already-registered devices (read lock).
+			registeredMu.RLock()
+			alreadyRegistered := registeredServices[devName]
+			registeredMu.RUnlock()
+			if alreadyRegistered {
 				continue
 			}
 
@@ -189,7 +201,9 @@ func main() {
 				continue
 			}
 
+			registeredMu.Lock()
 			registeredServices[devName] = true
+			registeredMu.Unlock()
 			registered++
 			logger.Info("registered stream", "alsa_device", alsaDevice, "rtsp_url", rtspURL)
 		}
@@ -206,8 +220,12 @@ func main() {
 		logger.Info("detected USB audio devices", "count", sup.ServiceCount())
 	}
 
-	// Device polling loop: periodically scan for new devices when none are registered.
-	// This handles the case where the daemon starts before devices are plugged in.
+	// Device polling loop: periodically scan for newly plugged-in USB devices
+	// and register any that are not yet supervised.
+	//
+	// M-4 fix: the poll runs unconditionally on every tick, not only when the
+	// service count is zero.  This is the correct hotplug support: a second
+	// microphone plugged in after the daemon started will be registered here.
 	go func() {
 		const pollInterval = 10 * time.Second
 		ticker := time.NewTicker(pollInterval)
@@ -216,17 +234,21 @@ func main() {
 		for {
 			select {
 			case <-ticker.C:
-				if sup.ServiceCount() == 0 {
-					// No streams yet — re-detect and register
-					newCfg, err := koanfCfg.Load()
-					if err != nil {
-						logger.Warn("failed to load config for device scan", "error", err)
+				var pollCfg *config.Config
+				if koanfCfg != nil {
+					// C-3 guard: koanfCfg can be nil when NewKoanfConfig failed.
+					var loadErr error
+					pollCfg, loadErr = koanfCfg.Load()
+					if loadErr != nil {
+						logger.Warn("failed to load config for device scan", "error", loadErr)
 						continue
 					}
-					n := registerDevices(newCfg)
-					if n > 0 {
-						logger.Info("discovered new devices", "count", n)
-					}
+				} else {
+					pollCfg = cfg
+				}
+				n := registerDevices(pollCfg)
+				if n > 0 {
+					logger.Info("discovered new devices", "count", n)
 				}
 			case <-ctx.Done():
 				return
@@ -234,12 +256,20 @@ func main() {
 		}
 	}()
 
-	// Handle reload signals (SIGHUP) — actually re-detect devices and register new ones
+	// Handle reload signals (SIGHUP) — re-detect devices and register new ones
 	go func() {
 		for {
 			select {
 			case <-reloadCh:
 				logger.Info("received SIGHUP, reloading configuration")
+
+				// C-3 guard: koanfCfg can be nil when loadConfigurationKoanf
+				// fell back to defaults and returned a nil KoanfConfig.
+				if koanfCfg == nil {
+					logger.Info("no active config file; SIGHUP is a no-op")
+					continue
+				}
+
 				if err := koanfCfg.Reload(); err != nil {
 					logger.Warn("failed to reload configuration", "error", err)
 					continue
@@ -258,8 +288,15 @@ func main() {
 					logger.Info("registered new devices on reload", "count", n)
 				}
 
-				// Log current configuration for all known devices
-				for devName := range registeredServices {
+				// Log current configuration for all known devices (read lock).
+				registeredMu.RLock()
+				names := make([]string, 0, len(registeredServices))
+				for name := range registeredServices {
+					names = append(names, name)
+				}
+				registeredMu.RUnlock()
+
+				for _, devName := range names {
 					devCfg := newCfg.GetDeviceConfig(devName)
 					logger.Info("device config after reload",
 						"device", devName,
@@ -274,9 +311,19 @@ func main() {
 		}
 	}()
 
+	// Start health check HTTP server (M-3 fix).
+	healthHandler := health.NewHandler(nil) // nil provider: basic liveness only
+	go func() {
+		if err := health.ListenAndServe(ctx, ":9998", healthHandler); err != nil {
+			// Not fatal: health endpoint failure must not crash the daemon.
+			logger.Warn("health endpoint error", "error", err)
+		}
+	}()
+
 	// Run supervisor (blocks until shutdown)
 	logger.Info("starting supervisor", "streams", sup.ServiceCount())
-	if err := sup.Run(ctx); err != nil && err != context.Canceled {
+	if err := sup.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		// M-1 fix: use errors.Is to handle wrapped context errors.
 		logger.Error("supervisor error", "error", err)
 	}
 
@@ -297,7 +344,15 @@ func (s *streamService) Name() string {
 func (s *streamService) Run(ctx context.Context) error {
 	s.logger.Info("starting stream", "service", s.name)
 	err := s.manager.Run(ctx)
-	if err != nil && err != context.Canceled {
+	// M-5 fix: Release the lock file and other resources held by the manager
+	// regardless of whether Run returned an error.  Without this call the lock
+	// file fd is not closed until the process exits, which leaks the fd and
+	// prevents a clean re-acquire after a hot-reload.
+	if closeErr := s.manager.Close(); closeErr != nil {
+		s.logger.Warn("manager close error", "service", s.name, "error", closeErr)
+	}
+	// M-1 fix: use errors.Is so that wrapped context errors are handled correctly.
+	if err != nil && !errors.Is(err, context.Canceled) {
 		s.logger.Error("stream stopped with error", "service", s.name, "error", err)
 	} else {
 		s.logger.Info("stream stopped", "service", s.name)

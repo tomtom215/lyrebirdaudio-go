@@ -93,6 +93,9 @@ func ListenAndServe(ctx context.Context, addr string, handler http.Handler) erro
 		Addr:              addr,
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
+		// ME-9: cap per-request time to prevent slow clients from holding goroutines.
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
 	}
 
 	errCh := make(chan error, 1)

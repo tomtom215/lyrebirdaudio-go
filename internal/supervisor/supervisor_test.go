@@ -799,3 +799,86 @@ func TestSupervisor_LongRunningServiceShutdown(t *testing.T) {
 		t.Fatal("service did not stop")
 	}
 }
+
+// TestSupervisor_StopServeCancelRace is the C-4 regression test.
+//
+// suture may call Stop() on a serviceWrapper concurrently with (or just
+// before) Serve() assigns the cancel function.  Without the mutex in
+// serviceWrapper, this is a data race.  This test exercises rapid
+// add-and-remove cycles under the race detector.
+func TestSupervisor_StopServeCancelRace(t *testing.T) {
+	const iterations = 50
+
+	for i := 0; i < iterations; i++ {
+		sup := New(Config{
+			ShutdownTimeout: 2 * time.Second,
+		})
+
+		svc := newMockService("race-test")
+
+		if err := sup.Add(svc); err != nil {
+			t.Fatalf("iteration %d: Add: %v", i, err)
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- sup.Run(ctx)
+		}()
+
+		// Cancel almost immediately to force Serve/Stop overlap.
+		cancel()
+
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Errorf("iteration %d: Run: unexpected error: %v", i, err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("iteration %d: supervisor did not stop", i)
+		}
+	}
+}
+
+// TestSupervisor_StopCoverage verifies that Stop() is exercised under the
+// race detector when Remove() is called while the service is running (L-1).
+func TestSupervisor_StopCoverage(t *testing.T) {
+	sup := New(Config{
+		ShutdownTimeout: 2 * time.Second,
+	})
+
+	svc := newMockService("stop-coverage")
+	if err := sup.Add(svc); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- sup.Run(ctx)
+	}()
+
+	// Wait for the service to start so that Stop() has a non-nil cancel to call.
+	select {
+	case <-svc.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("service did not start")
+	}
+
+	// Remove while running: suture calls Stop() on the wrapper.
+	if err := sup.Remove("stop-coverage"); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	select {
+	case <-svc.stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("service did not stop after Remove")
+	}
+
+	cancel()
+	<-errCh
+}

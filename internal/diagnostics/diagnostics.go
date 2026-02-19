@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
 
+//go:build linux
+
 // Package diagnostics provides comprehensive system health checks for LyreBirdAudio.
 //
 // This implements the 24 diagnostic checks from the bash implementation,

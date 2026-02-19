@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
 
+//go:build linux
+
 package lock
 
 import (
@@ -103,7 +105,7 @@ func (fl *FileLock) Acquire(timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for {
 		// Try non-blocking flock
-		err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) // #nosec G115 -- Fd() fits int on all supported platforms (amd64/arm64/arm)
 		if err == nil {
 			// Lock acquired!
 			break
@@ -191,7 +193,7 @@ func (fl *FileLock) AcquireContext(ctx context.Context, timeout time.Duration) e
 
 	for {
 		// Try non-blocking flock
-		err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) // #nosec G115 -- Fd() fits int on all supported platforms (amd64/arm64/arm)
 		if err == nil {
 			// Lock acquired!
 			break
@@ -250,7 +252,7 @@ func (fl *FileLock) Release() error {
 	}
 
 	// Release flock
-	if err := syscall.Flock(int(fl.file.Fd()), syscall.LOCK_UN); err != nil {
+	if err := syscall.Flock(int(fl.file.Fd()), syscall.LOCK_UN); err != nil { // #nosec G115 -- Fd() fits int on all supported platforms (amd64/arm64/arm)
 		return fmt.Errorf("failed to unlock: %w", err)
 	}
 
@@ -294,8 +296,12 @@ func (fl *FileLock) Close() error {
 //
 // Reference: mediamtx-stream-manager.sh is_lock_stale() lines 765-805
 func isLockStale(lockPath string, threshold time.Duration) (bool, error) {
-	// Check if lock file exists
-	info, err := os.Stat(lockPath)
+	// Check if lock file exists.
+	// threshold is retained in the signature for API compatibility but is no
+	// longer used after the C-1 fix: see comment below.
+	_ = threshold
+
+	_, err := os.Stat(lockPath)
 	if os.IsNotExist(err) {
 		return false, nil // No lock file = not stale
 	}
@@ -330,18 +336,16 @@ func isLockStale(lockPath string, threshold time.Duration) (bool, error) {
 
 	// On Unix, FindProcess always succeeds, so we need to send signal 0
 	err = process.Signal(syscall.Signal(0))
-	if err != nil {
-		// Process doesn't exist or we can't signal it
-		return true, nil
+	if err == nil {
+		// Process is alive. The lock is valid regardless of the lock file's
+		// modification time — a long-running stream (hours, days) always has
+		// a lock file whose mtime is older than DefaultStaleThreshold.
+		// Applying an age check here would steal the lock from a healthy
+		// process, causing two managers to run concurrently on the same device.
+		return false, nil
 	}
 
-	// Check lock file age
-	age := time.Since(info.ModTime())
-	if age > threshold {
-		// Lock is old - likely stale
-		return true, nil
-	}
-
-	// Lock is valid: process exists and file is recent
-	return false, nil
+	// Process is dead or unreachable; the lock is stale.
+	// (Age is not checked here: if signal(0) failed the process is gone.)
+	return true, nil
 }
