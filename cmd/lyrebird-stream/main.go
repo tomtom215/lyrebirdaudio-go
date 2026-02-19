@@ -172,8 +172,8 @@ func runDaemon(flags daemonFlags) int {
 	// registered device so that SIGHUP can detect parameter changes and restart
 	// only the affected streams (M-6 fix).
 	var (
-		registeredMu          sync.RWMutex
-		registeredServices    = make(map[string]bool)
+		registeredMu           sync.RWMutex
+		registeredServices     = make(map[string]bool)
 		registeredConfigHashes = make(map[string]string)
 	)
 

@@ -822,12 +822,12 @@ func TestSaveConfigAtomicTempFileCleanupOnError(t *testing.T) {
 
 // mockAtomicFile implements atomicFile for testing error injection.
 type mockAtomicFile struct {
-	name      string
-	realFile  *os.File // used to back Name() and cleanup
-	writeErr  error
-	syncErr   error
-	chmodErr  error
-	closeErr  error
+	name       string
+	realFile   *os.File // used to back Name() and cleanup
+	writeErr   error
+	syncErr    error
+	chmodErr   error
+	closeErr   error
 	writeCalls int
 }
 
@@ -839,7 +839,7 @@ func (m *mockAtomicFile) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (m *mockAtomicFile) Sync() error  { return m.syncErr }
+func (m *mockAtomicFile) Sync() error               { return m.syncErr }
 func (m *mockAtomicFile) Chmod(_ os.FileMode) error { return m.chmodErr }
 func (m *mockAtomicFile) Close() error {
 	if m.realFile != nil {

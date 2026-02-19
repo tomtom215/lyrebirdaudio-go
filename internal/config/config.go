@@ -113,6 +113,7 @@ func LoadConfig(path string) (*Config, error) {
 //
 //	cfg := DefaultConfig()
 //	err := cfg.Save("/etc/lyrebird/config.yaml")
+//
 // atomicFile abstracts file operations used by Save for testability.
 type atomicFile interface {
 	Write([]byte) (int, error)
