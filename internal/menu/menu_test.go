@@ -2,6 +2,7 @@ package menu
 
 import (
 	"bytes"
+	"os"
 	"strings"
 	"testing"
 )
@@ -660,6 +661,193 @@ type testError struct {
 
 func (e *testError) Error() string {
 	return e.msg
+}
+
+// TestRunCommand exercises RunCommand with a real but harmless command.
+func TestRunCommand(t *testing.T) {
+	output := &bytes.Buffer{}
+
+	// echo is always available and produces deterministic output.
+	err := RunCommand(output, "echo", "hello")
+	if err != nil {
+		t.Fatalf("RunCommand(echo hello) error: %v", err)
+	}
+	if !strings.Contains(output.String(), "hello") {
+		t.Errorf("RunCommand(echo hello) output = %q, want 'hello'", output.String())
+	}
+}
+
+// TestRunCommandFailure verifies that RunCommand propagates a non-zero exit code.
+func TestRunCommandFailure(t *testing.T) {
+	output := &bytes.Buffer{}
+
+	err := RunCommand(output, "false") // POSIX "false" always exits non-zero
+	if err == nil {
+		t.Error("RunCommand(false) expected non-nil error for non-zero exit")
+	}
+}
+
+// TestRunCommandNotFound verifies that RunCommand returns an error for missing binaries.
+func TestRunCommandNotFound(t *testing.T) {
+	output := &bytes.Buffer{}
+
+	err := RunCommand(output, "this-binary-should-never-exist-lyrebird-test")
+	if err == nil {
+		t.Error("RunCommand(nonexistent) expected non-nil error")
+	}
+}
+
+// TestDisplayHuhPathEmptyOptions exercises the len(options)==0 early-return in Display().
+// When every item is hidden or a separator, the huh path returns nil immediately
+// without ever calling huh.NewForm (which would require a real TTY).
+func TestDisplayHuhPathEmptyOptions(t *testing.T) {
+	// Construct a menu that will go through the huh branch of Display().
+	// m.input is os.Stdin (default), so Display() will NOT call displayWithScanner().
+	// All items are hidden/separators, so options is empty → returns nil immediately.
+	output := &bytes.Buffer{}
+	m := &Menu{
+		Title:       "HuhPathTest",
+		input:       os.Stdin,
+		output:      output,
+		clearScreen: false,
+	}
+	m.AddItem(MenuItem{Key: "h", Label: "Hidden", Hidden: true})
+	m.AddSeparator()
+
+	err := m.Display()
+	if err != nil {
+		t.Errorf("Display() with all-hidden items should return nil, got: %v", err)
+	}
+}
+
+// TestDisplayAllHiddenScanner exercises displayWithScanner with hidden-only items.
+func TestDisplayAllHiddenScanner(t *testing.T) {
+	input := strings.NewReader("")
+	m := New("All Hidden",
+		WithInput(input),
+		WithOutput(&bytes.Buffer{}),
+		WithClearScreen(false),
+	)
+	m.AddItem(MenuItem{Key: "h", Label: "Hidden", Hidden: true})
+	m.AddSeparator()
+
+	if err := m.displayWithScanner(); err != nil {
+		t.Errorf("displayWithScanner() with hidden-only menu: %v", err)
+	}
+}
+
+// TestDisplayWithScannerSubMenu exercises the submenu path in displayWithScanner.
+func TestDisplayWithScannerSubMenu(t *testing.T) {
+	// Input: choose item "1" (which has a submenu), then exit submenu with "0", then exit main with "0".
+	input := strings.NewReader("1\n0\n0\n")
+	output := &bytes.Buffer{}
+
+	submenu := New("Sub",
+		WithInput(input),
+		WithOutput(output),
+		WithClearScreen(false),
+	)
+	submenu.AddItem(MenuItem{Key: "0", Label: "Back"})
+
+	m := New("Main",
+		WithInput(input),
+		WithOutput(output),
+		WithClearScreen(false),
+	)
+	m.AddItem(MenuItem{
+		Key:     "1",
+		Label:   "Open Sub",
+		SubMenu: submenu,
+	})
+	m.AddItem(MenuItem{Key: "0", Label: "Exit"})
+
+	if err := m.displayWithScanner(); err != nil {
+		t.Errorf("displayWithScanner() with submenu: %v", err)
+	}
+}
+
+// TestCreateDeviceMenuStructure verifies createDeviceMenu returns expected items.
+func TestCreateDeviceMenuStructure(t *testing.T) {
+	m := createDeviceMenu()
+	if m == nil {
+		t.Fatal("createDeviceMenu() returned nil")
+	}
+	if m.Title == "" {
+		t.Error("createDeviceMenu() title should not be empty")
+	}
+
+	// Verify at least items 1–4 and item "0" (Back) exist.
+	keys := make(map[string]bool)
+	for _, item := range m.Items {
+		if item.Key != "" {
+			keys[item.Key] = true
+		}
+	}
+	for _, k := range []string{"1", "2", "3", "4", "0"} {
+		if !keys[k] {
+			t.Errorf("createDeviceMenu() missing item key %q", k)
+		}
+	}
+}
+
+// TestCreateStreamMenuStructure verifies createStreamMenu returns expected items.
+func TestCreateStreamMenuStructure(t *testing.T) {
+	m := createStreamMenu()
+	if m == nil {
+		t.Fatal("createStreamMenu() returned nil")
+	}
+	if m.Title == "" {
+		t.Error("createStreamMenu() title should not be empty")
+	}
+	keys := make(map[string]bool)
+	for _, item := range m.Items {
+		if item.Key != "" {
+			keys[item.Key] = true
+		}
+	}
+	for _, k := range []string{"1", "2", "3", "4", "5", "0"} {
+		if !keys[k] {
+			t.Errorf("createStreamMenu() missing item key %q", k)
+		}
+	}
+}
+
+// TestCreateDiagnosticsMenuStructure verifies createDiagnosticsMenu returns expected items.
+func TestCreateDiagnosticsMenuStructure(t *testing.T) {
+	m := createDiagnosticsMenu()
+	if m == nil {
+		t.Fatal("createDiagnosticsMenu() returned nil")
+	}
+	keys := make(map[string]bool)
+	for _, item := range m.Items {
+		if item.Key != "" {
+			keys[item.Key] = true
+		}
+	}
+	for _, k := range []string{"1", "2", "3", "4", "0"} {
+		if !keys[k] {
+			t.Errorf("createDiagnosticsMenu() missing item key %q", k)
+		}
+	}
+}
+
+// TestCreateConfigMenuStructure verifies createConfigMenu returns expected items.
+func TestCreateConfigMenuStructure(t *testing.T) {
+	m := createConfigMenu()
+	if m == nil {
+		t.Fatal("createConfigMenu() returned nil")
+	}
+	keys := make(map[string]bool)
+	for _, item := range m.Items {
+		if item.Key != "" {
+			keys[item.Key] = true
+		}
+	}
+	for _, k := range []string{"1", "2", "3", "4", "0"} {
+		if !keys[k] {
+			t.Errorf("createConfigMenu() missing item key %q", k)
+		}
+	}
 }
 
 func TestSelectOutput(t *testing.T) {

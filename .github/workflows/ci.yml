@@ -82,7 +82,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        go-version: ['1.24.13']
+        # Test minimum supported version (go.mod: go 1.24.2) and latest stable.
+        go-version: ['1.24.2', '1.24.13']
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -109,7 +110,8 @@ jobs:
         run: go test -race -timeout 2m -coverprofile=coverage.out -covermode=atomic ./...
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+        # Pinned to v4.6.0 commit SHA to prevent supply-chain attacks via moving tags.
+        uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4.6.0
         with:
           files: ./coverage.out
           flags: unittests
@@ -227,8 +229,19 @@ jobs:
           sudo apt-get install -y ffmpeg
 
       - name: Run integration tests
+        # ubuntu-latest has no USB audio hardware; tests guarded with t.Skip() or
+        # the 'integration' build tag will not run.  This step verifies the
+        # integration build compiles cleanly and that hardware-gated tests are
+        # properly skipped.  Full integration testing requires a self-hosted
+        # runner with physical USB audio devices attached.
         run: go test -v -race -tags=integration -timeout 5m ./...
-        # Note: This will be skipped if no integration tests exist yet
+
+      - name: Hardware-requirement notice
+        if: always()
+        run: |
+          echo "NOTE: Full integration tests require a self-hosted runner with USB"
+          echo "audio devices.  Tests on ubuntu-latest are skipped via t.Skip() or"
+          echo "build constraints.  See docs/PEER_REVIEW.md CI-5 for details."
 
   # Release build (only on tags)
   release:
@@ -236,7 +249,13 @@ jobs:
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     needs: [quality, security, test, build]
+    # Elevated permissions needed to create a GitHub Release and upload assets.
+    permissions:
+      contents: write
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
@@ -255,6 +274,16 @@ jobs:
           cd bin
           sha256sum lyrebird-* > checksums.txt
           cat checksums.txt
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --title "Release ${{ github.ref_name }}" \
+            --generate-notes \
+            bin/lyrebird-* \
+            bin/checksums.txt
 
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4

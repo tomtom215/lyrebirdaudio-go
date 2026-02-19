@@ -1114,6 +1114,177 @@ func TestGetUSBBusDevFromCardWithSysRoot(t *testing.T) {
 	})
 }
 
+// --- L-4: downloadFile and installLyreBirdServiceToPath coverage ---
+
+// TestDownloadFileNeitherFound covers the "neither curl nor wget" error path.
+func TestDownloadFileNeitherFound(t *testing.T) {
+	// Use a temp dir with no executables so LookPath for both curl and wget fails.
+	emptyBin := t.TempDir()
+	t.Setenv("PATH", emptyBin)
+
+	err := downloadFile("http://example.invalid/fake", filepath.Join(emptyBin, "out"))
+	if err == nil {
+		t.Fatal("downloadFile() expected error when neither curl nor wget found")
+	}
+	if !strings.Contains(err.Error(), "neither curl nor wget") {
+		t.Errorf("downloadFile() error = %q; want 'neither curl nor wget'", err.Error())
+	}
+}
+
+// TestDownloadFileCurlSuccess covers the happy path when curl is available.
+func TestDownloadFileCurlSuccess(t *testing.T) {
+	tmpBin := t.TempDir()
+	tmpDir := t.TempDir()
+
+	// Fake curl: writes "fake content" to its -o argument ($3).
+	// Invocation: curl -fsSL -o <dest> <url>  →  $1=-fsSL $2=-o $3=dest $4=url
+	fakeCurl := filepath.Join(tmpBin, "curl")
+	if err := os.WriteFile(fakeCurl, []byte("#!/bin/sh\nprintf 'fake content' > \"$3\"\nexit 0\n"), 0750); err != nil { //#nosec G306
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", tmpBin+":"+os.Getenv("PATH"))
+
+	dest := filepath.Join(tmpDir, "download.bin")
+	if err := downloadFile("http://example.invalid/fake", dest); err != nil {
+		t.Fatalf("downloadFile(curl success) = %v; want nil", err)
+	}
+	data, err := os.ReadFile(dest) //#nosec G304
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(data) != "fake content" {
+		t.Errorf("downloaded content = %q; want %q", string(data), "fake content")
+	}
+}
+
+// TestDownloadFileCurlFailure covers the error path when curl exits non-zero.
+func TestDownloadFileCurlFailure(t *testing.T) {
+	tmpBin := t.TempDir()
+
+	// Fake curl that always fails.
+	fakeCurl := filepath.Join(tmpBin, "curl")
+	if err := os.WriteFile(fakeCurl, []byte("#!/bin/sh\necho 'download error' >&2\nexit 1\n"), 0750); err != nil { //#nosec G306
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", tmpBin+":"+os.Getenv("PATH"))
+
+	err := downloadFile("http://example.invalid/fake", filepath.Join(tmpBin, "out"))
+	if err == nil {
+		t.Fatal("downloadFile(curl failure) expected non-nil error")
+	}
+	if !strings.Contains(err.Error(), "curl failed") {
+		t.Errorf("downloadFile(curl failure) error = %q; want 'curl failed'", err.Error())
+	}
+}
+
+// TestDownloadFileWgetSuccess covers the wget fallback when curl is absent.
+func TestDownloadFileWgetSuccess(t *testing.T) {
+	tmpBin := t.TempDir()
+	tmpDir := t.TempDir()
+
+	// Only wget available; curl is not in this isolated PATH so LookPath("curl") fails.
+	// Invocation: wget -q -O <dest> <url>  →  $1=-q $2=-O $3=dest $4=url
+	fakeWget := filepath.Join(tmpBin, "wget")
+	if err := os.WriteFile(fakeWget, []byte("#!/bin/sh\nprintf 'wget content' > \"$3\"\nexit 0\n"), 0750); err != nil { //#nosec G306
+		t.Fatal(err)
+	}
+	// Isolate PATH to tmpBin only so real curl is hidden.
+	t.Setenv("PATH", tmpBin)
+
+	dest := filepath.Join(tmpDir, "download.bin")
+	if err := downloadFile("http://example.invalid/fake", dest); err != nil {
+		t.Fatalf("downloadFile(wget success) = %v; want nil", err)
+	}
+	data, err := os.ReadFile(dest) //#nosec G304
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(data) != "wget content" {
+		t.Errorf("downloaded content = %q; want %q", string(data), "wget content")
+	}
+}
+
+// TestDownloadFileWgetFailure covers the wget error path.
+func TestDownloadFileWgetFailure(t *testing.T) {
+	tmpBin := t.TempDir()
+
+	// Only wget (failing), curl absent from isolated PATH.
+	fakeWget := filepath.Join(tmpBin, "wget")
+	if err := os.WriteFile(fakeWget, []byte("#!/bin/sh\necho 'wget error' >&2\nexit 1\n"), 0750); err != nil { //#nosec G306
+		t.Fatal(err)
+	}
+	// Isolate PATH to tmpBin only so real curl is hidden.
+	t.Setenv("PATH", tmpBin)
+
+	err := downloadFile("http://example.invalid/fake", filepath.Join(tmpBin, "out"))
+	if err == nil {
+		t.Fatal("downloadFile(wget failure) expected non-nil error")
+	}
+	if !strings.Contains(err.Error(), "wget failed") {
+		t.Errorf("downloadFile(wget failure) error = %q; want 'wget failed'", err.Error())
+	}
+}
+
+// TestInstallLyreBirdServiceToPathSuccess covers the happy path with a fake systemctl.
+func TestInstallLyreBirdServiceToPathSuccess(t *testing.T) {
+	tmpBin := t.TempDir()
+	tmpDir := t.TempDir()
+
+	// Fake systemctl that exits 0.
+	fakeSystemctl := filepath.Join(tmpBin, "systemctl")
+	if err := os.WriteFile(fakeSystemctl, []byte("#!/bin/sh\nexit 0\n"), 0750); err != nil { //#nosec G306
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", tmpBin+":"+os.Getenv("PATH"))
+
+	servicePath := filepath.Join(tmpDir, "lyrebird-stream.service")
+	if err := installLyreBirdServiceToPath(servicePath); err != nil {
+		t.Fatalf("installLyreBirdServiceToPath() = %v; want nil", err)
+	}
+
+	data, err := os.ReadFile(servicePath) //#nosec G304
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(data) != lyrebirdServiceContent {
+		t.Error("installed service content does not match lyrebirdServiceContent")
+	}
+}
+
+// TestInstallLyreBirdServiceToPathWriteError covers the write-failure error path.
+func TestInstallLyreBirdServiceToPathWriteError(t *testing.T) {
+	// Pass a path whose parent directory does not exist.
+	err := installLyreBirdServiceToPath("/nonexistent/path/lyrebird-stream.service")
+	if err == nil {
+		t.Fatal("installLyreBirdServiceToPath() expected error for missing directory")
+	}
+	if !strings.Contains(err.Error(), "failed to write service file") {
+		t.Errorf("installLyreBirdServiceToPath() error = %q; want 'failed to write service file'", err.Error())
+	}
+}
+
+// TestInstallLyreBirdServiceToPathSystemctlFailure covers the systemctl daemon-reload error path.
+func TestInstallLyreBirdServiceToPathSystemctlFailure(t *testing.T) {
+	tmpBin := t.TempDir()
+	tmpDir := t.TempDir()
+
+	// Fake systemctl that fails.
+	fakeSystemctl := filepath.Join(tmpBin, "systemctl")
+	if err := os.WriteFile(fakeSystemctl, []byte("#!/bin/sh\necho 'daemon-reload failed' >&2\nexit 1\n"), 0750); err != nil { //#nosec G306
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", tmpBin+":"+os.Getenv("PATH"))
+
+	servicePath := filepath.Join(tmpDir, "lyrebird-stream.service")
+	err := installLyreBirdServiceToPath(servicePath)
+	if err == nil {
+		t.Fatal("installLyreBirdServiceToPath() expected error when systemctl fails")
+	}
+	if !strings.Contains(err.Error(), "systemctl daemon-reload failed") {
+		t.Errorf("installLyreBirdServiceToPath() error = %q; want 'systemctl daemon-reload failed'", err.Error())
+	}
+}
+
 // TestMain verifies main function integration.
 func TestMain(m *testing.M) {
 	// Run all tests
