@@ -624,18 +624,22 @@ golangci-lint run ./...
 
 ## Future Work
 
-### Completed (Phase 1-3)
+### Completed (Phase 1-4)
 - ✅ Supervisor tree for service management (`internal/supervisor`)
 - ✅ Streaming daemon (`cmd/lyrebird-stream`)
 - ✅ udev rules file writing and reloading
 - ✅ Systemd service template (`systemd/lyrebird-stream.service`)
 - ✅ CLI commands: status, diagnose, check-system, setup, install-mediamtx
+- ✅ Hot-reload configuration via SIGHUP (daemon reloads koanf config and re-registers devices)
+- ✅ Peer-review fixes: C-1 lock theft, C-2 registeredServices race, C-3 nil koanfCfg,
+  C-4 supervisor cancel race, C-5 cmd.Start failure, M-1 errors.Is, M-2 WatchdogSec,
+  M-3 health endpoint, M-4 device polling, M-5 manager.Close, ME-1 backoff first delay,
+  ME-2/ME-7 log levels, ME-3 unkillable goroutine, ME-9 health timeouts, L-7..L-13
 
 ### Remaining
 - `lyrebird test` command - Test config without modifying system
 - MediaMTX API client for runtime stream management
 - Prometheus metrics endpoint
-- Hot-reload configuration via SIGHUP
 
 ---
 

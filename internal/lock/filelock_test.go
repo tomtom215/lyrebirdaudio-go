@@ -1,3 +1,5 @@
+//go:build linux
+
 package lock
 
 import (
@@ -459,30 +461,58 @@ func TestFileLockAcquireZeroTimeout(t *testing.T) {
 	}
 }
 
-// TestFileLockStaleOldAge tests stale lock detection based on age.
-func TestFileLockStaleOldAge(t *testing.T) {
+// TestFileLockStaleOldAgeAliveProcess is the C-1 regression test.
+//
+// A lock held by a running process must NEVER be considered stale, even when
+// the lock file's mtime exceeds DefaultStaleThreshold.  The original bug ran
+// an unconditional age check after signal(0) confirmed the process was alive,
+// which caused lock theft for any stream running longer than ~5 minutes.
+func TestFileLockStaleOldAgeAliveProcess(t *testing.T) {
 	lockPath := filepath.Join(t.TempDir(), "test.lock")
 
-	// Create lock file with our PID (valid process)
+	// Write our own PID — this process is definitely alive.
 	pid := os.Getpid()
 	if err := os.WriteFile(lockPath, []byte(fmt.Sprintf("%d\n", pid)), 0644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	// Set very old modification time (over threshold)
-	oldTime := time.Now().Add(-400 * time.Second) // Older than 300s threshold
+	// Set mtime 24 hours in the past — far beyond DefaultStaleThreshold (300s).
+	oldTime := time.Now().Add(-24 * time.Hour)
 	if err := os.Chtimes(lockPath, oldTime, oldTime); err != nil {
 		t.Fatalf("Chtimes() error = %v", err)
 	}
 
-	// Lock should be considered stale despite valid PID due to age
+	// Must NOT be stale: signal(0) confirms the process is alive.
 	stale, err := isLockStale(lockPath, 300*time.Second)
 	if err != nil {
 		t.Fatalf("isLockStale() error = %v", err)
 	}
+	if stale {
+		t.Error("C-1 regression: lock held by a live process must not be stale regardless of mtime")
+	}
+}
 
+// TestFileLockStaleDeadProcessOldAge verifies that a lock owned by a dead PID
+// is always stale.
+func TestFileLockStaleDeadProcessOldAge(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "test.lock")
+
+	// PID 99999 is very unlikely to exist on any test system.
+	if err := os.WriteFile(lockPath, []byte("99999\n"), 0644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	oldTime := time.Now().Add(-400 * time.Second)
+	if err := os.Chtimes(lockPath, oldTime, oldTime); err != nil {
+		t.Fatalf("Chtimes() error = %v", err)
+	}
+
+	stale, err := isLockStale(lockPath, 300*time.Second)
+	if err != nil {
+		t.Fatalf("isLockStale() error = %v", err)
+	}
 	if !stale {
-		t.Error("Lock should be stale due to old age (>300s)")
+		t.Error("Lock with a dead PID must always be stale")
 	}
 }
 

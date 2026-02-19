@@ -168,7 +168,7 @@ func (u *Updater) GetLatestRelease(ctx context.Context) (*Release, error) {
 	}
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
-	resp, err := u.httpClient.Do(req)
+	resp, err := u.httpClient.Do(req) // #nosec G704 -- URL is from config/GitHub API, not user HTTP input
 	if err != nil {
 		return nil, err
 	}
@@ -200,7 +200,7 @@ func (u *Updater) ListReleases(ctx context.Context) ([]Release, error) {
 	}
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
-	resp, err := u.httpClient.Do(req)
+	resp, err := u.httpClient.Do(req) // #nosec G704 -- URL is from config/GitHub API, not user HTTP input
 	if err != nil {
 		return nil, err
 	}
@@ -240,7 +240,7 @@ func (u *Updater) GetRelease(ctx context.Context, tag string) (*Release, error) 
 	}
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
-	resp, err := u.httpClient.Do(req)
+	resp, err := u.httpClient.Do(req) // #nosec G704 -- URL is from config/GitHub API, not user HTTP input
 	if err != nil {
 		return nil, err
 	}
@@ -269,7 +269,7 @@ func (u *Updater) Download(ctx context.Context, url, destPath string, progress f
 		return err
 	}
 
-	resp, err := u.httpClient.Do(req)
+	resp, err := u.httpClient.Do(req) // #nosec G704 -- URL is from config/GitHub API, not user HTTP input
 	if err != nil {
 		return err
 	}
@@ -573,8 +573,7 @@ func extractBinaryFromTarGz(archivePath, destDir string) (string, error) {
 		name := filepath.Base(header.Name)
 		if name == "lyrebird" || name == "lyrebird-stream" {
 			destPath := filepath.Join(destDir, name)
-			// #nosec G304 -- destPath is constructed from controlled destDir
-			outFile, err := os.Create(destPath)
+			outFile, err := os.Create(destPath) // #nosec G304 G703 -- destPath is constructed from controlled destDir
 			if err != nil {
 				return "", err
 			}
@@ -617,8 +616,7 @@ func copyFile(src, dst string) error {
 		return err
 	}
 
-	// #nosec G304 -- dst is from controlled paths (binary backup/restore)
-	dest, err := os.OpenFile(dst, os.O_RDWR|os.O_CREATE|os.O_TRUNC, info.Mode())
+	dest, err := os.OpenFile(dst, os.O_RDWR|os.O_CREATE|os.O_TRUNC, info.Mode()) // #nosec G304 G703 -- dst is from controlled paths (binary backup/restore)
 	if err != nil {
 		return err
 	}
