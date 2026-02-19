@@ -627,17 +627,20 @@ golangci-lint run ./...
 
 ## Future Work
 
-### Completed (Phase 1-4)
+### Completed (Phase 1-5)
 - ✅ Supervisor tree for service management (`internal/supervisor`)
 - ✅ Streaming daemon (`cmd/lyrebird-stream`)
 - ✅ udev rules file writing and reloading
 - ✅ Systemd service template (`systemd/lyrebird-stream.service`)
 - ✅ CLI commands: status, diagnose, check-system, setup, install-mediamtx
 - ✅ Hot-reload configuration via SIGHUP (daemon reloads koanf config and re-registers devices)
-- ✅ Peer-review fixes: C-1 lock theft, C-2 registeredServices race, C-3 nil koanfCfg,
+- ✅ Peer-review fixes (Phases 1-2): C-1 lock theft, C-2 registeredServices race, C-3 nil koanfCfg,
   C-4 supervisor cancel race, C-5 cmd.Start failure, M-1 errors.Is, M-2 WatchdogSec,
   M-3 health endpoint, M-4 device polling, M-5 manager.Close, ME-1 backoff first delay,
   ME-2/ME-7 log levels, ME-3 unkillable goroutine, ME-9 health timeouts, L-7..L-13
+- ✅ All 59 peer-review issues closed (Phase 3): L-3/L-4/L-5 test coverage, L-9 lint version pin,
+  L-10 duplicate YAML parser removed, L-11 orphaned testify pin removed, CI-1 multi-Go-version
+  matrix, CI-2 GitHub Release creation, CI-3 codecov SHA pin, CI-5 hardware notice
 
 ### Remaining
 - `lyrebird test` command - Test config without modifying system
@@ -649,7 +652,7 @@ golangci-lint run ./...
 ## External Dependencies
 
 **Go Libraries:**
-- **gopkg.in/yaml.v3** - YAML parsing (backward compatibility)
+- **go.yaml.in/yaml/v3** - YAML parsing (consolidated from gopkg.in/yaml.v3 in Phase 3)
 - **github.com/knadh/koanf/v2** - Multi-source configuration management
   - `koanf/parsers/yaml` - YAML parser
   - `koanf/providers/file` - File provider with watch capability

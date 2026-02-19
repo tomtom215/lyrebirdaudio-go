@@ -116,7 +116,7 @@ coverage-html: test-coverage
 lint:
 ifndef GOLANGCI_LINT
 	@echo "==> golangci-lint not installed. Installing..."
-	go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+	go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.62.2
 endif
 	@echo "==> Running linters..."
 	golangci-lint run --timeout 5m ./...
@@ -171,8 +171,8 @@ ci: deps check test-race test-coverage sec
 ## dev: Install development tools
 dev:
 	@echo "==> Installing development tools..."
-	go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
-	go install github.com/securego/gosec/v2/cmd/gosec@latest
+	go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.62.2
+	go install github.com/securego/gosec/v2/cmd/gosec@v2.21.4
 	go install golang.org/x/tools/cmd/goimports@latest
 	@echo "==> Development tools installed"
 
