@@ -181,6 +181,11 @@ func WriteRulesFile(devices []*DeviceInfo, reload bool) error {
 // Returns:
 //   - error: if validation, writing, or reloading fails
 func WriteRulesFileToPath(devices []*DeviceInfo, path string, reload bool) error {
+	return writeRulesFileToPathWithRunner(devices, path, reload, defaultCmdRunner)
+}
+
+// writeRulesFileToPathWithRunner is the injectable implementation for testing.
+func writeRulesFileToPathWithRunner(devices []*DeviceInfo, path string, reload bool, runner cmdRunner) error {
 	// Validate all devices first
 	for i, dev := range devices {
 		if _, err := GenerateRuleWithValidation(dev.PortPath, dev.BusNum, dev.DevNum); err != nil {
@@ -198,7 +203,7 @@ func WriteRulesFileToPath(devices []*DeviceInfo, path string, reload bool) error
 
 	// Optionally reload udev rules
 	if reload {
-		if err := ReloadUdevRules(); err != nil {
+		if err := reloadUdevRulesWith(runner); err != nil {
 			return fmt.Errorf("failed to reload udev rules: %w", err)
 		}
 	}
@@ -215,15 +220,27 @@ func WriteRulesFileToPath(devices []*DeviceInfo, path string, reload bool) error
 // Returns:
 //   - error: if either command fails
 func ReloadUdevRules() error {
+	return reloadUdevRulesWith(defaultCmdRunner)
+}
+
+// cmdRunner is a function type for running OS commands, injectable for tests.
+type cmdRunner func(name string, args ...string) ([]byte, error)
+
+// defaultCmdRunner executes commands using os/exec.
+func defaultCmdRunner(name string, args ...string) ([]byte, error) {
+	cmd := exec.Command(name, args...) // #nosec G204
+	return cmd.CombinedOutput()
+}
+
+// reloadUdevRulesWith reloads udev rules using the provided command runner.
+func reloadUdevRulesWith(run cmdRunner) error {
 	// Reload rules
-	reloadCmd := exec.Command("udevadm", "control", "--reload-rules")
-	if output, err := reloadCmd.CombinedOutput(); err != nil {
+	if output, err := run("udevadm", "control", "--reload-rules"); err != nil {
 		return fmt.Errorf("udevadm control --reload-rules failed: %w: %s", err, string(output))
 	}
 
 	// Trigger re-enumeration
-	triggerCmd := exec.Command("udevadm", "trigger")
-	if output, err := triggerCmd.CombinedOutput(); err != nil {
+	if output, err := run("udevadm", "trigger"); err != nil {
 		return fmt.Errorf("udevadm trigger failed: %w: %s", err, string(output))
 	}
 

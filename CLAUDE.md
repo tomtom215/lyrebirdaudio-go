@@ -39,23 +39,23 @@ go mod tidy
 
 ### Current Test Coverage
 
-| Package | Coverage | Notes |
-|---------|----------|-------|
-| internal/audio | 94.7% | Device detection + sanitization |
-| internal/supervisor | 94.2% | Erlang-style supervisor tree using suture |
-| internal/health | 94.1% | HTTP health check endpoint |
-| internal/util | 94.0% | Panic recovery, resource tracking |
-| internal/mediamtx | 92.4% | MediaMTX API client |
-| internal/config | 90.3% | YAML config + koanf + hot-reload |
-| internal/updater | 90.4% | Version checking + semver comparison |
-| internal/udev | 85.4% | udev rule generation + file writing |
-| internal/stream | 85.0% | Stream manager with backoff + monitoring |
-| internal/lock | 78.6% | File-based locking |
-| internal/diagnostics | 65.5% | System diagnostics |
-| internal/menu | 55.6% | Interactive menu (requires terminal) |
-| cmd/lyrebird | 43.5% | CLI (many commands require root/interactive) |
-| cmd/lyrebird-stream | 30.4% | Daemon (requires runtime environment) |
-| **Internal packages** | **~85%** | Core library code well-tested |
+| Package              | Coverage  | Notes                                          |
+|----------------------|-----------|------------------------------------------------|
+| internal/audio       | 94.7%     | Device detection + sanitization                |
+| internal/supervisor  | 94.2%     | Erlang-style supervisor tree using suture      |
+| internal/health      | 94.1%     | HTTP health check endpoint                     |
+| internal/util        | 94.0%     | Panic recovery, resource tracking              |
+| internal/mediamtx    | 92.4%     | MediaMTX API client                            |
+| internal/updater     | 90.4%     | Version checking + semver comparison           |
+| internal/config      | 90.3%     | YAML config + koanf + hot-reload               |
+| internal/udev        | 85.4%     | udev rule generation + file writing            |
+| internal/stream      | 85.0%     | Stream manager with backoff + monitoring       |
+| internal/lock        | 78.6%     | File-based locking                             |
+| internal/diagnostics | 65.5%     | System diagnostics                             |
+| internal/menu        | 55.6%     | Interactive menu (requires terminal)           |
+| cmd/lyrebird         | 43.5%     | CLI (many commands require root/interactive)   |
+| cmd/lyrebird-stream  | 30.4%     | Daemon (requires runtime environment)          |
+| **Internal packages**| **~85%**  | Core library code well-tested                  |
 
 ---
 
@@ -319,6 +319,9 @@ kc, err := config.NewKoanfConfig(
 
 // Access configuration
 cfg, err := kc.Load()
+if err != nil {
+    log.Fatal(err)
+}
 devCfg := cfg.GetDeviceConfig("blue_yeti")
 
 // Hot-reload on file changes

@@ -595,6 +595,169 @@ func TestParseUSBIDEdgeCases(t *testing.T) {
 	}
 }
 
+// TestFindDeviceIDPathIn tests the injectable findDeviceIDPathIn function.
+func TestFindDeviceIDPathIn(t *testing.T) {
+	t.Run("directory does not exist", func(t *testing.T) {
+		result := findDeviceIDPathIn("/nonexistent/by-id", 0)
+		if result != "" {
+			t.Errorf("findDeviceIDPathIn() = %q, want empty string for missing dir", result)
+		}
+	})
+
+	t.Run("empty directory", func(t *testing.T) {
+		byIDDir := t.TempDir()
+		result := findDeviceIDPathIn(byIDDir, 0)
+		if result != "" {
+			t.Errorf("findDeviceIDPathIn() = %q, want empty string for empty dir", result)
+		}
+	})
+
+	t.Run("symlink points to controlC0", func(t *testing.T) {
+		byIDDir := t.TempDir()
+
+		// Create the target device file
+		devDir := t.TempDir()
+		controlFile := filepath.Join(devDir, "controlC0")
+		if err := writeFile(controlFile, ""); err != nil {
+			t.Fatalf("Failed to create control file: %v", err)
+		}
+
+		// Create a symlink in byIDDir pointing to controlC0
+		linkName := "usb-Blue_Microphones_Yeti-00"
+		linkPath := filepath.Join(byIDDir, linkName)
+		if err := os.Symlink(controlFile, linkPath); err != nil {
+			t.Fatalf("Failed to create symlink: %v", err)
+		}
+
+		result := findDeviceIDPathIn(byIDDir, 0)
+		if result != linkName {
+			t.Errorf("findDeviceIDPathIn() = %q, want %q", result, linkName)
+		}
+	})
+
+	t.Run("symlink points to different card", func(t *testing.T) {
+		byIDDir := t.TempDir()
+
+		devDir := t.TempDir()
+		// Symlink points to controlC1 but we're looking for card 0
+		controlFile := filepath.Join(devDir, "controlC1")
+		if err := writeFile(controlFile, ""); err != nil {
+			t.Fatalf("Failed to create control file: %v", err)
+		}
+
+		linkPath := filepath.Join(byIDDir, "usb-SomeDevice-00")
+		if err := os.Symlink(controlFile, linkPath); err != nil {
+			t.Fatalf("Failed to create symlink: %v", err)
+		}
+
+		result := findDeviceIDPathIn(byIDDir, 0)
+		if result != "" {
+			t.Errorf("findDeviceIDPathIn() = %q, want empty string (wrong card)", result)
+		}
+	})
+
+	t.Run("multiple symlinks, one matches", func(t *testing.T) {
+		byIDDir := t.TempDir()
+		devDir := t.TempDir()
+
+		// controlC0 for card 0
+		ctrl0 := filepath.Join(devDir, "controlC0")
+		if err := writeFile(ctrl0, ""); err != nil {
+			t.Fatalf("Failed to create controlC0: %v", err)
+		}
+		// controlC1 for card 1
+		ctrl1 := filepath.Join(devDir, "controlC1")
+		if err := writeFile(ctrl1, ""); err != nil {
+			t.Fatalf("Failed to create controlC1: %v", err)
+		}
+
+		link0Name := "usb-Blue_Yeti-00"
+		link1Name := "usb-Other_Device-00"
+
+		if err := os.Symlink(ctrl0, filepath.Join(byIDDir, link0Name)); err != nil {
+			t.Fatalf("Failed to create symlink for card0: %v", err)
+		}
+		if err := os.Symlink(ctrl1, filepath.Join(byIDDir, link1Name)); err != nil {
+			t.Fatalf("Failed to create symlink for card1: %v", err)
+		}
+
+		result := findDeviceIDPathIn(byIDDir, 0)
+		if result != link0Name {
+			t.Errorf("findDeviceIDPathIn() = %q, want %q", result, link0Name)
+		}
+
+		result1 := findDeviceIDPathIn(byIDDir, 1)
+		if result1 != link1Name {
+			t.Errorf("findDeviceIDPathIn() for card1 = %q, want %q", result1, link1Name)
+		}
+	})
+}
+
+// TestGetDeviceInfoWithByID tests getDeviceInfo with an injected byIDDir.
+func TestGetDeviceInfoWithByID(t *testing.T) {
+	t.Run("device ID resolved via injected byIDDir", func(t *testing.T) {
+		asoundDir := t.TempDir()
+		byIDDir := t.TempDir()
+		devDir := t.TempDir()
+
+		// Create a valid USB card
+		cardDir := filepath.Join(asoundDir, "card0")
+		if err := mkdir(cardDir); err != nil {
+			t.Fatalf("Failed to create card dir: %v", err)
+		}
+		if err := writeFile(filepath.Join(cardDir, "usbid"), "0d8c:0014"); err != nil {
+			t.Fatalf("Failed to write usbid: %v", err)
+		}
+		if err := writeFile(filepath.Join(cardDir, "id"), "YetiMic"); err != nil {
+			t.Fatalf("Failed to write id: %v", err)
+		}
+
+		// Set up byIDDir with a symlink pointing to controlC0
+		ctrlFile := filepath.Join(devDir, "controlC0")
+		if err := writeFile(ctrlFile, ""); err != nil {
+			t.Fatalf("Failed to create control file: %v", err)
+		}
+		linkName := "usb-Blue_Yeti-00"
+		if err := os.Symlink(ctrlFile, filepath.Join(byIDDir, linkName)); err != nil {
+			t.Fatalf("Failed to create symlink: %v", err)
+		}
+
+		dev, err := getDeviceInfo(asoundDir, 0, byIDDir)
+		if err != nil {
+			t.Fatalf("getDeviceInfo() error = %v", err)
+		}
+		if dev.DeviceID != linkName {
+			t.Errorf("DeviceID = %q, want %q", dev.DeviceID, linkName)
+		}
+		if dev.Name != "YetiMic" {
+			t.Errorf("Name = %q, want %q", dev.Name, "YetiMic")
+		}
+	})
+
+	t.Run("byIDDir missing returns empty DeviceID", func(t *testing.T) {
+		asoundDir := t.TempDir()
+
+		cardDir := filepath.Join(asoundDir, "card2")
+		if err := mkdir(cardDir); err != nil {
+			t.Fatalf("Failed to create card dir: %v", err)
+		}
+		if err := writeFile(filepath.Join(cardDir, "usbid"), "1234:5678"); err != nil {
+			t.Fatalf("Failed to write usbid: %v", err)
+		}
+		if err := writeFile(filepath.Join(cardDir, "id"), "TestDevice"); err != nil {
+			t.Fatalf("Failed to write id: %v", err)
+		}
+
+		dev, err := getDeviceInfo(asoundDir, 2, "/nonexistent/by-id")
+		if err != nil {
+			t.Fatalf("getDeviceInfo() error = %v", err)
+		}
+		if dev.DeviceID != "" {
+			t.Errorf("DeviceID = %q, want empty string when byIDDir missing", dev.DeviceID)
+		}
+	})
+}
+
 // Helper functions for tests
 func mkdir(path string) error {
 	return os.MkdirAll(path, 0755)

@@ -113,7 +113,28 @@ func LoadConfig(path string) (*Config, error) {
 //
 //	cfg := DefaultConfig()
 //	err := cfg.Save("/etc/lyrebird/config.yaml")
+// atomicFile abstracts file operations used by Save for testability.
+type atomicFile interface {
+	Write([]byte) (int, error)
+	Sync() error
+	Chmod(os.FileMode) error
+	Close() error
+	Name() string
+}
+
+// atomicCreateTemp is the injectable temp-file creator used by Save.
+// Tests can replace this with a function returning a mock atomicFile.
+type atomicCreateTemp func(dir, pattern string) (atomicFile, error)
+
+func defaultCreateTemp(dir, pattern string) (atomicFile, error) {
+	return os.CreateTemp(dir, pattern) // #nosec G304
+}
+
 func (c *Config) Save(path string) error {
+	return c.saveWith(path, defaultCreateTemp)
+}
+
+func (c *Config) saveWith(path string, createTemp atomicCreateTemp) error {
 	// Marshal to YAML
 	data, err := yaml.Marshal(c)
 	if err != nil {
@@ -126,8 +147,7 @@ func (c *Config) Save(path string) error {
 	// a partially-written file.
 	dir := filepath.Dir(path)
 
-	// #nosec G304 -- path is from administrator-controlled configuration
-	tmpFile, err := os.CreateTemp(dir, ".config.*.yaml")
+	tmpFile, err := createTemp(dir, ".config.*.yaml")
 	if err != nil {
 		return fmt.Errorf("failed to create temp config file: %w", err)
 	}
@@ -274,10 +294,10 @@ func (d *DeviceConfig) Validate() error {
 // Only validates fields that are explicitly set (non-zero/non-empty).
 func (d *DeviceConfig) ValidatePartial() error {
 	if d.SampleRate < 0 {
-		return fmt.Errorf("sample_rate must be positive")
+		return fmt.Errorf("sample_rate must not be negative (0 means inherit default)")
 	}
 	if d.Channels < 0 {
-		return fmt.Errorf("channels must be positive")
+		return fmt.Errorf("channels must not be negative (0 means inherit default)")
 	}
 	if d.Channels > 32 {
 		return fmt.Errorf("channels must be between 1 and 32")

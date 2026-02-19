@@ -135,6 +135,11 @@ func DetectDevices(asoundPath string) ([]*Device, error) {
 //
 // Reference: lyrebird-mic-check.sh get_device_info() lines 551-615
 func GetDeviceInfo(asoundPath string, cardNumber int) (*Device, error) {
+	return getDeviceInfo(asoundPath, cardNumber, "/dev/snd/by-id")
+}
+
+// getDeviceInfo is the injectable implementation used by GetDeviceInfo and tests.
+func getDeviceInfo(asoundPath string, cardNumber int, byIDDir string) (*Device, error) {
 	cardDir := filepath.Join(asoundPath, fmt.Sprintf("card%d", cardNumber))
 
 	// Verify card directory exists
@@ -176,9 +181,8 @@ func GetDeviceInfo(asoundPath string, cardNumber int) (*Device, error) {
 		name = fmt.Sprintf("card%d", cardNumber)
 	}
 
-	// Try to find device ID from /dev/snd/by-id/
-	// Note: This may not be available in all environments
-	deviceIDPath := findDeviceIDPath(cardNumber)
+	// Try to find device ID from by-id directory (injectable for tests)
+	deviceIDPath := findDeviceIDPathIn(byIDDir, cardNumber)
 
 	return &Device{
 		CardNumber: cardNumber,
@@ -217,14 +221,13 @@ func ParseUSBID(usbID string) (vendorID, productID string, err error) {
 	return vendorID, productID, nil
 }
 
-// findDeviceIDPath searches /dev/snd/by-id/ for persistent device ID.
+// findDeviceIDPathIn searches byIDDir for persistent device ID for cardNumber.
 //
 // Returns the basename of the symlink that points to controlC{cardNumber},
 // or empty string if not found.
 //
 // Reference: lyrebird-mic-check.sh lines 593-605
-func findDeviceIDPath(cardNumber int) string {
-	byIDDir := "/dev/snd/by-id"
+func findDeviceIDPathIn(byIDDir string, cardNumber int) string {
 	controlTarget := fmt.Sprintf("controlC%d", cardNumber)
 
 	entries, err := os.ReadDir(byIDDir)

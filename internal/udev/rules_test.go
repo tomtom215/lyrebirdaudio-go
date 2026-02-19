@@ -1,6 +1,7 @@
 package udev
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -406,6 +407,135 @@ func TestWriteRulesFilePermissionError(t *testing.T) {
 	err := WriteRulesFileToPath(devices, "/nonexistent/path/rules.test", false)
 	if err == nil {
 		t.Error("WriteRulesFileToPath() expected error for invalid path")
+	}
+}
+
+// TestReloadUdevRulesWith tests the injectable reloadUdevRulesWith function.
+func TestReloadUdevRulesWith(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		var called []string
+		runner := func(name string, args ...string) ([]byte, error) {
+			called = append(called, name+" "+strings.Join(args, " "))
+			return nil, nil
+		}
+		if err := reloadUdevRulesWith(runner); err != nil {
+			t.Fatalf("reloadUdevRulesWith() unexpected error: %v", err)
+		}
+		if len(called) != 2 {
+			t.Fatalf("expected 2 commands called, got %d: %v", len(called), called)
+		}
+		if !strings.Contains(called[0], "reload-rules") {
+			t.Errorf("first call should be reload-rules, got %q", called[0])
+		}
+		if !strings.Contains(called[1], "trigger") {
+			t.Errorf("second call should be trigger, got %q", called[1])
+		}
+	})
+
+	t.Run("reload-rules fails", func(t *testing.T) {
+		runner := func(name string, args ...string) ([]byte, error) {
+			if strings.Contains(strings.Join(args, " "), "reload-rules") {
+				return []byte("mock error"), fmt.Errorf("exit status 1")
+			}
+			return nil, nil
+		}
+		err := reloadUdevRulesWith(runner)
+		if err == nil {
+			t.Fatal("reloadUdevRulesWith() expected error when reload-rules fails")
+		}
+		if !strings.Contains(err.Error(), "reload-rules") {
+			t.Errorf("error should mention reload-rules, got: %v", err)
+		}
+	})
+
+	t.Run("trigger fails", func(t *testing.T) {
+		runner := func(name string, args ...string) ([]byte, error) {
+			if strings.Contains(strings.Join(args, " "), "trigger") {
+				return []byte("trigger error"), fmt.Errorf("exit status 1")
+			}
+			return nil, nil
+		}
+		err := reloadUdevRulesWith(runner)
+		if err == nil {
+			t.Fatal("reloadUdevRulesWith() expected error when trigger fails")
+		}
+		if !strings.Contains(err.Error(), "trigger") {
+			t.Errorf("error should mention trigger, got: %v", err)
+		}
+	})
+}
+
+// TestWriteRulesFileToPathWithReload tests the reload=true path using injectable runner.
+func TestWriteRulesFileToPathWithReload(t *testing.T) {
+	t.Run("reload succeeds", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		path := tmpDir + "/rules.test"
+		var reloaded bool
+		runner := func(name string, args ...string) ([]byte, error) {
+			reloaded = true
+			return nil, nil
+		}
+
+		devices := []*DeviceInfo{{PortPath: "1-1.4", BusNum: 1, DevNum: 5}}
+		err := writeRulesFileToPathWithRunner(devices, path, true, runner)
+		if err != nil {
+			t.Fatalf("writeRulesFileToPathWithRunner() unexpected error: %v", err)
+		}
+		if !reloaded {
+			t.Error("expected udev runner to be called for reload")
+		}
+	})
+
+	t.Run("reload fails returns error", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		path := tmpDir + "/rules.test"
+		runner := func(name string, args ...string) ([]byte, error) {
+			return []byte("no udevadm"), fmt.Errorf("not found")
+		}
+
+		devices := []*DeviceInfo{{PortPath: "1-1.4", BusNum: 1, DevNum: 5}}
+		err := writeRulesFileToPathWithRunner(devices, path, true, runner)
+		if err == nil {
+			t.Fatal("expected error when reload fails")
+		}
+		if !strings.Contains(err.Error(), "failed to reload udev rules") {
+			t.Errorf("error = %q, want 'failed to reload udev rules'", err.Error())
+		}
+	})
+
+	t.Run("reload=false skips runner", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		path := tmpDir + "/rules.test"
+		var called bool
+		runner := func(name string, args ...string) ([]byte, error) {
+			called = true
+			return nil, nil
+		}
+
+		devices := []*DeviceInfo{{PortPath: "1-1.4", BusNum: 1, DevNum: 5}}
+		err := writeRulesFileToPathWithRunner(devices, path, false, runner)
+		if err != nil {
+			t.Fatalf("writeRulesFileToPathWithRunner() unexpected error: %v", err)
+		}
+		if called {
+			t.Error("runner should not be called when reload=false")
+		}
+	})
+}
+
+// TestWriteRulesFile tests the top-level WriteRulesFile function.
+// Since it writes to /etc/udev/rules.d/ (requires root), we verify
+// the error path when running unprivileged.
+func TestWriteRulesFile(t *testing.T) {
+	devices := []*DeviceInfo{{PortPath: "1-1.4", BusNum: 1, DevNum: 5}}
+	err := WriteRulesFile(devices, false)
+	if err == nil {
+		// Running as root — skip the assertion but the call must not panic
+		t.Log("WriteRulesFile() succeeded (running as root)")
+		return
+	}
+	if !strings.Contains(err.Error(), "failed to write rules file") {
+		t.Errorf("WriteRulesFile() error = %q, want 'failed to write rules file'", err.Error())
 	}
 }
 

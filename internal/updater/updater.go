@@ -13,6 +13,8 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -68,6 +70,7 @@ type UpdateInfo struct {
 	ReleaseNotes    string
 	DownloadURL     string
 	AssetName       string
+	ChecksumURL     string // URL to checksums.txt (empty if not found in release assets)
 	PublishedAt     time.Time
 }
 
@@ -145,13 +148,17 @@ func (u *Updater) CheckForUpdates(ctx context.Context) (*UpdateInfo, error) {
 	// Compare versions
 	info.UpdateAvailable = isNewerVersion(latest.TagName, u.currentVersion)
 
-	// Find appropriate asset for this platform
+	// Find appropriate asset for this platform and the checksums file.
 	assetName := getAssetName()
 	for _, asset := range latest.Assets {
 		if strings.Contains(asset.Name, assetName) {
 			info.DownloadURL = asset.BrowserDownloadURL
 			info.AssetName = asset.Name
-			break
+		}
+		// Look for checksums.txt (GitHub convention: "checksums.txt" or "sha256sums.txt")
+		lowerName := strings.ToLower(asset.Name)
+		if lowerName == "checksums.txt" || lowerName == "sha256sums.txt" || strings.HasSuffix(lowerName, "_checksums.txt") {
+			info.ChecksumURL = asset.BrowserDownloadURL
 		}
 	}
 
@@ -338,6 +345,15 @@ func (u *Updater) Update(ctx context.Context, info *UpdateInfo, binaryPath strin
 		return fmt.Errorf("download failed: %w", err)
 	}
 
+	// M-13: Verify SHA256 checksum before installing.
+	// When the release includes a checksums.txt asset, its absence or mismatch
+	// is treated as a hard failure to prevent MITM / corrupted-CDN attacks.
+	if info.ChecksumURL != "" {
+		if err := u.verifyChecksumFromURL(ctx, info.ChecksumURL, info.AssetName, downloadPath); err != nil {
+			return fmt.Errorf("checksum verification failed: %w", err)
+		}
+	}
+
 	// Extract binary from tarball if needed
 	var newBinaryPath string
 	if strings.HasSuffix(info.AssetName, ".tar.gz") || strings.HasSuffix(info.AssetName, ".tgz") {
@@ -399,6 +415,86 @@ func (u *Updater) HasBackup(binaryPath string) bool {
 	backupPath := binaryPath + ".backup"
 	_, err := os.Stat(backupPath)
 	return err == nil
+}
+
+// verifyChecksumFromURL downloads checksums.txt and verifies the downloaded
+// asset matches the expected SHA256 hash.
+func (u *Updater) verifyChecksumFromURL(ctx context.Context, checksumURL, assetName, downloadedPath string) error {
+	// Download checksums.txt to a temp file
+	tmpFile, err := os.CreateTemp("", "lyrebird-checksums-*.txt")
+	if err != nil {
+		return fmt.Errorf("failed to create temp file for checksums: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	_ = tmpFile.Close()
+	defer func() { _ = os.Remove(tmpPath) }()
+
+	if err := u.Download(ctx, checksumURL, tmpPath, nil); err != nil {
+		return fmt.Errorf("failed to download checksums.txt: %w", err)
+	}
+
+	// Read checksums file
+	// #nosec G304 -- path is a controlled temp file created above
+	data, err := os.ReadFile(tmpPath)
+	if err != nil {
+		return fmt.Errorf("failed to read checksums file: %w", err)
+	}
+
+	// Parse expected checksum for this asset
+	expectedHash, err := ParseChecksumFile(string(data), assetName)
+	if err != nil {
+		return fmt.Errorf("checksum not found for %s: %w", assetName, err)
+	}
+
+	// Compute actual SHA256 of the downloaded file
+	// #nosec G304 -- downloadedPath is a controlled temp path
+	fileData, err := os.ReadFile(downloadedPath)
+	if err != nil {
+		return fmt.Errorf("failed to read downloaded file: %w", err)
+	}
+	sum := sha256.Sum256(fileData)
+	actualHash := hex.EncodeToString(sum[:])
+
+	if actualHash != expectedHash {
+		return fmt.Errorf("checksum mismatch for %s: expected %s, got %s", assetName, expectedHash, actualHash)
+	}
+
+	return nil
+}
+
+// ParseChecksumFile parses a sha256sums-style checksum file and returns the
+// hex-encoded SHA256 hash for the named asset.
+//
+// The expected format is one entry per line:
+//
+//	<sha256hex>  <filename>
+//
+// Both one-space and two-space separators (GNU coreutils format) are accepted.
+// Returns an error if the asset is not found.
+func ParseChecksumFile(content, assetName string) (string, error) {
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		// Fields: <hash>  <filename>  (two spaces) or <hash> <filename>
+		parts := strings.Fields(line)
+		if len(parts) < 2 {
+			continue
+		}
+		hash := parts[0]
+		// The filename may have a leading '*' (binary mode marker from sha256sum -b)
+		name := strings.TrimPrefix(parts[1], "*")
+		// Match by basename to be robust against path prefixes
+		if filepath.Base(name) == filepath.Base(assetName) {
+			// Validate that it looks like a hex SHA256 (64 chars)
+			if len(hash) != 64 {
+				return "", fmt.Errorf("invalid SHA256 hash length %d for %s", len(hash), assetName)
+			}
+			return strings.ToLower(hash), nil
+		}
+	}
+	return "", fmt.Errorf("no checksum entry for %q in checksums file", assetName)
 }
 
 // progressReader wraps a reader to report progress.

@@ -14,6 +14,7 @@
 //	--config=PATH     Path to config file (default: /etc/lyrebird/config.yaml)
 //	--lock-dir=PATH   Directory for lock files (default: /var/run/lyrebird)
 //	--log-level=LEVEL Log level: debug, info, warn, error (default: info)
+//	--log-dir=PATH    Directory for FFmpeg log files (default: /var/log/lyrebird)
 //	--help            Show this help message
 //
 // Example:
@@ -59,11 +60,22 @@ var (
 	BuildTime = "unknown"
 )
 
-// Command line flags
+// daemonFlags holds parsed command-line flags for the daemon.
+// Using a struct instead of global variables makes the daemon testable:
+// tests can call runDaemon(daemonFlags{...}) without touching flag.Parse().
+type daemonFlags struct {
+	ConfigPath string
+	LockDir    string
+	LogLevel   string
+	LogDir     string // Directory for FFmpeg log files (empty = discard)
+}
+
+// Command line flags (package-level for flag.Parse wiring only)
 var (
 	configPath = flag.String("config", config.ConfigFilePath, "Path to configuration file")
 	lockDir    = flag.String("lock-dir", "/var/run/lyrebird", "Directory for lock files")
 	logLevel   = flag.String("log-level", "info", "Log level: debug, info, warn, error")
+	logDir     = flag.String("log-dir", "/var/log/lyrebird", "Directory for FFmpeg log files (empty to discard)")
 	showHelp   = flag.Bool("help", false, "Show help message")
 )
 
@@ -75,25 +87,47 @@ func main() {
 		os.Exit(0)
 	}
 
+	code := runDaemon(daemonFlags{
+		ConfigPath: *configPath,
+		LockDir:    *lockDir,
+		LogLevel:   *logLevel,
+		LogDir:     *logDir,
+	})
+	if code != 0 {
+		os.Exit(code)
+	}
+}
+
+// runDaemon is the core daemon implementation, separated from main() for testability.
+// Returns 0 on clean shutdown, 1 on fatal startup errors.
+func runDaemon(flags daemonFlags) int {
 	// Initialize structured logger
-	slogLevel := parseSlogLevel(*logLevel)
+	slogLevel := parseSlogLevel(flags.LogLevel)
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slogLevel}))
 	slog.SetDefault(logger)
 	logger.Info("starting lyrebird-stream", "version", Version, "commit", Commit, "built", BuildTime)
 
 	// Create lock directory if it doesn't exist
-	if err := os.MkdirAll(*lockDir, 0750); err != nil { //nolint:gosec // Lock directory needs group read for service monitoring
+	if err := os.MkdirAll(flags.LockDir, 0750); err != nil { //nolint:gosec // Lock directory needs group read for service monitoring
 		logger.Error("failed to create lock directory", "error", err)
-		os.Exit(1)
+		return 1
+	}
+
+	// Create FFmpeg log directory if specified
+	if flags.LogDir != "" {
+		if err := os.MkdirAll(flags.LogDir, 0750); err != nil { //nolint:gosec // Log directory needs group read for monitoring
+			logger.Warn("failed to create log directory, FFmpeg output will be discarded", "error", err)
+			flags.LogDir = "" // fall back to no logging
+		}
 	}
 
 	// Load configuration using koanf (supports env vars and hot-reload)
-	koanfCfg, cfg, err := loadConfigurationKoanf(*configPath)
+	koanfCfg, cfg, err := loadConfigurationKoanf(flags.ConfigPath)
 	if err != nil {
 		logger.Error("failed to load configuration", "error", err)
-		os.Exit(1)
+		return 1
 	}
-	logger.Info("loaded configuration", "path", *configPath)
+	logger.Info("loaded configuration", "path", flags.ConfigPath)
 
 	// Create supervisor
 	var supLogger *slog.Logger
@@ -110,7 +144,7 @@ func main() {
 	ffmpegPath, err := findFFmpegPath()
 	if err != nil {
 		logger.Error("ffmpeg not found", "error", err)
-		os.Exit(1)
+		return 1
 	}
 	logger.Info("using ffmpeg", "path", ffmpegPath)
 
@@ -133,9 +167,14 @@ func main() {
 	// supervisor.  It is accessed from the main goroutine, the poll goroutine,
 	// and the SIGHUP reload goroutine — a plain map would be a data race (C-2,
 	// L-14 fix).
+	//
+	// registeredConfigHashes stores a stable hash of the ManagerConfig for each
+	// registered device so that SIGHUP can detect parameter changes and restart
+	// only the affected streams (M-6 fix).
 	var (
-		registeredMu       sync.RWMutex
-		registeredServices = make(map[string]bool)
+		registeredMu          sync.RWMutex
+		registeredServices    = make(map[string]bool)
+		registeredConfigHashes = make(map[string]string)
 	)
 
 	// registerDevices detects USB audio devices and registers new ones with the supervisor.
@@ -174,7 +213,8 @@ func main() {
 				Codec:       devCfg.Codec,
 				ThreadQueue: devCfg.ThreadQueue,
 				RTSPURL:     rtspURL,
-				LockDir:     *lockDir,
+				LockDir:     flags.LockDir,
+				LogDir:      flags.LogDir,
 				FFmpegPath:  ffmpegPath,
 				Backoff: stream.NewBackoff(
 					cfg.Stream.InitialRestartDelay,
@@ -203,6 +243,7 @@ func main() {
 
 			registeredMu.Lock()
 			registeredServices[devName] = true
+			registeredConfigHashes[devName] = deviceConfigHash(devCfg, rtspURL)
 			registeredMu.Unlock()
 			registered++
 			logger.Info("registered stream", "alsa_device", alsaDevice, "rtsp_url", rtspURL)
@@ -283,12 +324,8 @@ func main() {
 					continue
 				}
 
-				n := registerDevices(newCfg)
-				if n > 0 {
-					logger.Info("registered new devices on reload", "count", n)
-				}
-
-				// Log current configuration for all known devices (read lock).
+				// M-6 fix: detect parameter changes and restart affected streams.
+				// Collect registered device names under RLock, then compare hashes.
 				registeredMu.RLock()
 				names := make([]string, 0, len(registeredServices))
 				for name := range registeredServices {
@@ -297,13 +334,42 @@ func main() {
 				registeredMu.RUnlock()
 
 				for _, devName := range names {
-					devCfg := newCfg.GetDeviceConfig(devName)
+					newDevCfg := newCfg.GetDeviceConfig(devName)
+					newRTSPURL := fmt.Sprintf("%s/%s", newCfg.MediaMTX.RTSPURL, devName)
+					newHash := deviceConfigHash(newDevCfg, newRTSPURL)
+
+					registeredMu.RLock()
+					oldHash := registeredConfigHashes[devName]
+					registeredMu.RUnlock()
+
 					logger.Info("device config after reload",
 						"device", devName,
-						"sample_rate", devCfg.SampleRate,
-						"channels", devCfg.Channels,
-						"codec", devCfg.Codec,
-						"bitrate", devCfg.Bitrate)
+						"sample_rate", newDevCfg.SampleRate,
+						"channels", newDevCfg.Channels,
+						"codec", newDevCfg.Codec,
+						"bitrate", newDevCfg.Bitrate,
+						"config_changed", oldHash != newHash)
+
+					if oldHash == newHash {
+						continue
+					}
+
+					// Config changed — stop the old stream so registerDevices
+					// will restart it with the new parameters.
+					logger.Info("config changed for device, restarting stream", "device", devName)
+					if removeErr := sup.Remove(devName); removeErr != nil {
+						logger.Warn("failed to remove service for restart", "device", devName, "error", removeErr)
+						continue
+					}
+					registeredMu.Lock()
+					delete(registeredServices, devName)
+					delete(registeredConfigHashes, devName)
+					registeredMu.Unlock()
+				}
+
+				n := registerDevices(newCfg)
+				if n > 0 {
+					logger.Info("registered new/restarted devices on reload", "count", n)
 				}
 			case <-ctx.Done():
 				return
@@ -328,6 +394,7 @@ func main() {
 	}
 
 	logger.Info("shutdown complete")
+	return 0
 }
 
 // streamService wraps a stream.Manager to implement supervisor.Service.
@@ -454,4 +521,21 @@ func printUsage() {
 	fmt.Println("  LYREBIRD_DEFAULT_BITRATE         Override default bitrate (e.g., 128k)")
 	fmt.Println("  LYREBIRD_DEVICES_<NAME>_<FIELD>  Override device-specific settings")
 	fmt.Println("  See documentation for full list of environment variables")
+}
+
+// deviceConfigHash returns a stable string key representing the streaming
+// parameters that are passed to FFmpeg for a device.  When the hash changes
+// between reloads the stream must be restarted with the new parameters (M-6).
+//
+// The hash includes every field that changes the FFmpeg command line so that
+// parameter changes are never silently ignored.
+func deviceConfigHash(devCfg config.DeviceConfig, rtspURL string) string {
+	return fmt.Sprintf("%d/%d/%s/%s/%d/%s",
+		devCfg.SampleRate,
+		devCfg.Channels,
+		devCfg.Bitrate,
+		devCfg.Codec,
+		devCfg.ThreadQueue,
+		rtspURL,
+	)
 }
