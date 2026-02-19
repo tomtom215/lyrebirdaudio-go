@@ -991,3 +991,80 @@ monitor:
 
 	wg.Wait()
 }
+
+// TestDeviceConfigFieldSuffixesReflection verifies that buildDeviceConfigFieldSuffixes
+// derives a complete, up-to-date set of field names from the DeviceConfig struct tags.
+// This test will fail if a new field is added to DeviceConfig without a koanf/yaml tag,
+// which is the early-warning signal the reflection approach is designed to provide.
+func TestDeviceConfigFieldSuffixesReflection(t *testing.T) {
+	suffixes := buildDeviceConfigFieldSuffixes()
+
+	// Must not be empty
+	if len(suffixes) == 0 {
+		t.Fatal("buildDeviceConfigFieldSuffixes() returned empty slice")
+	}
+
+	// All suffixes must start with "_"
+	for _, s := range suffixes {
+		if !strings.HasPrefix(s, "_") {
+			t.Errorf("suffix %q does not start with '_'", s)
+		}
+	}
+
+	// All expected DeviceConfig fields must appear
+	expected := []string{"_sample_rate", "_channels", "_bitrate", "_codec", "_thread_queue"}
+	suffixSet := make(map[string]bool, len(suffixes))
+	for _, s := range suffixes {
+		suffixSet[s] = true
+	}
+	for _, want := range expected {
+		if !suffixSet[want] {
+			t.Errorf("expected suffix %q not in reflection-derived set %v", want, suffixes)
+		}
+	}
+}
+
+// TestDeviceConfigFieldSuffixesMatchesEnvOverride verifies that env override works
+// for every field in deviceConfigFieldSuffixes so adding a field in DeviceConfig
+// does not silently break env-var-based overrides.
+func TestDeviceConfigFieldSuffixesMatchesEnvOverride(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	base := "default:\n  sample_rate: 48000\n  channels: 2\n  bitrate: \"128k\"\n  codec: opus\n"
+	if err := os.WriteFile(path, []byte(base), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Set env vars for every deviceConfigFieldSuffixes entry on a test device
+	// LYREBIRD_DEVICES_TESTMIC_<FIELD_UPPER>
+	fieldValues := map[string]string{
+		"SAMPLE_RATE":  "44100",
+		"CHANNELS":     "1",
+		"BITRATE":      "64k",
+		"CODEC":        "aac",
+		"THREAD_QUEUE": "1024",
+	}
+	for field, val := range fieldValues {
+		t.Setenv("LYREBIRD_DEVICES_TESTMIC_"+field, val)
+	}
+
+	kc, err := NewKoanfConfig(WithYAMLFile(path), WithEnvPrefix("LYREBIRD"))
+	if err != nil {
+		t.Fatalf("NewKoanfConfig: %v", err)
+	}
+	cfg, err := kc.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	devCfg := cfg.GetDeviceConfig("testmic")
+	if devCfg.SampleRate != 44100 {
+		t.Errorf("SampleRate = %d, want 44100 (env override did not apply)", devCfg.SampleRate)
+	}
+	if devCfg.Channels != 1 {
+		t.Errorf("Channels = %d, want 1 (env override did not apply)", devCfg.Channels)
+	}
+	if devCfg.Codec != "aac" {
+		t.Errorf("Codec = %q, want \"aac\" (env override did not apply)", devCfg.Codec)
+	}
+}

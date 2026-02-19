@@ -18,7 +18,7 @@ LyreBirdAudio-Go is a complete rewrite of [LyreBirdAudio](https://github.com/tom
 - **USB Hotplug Support**: Automatic detection and stream management for USB audio devices
 - **Persistent Device Mapping**: udev-based device persistence across reboots
 - **Concurrent Stream Management**: Parallel stream startup and monitoring using Go routines
-- **Static Binary Deployment**: Single binary with no runtime dependencies
+- **Static Binary Deployment**: Single binary with no shared library dependencies (requires ffmpeg, udevadm, systemctl at runtime)
 - **Cross-Platform**: Supports x86_64, ARM64, ARMv7, ARMv6 (Raspberry Pi)
 - **Test-Driven Development**: Comprehensive test coverage for production reliability
 
@@ -236,7 +236,7 @@ Configuration changes are reloaded immediately. Future enhancements will restart
 
 ### Migration from Bash
 
-**Timeline**: The bash version will be supported until this Go implementation reaches feature parity and completes field testing (estimated: Q2 2025).
+**Timeline**: The bash version will be supported until this Go implementation reaches feature parity and completes field testing.
 
 **Migration Tool**:
 ```bash
@@ -341,7 +341,7 @@ GitHub Actions workflow (`.github/workflows/ci.yml`):
 - ✅ Go vet checks
 - ✅ golangci-lint (comprehensive linting)
 - ✅ Unit tests with race detection
-- ✅ Integration tests (on self-hosted runner with USB devices)
+- ✅ Integration tests (ubuntu-latest; hardware-specific paths are skipped in CI)
 - ✅ Cross-compilation validation (amd64, arm64, armv7, armv6)
 - ✅ Code coverage reporting
 - ✅ Security scanning (gosec)
@@ -391,9 +391,10 @@ sudo systemctl stop <service-name>
 # Enable debug logging
 sudo lyrebird-stream --log-level=debug
 
-# Or via environment variable
-export LYREBIRD_LOG_LEVEL=debug
-sudo -E systemctl restart lyrebird-stream
+# Or via EnvironmentFile (for systemd-managed service)
+# Add to /etc/lyrebird/environment:
+# LYREBIRD_LOG_LEVEL=debug
+sudo systemctl restart lyrebird-stream
 ```
 
 ### Health Checks
@@ -417,6 +418,8 @@ Typical resource consumption (per stream):
 - CPU: 1-3% (idle), 5-15% (active encoding)
 - Memory: 10-20 MB per stream
 - Network: Depends on bitrate (128kbps default = ~16KB/s)
+- Startup time: ~50ms (vs ~500ms for bash version)
+- Stream initialization: <100ms per device
 
 ### Benchmarks
 
@@ -425,12 +428,6 @@ Run benchmarks locally with:
 ```bash
 make bench
 ```
-
-Typical performance characteristics:
-- **Startup time**: ~50ms (vs ~500ms for bash version)
-- **Stream initialization**: <100ms per device
-- **Memory footprint**: ~10-20MB per stream
-- **CPU utilization**: 1-3% idle, 5-15% encoding
 
 ## Contributing
 

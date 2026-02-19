@@ -223,6 +223,30 @@ func TestSafeGoWithRecover(t *testing.T) {
 			t.Errorf("Log should contain panic message, got: %s", logOutput)
 		}
 	})
+
+	t.Run("panic closes error channel", func(t *testing.T) {
+		// L-6 fix: after a panic, errCh must be closed so callers using
+		// for-range or a second receive do not block forever.
+		var buf bytes.Buffer
+		errCh := make(chan error, 1)
+
+		SafeGoWithRecover("test", &buf, func() error {
+			panic("test panic")
+		}, errCh, nil)
+
+		// Drain all values from the channel; this must terminate.
+		var errs []error
+		for e := range errCh {
+			errs = append(errs, e)
+		}
+
+		if len(errs) != 1 {
+			t.Fatalf("expected exactly 1 error from panic, got %d", len(errs))
+		}
+		if !strings.Contains(errs[0].Error(), "panic in test") {
+			t.Errorf("error should contain 'panic in test', got: %v", errs[0])
+		}
+	})
 }
 
 // TestRecoverToPanic verifies panic-to-error conversion.

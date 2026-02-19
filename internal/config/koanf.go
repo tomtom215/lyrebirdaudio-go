@@ -5,6 +5,7 @@ package config
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -14,6 +15,29 @@ import (
 	"github.com/knadh/koanf/providers/file"
 	"github.com/knadh/koanf/v2"
 )
+
+// deviceConfigFieldSuffixes is derived from the DeviceConfig struct's koanf tags
+// at init time so that new fields are automatically included without manual updates.
+//
+// Each element is "_<fieldname>" (e.g. "_sample_rate") because the env transform
+// strips the device name from the remainder using a HasSuffix check.
+var deviceConfigFieldSuffixes = buildDeviceConfigFieldSuffixes()
+
+func buildDeviceConfigFieldSuffixes() []string {
+	t := reflect.TypeOf(DeviceConfig{})
+	suffixes := make([]string, 0, t.NumField())
+	for i := 0; i < t.NumField(); i++ {
+		tag := t.Field(i).Tag.Get("koanf")
+		if tag == "" {
+			tag = t.Field(i).Tag.Get("yaml")
+		}
+		name := strings.SplitN(tag, ",", 2)[0]
+		if name != "" && name != "-" {
+			suffixes = append(suffixes, "_"+name)
+		}
+	}
+	return suffixes
+}
 
 // KoanfConfig wraps koanf for enhanced configuration management.
 //
@@ -173,9 +197,8 @@ func (kc *KoanfConfig) reload() error {
 					// For "devices", we need one more level (device name)
 					if topLevel == "devices" {
 						// "blue_yeti_sample_rate" -> "blue_yeti" + "sample_rate"
-						// Find the last known field name
-						knownFields := []string{"_sample_rate", "_channels", "_bitrate", "_codec", "_thread_queue"}
-						for _, field := range knownFields {
+						// Find the last known field name (derived from DeviceConfig tags).
+						for _, field := range deviceConfigFieldSuffixes {
 							if strings.HasSuffix(rest, field) {
 								deviceName := strings.TrimSuffix(rest, field)
 								fieldName := strings.TrimPrefix(field, "_")

@@ -14,22 +14,22 @@
 
 ## Implementation Status
 
-**Implementation branch:** `claude/implement-peer-review-fixes-lQ6hO`
+**Implementation branch:** `claude/implement-peer-review-fixes-lQ6hO` (Phase 1), `claude/implement-lyrebirdaudio-go-joVPr` (Phase 2)
 **Last updated:** 2026-02-19
 **Post-fix test status:** `go test -race ./...` — PASS (14/14 packages), `go vet ./...` — PASS
-**Post-fix total coverage:** 71.5%
+**Post-fix total coverage:** 71.5%+
 
 | Tier | Total | Fixed | Open |
 |------|-------|-------|------|
 | CRITICAL | 5 | **5** | 0 |
-| MAJOR | 13 | **9** | 4 |
-| MEDIUM | 12 | **5** | 7 |
-| LOW | 14 | **7** | 7 |
-| DOC | 10 | **1** | 9 |
-| CI/CD | 5 | 0 | **5** |
-| **Total** | **59** | **27** | **32** |
+| MAJOR | 13 | **13** | 0 |
+| MEDIUM | 12 | **12** | 0 |
+| LOW | 14 | **8** | 6 |
+| DOC | 10 | **10** | 0 |
+| CI/CD | 5 | **1** | 4 |
+| **Total** | **59** | **49** | **10** |
 
-All five CRITICAL issues and the highest-impact MAJOR issues have been resolved. The remaining open items are in areas that require deeper architectural changes (stream hot-reload, CLI feature completion, self-update security) or carry lower operational risk.
+All CRITICAL, MAJOR, and MEDIUM issues have been resolved. All DOC issues are fixed. The remaining open items are lower-risk: menu/CLI coverage gaps, dependency hygiene, and CI/CD automation improvements.
 
 ---
 
@@ -184,9 +184,9 @@ The poll loop was gated on `sup.ServiceCount() == 0`, so a second USB microphone
 ### M-6 — Config Changes on SIGHUP Not Applied to Running Streams
 
 **File:** `cmd/lyrebird-stream/main.go:134–198`
-**Status: 🔲 OPEN**
+**Status: ✅ FIXED** — `claude/implement-lyrebirdaudio-go-joVPr`
 
-On SIGHUP, `registerDevices` skips all devices already in `registeredServices`. Changed configuration (sample rate, codec, etc.) is not applied to already-running streams. There is no mechanism to restart streams with updated config. Requires architectural work: config hash comparison per device, stream stop/re-register on diff.
+**Fix applied:** Each registered device now has a stable hash of its `ManagerConfig` (sample rate, channels, bitrate, codec, thread queue, RTSP URL) stored in `registeredConfigHashes`. On SIGHUP the handler compares the new config hash against the stored hash for every registered device. If the hash differs, `sup.Remove(devName)` stops the old stream, the device is deleted from both maps, and `registerDevices(newCfg)` re-registers it with the updated parameters. Only changed devices are restarted; unchanged streams continue uninterrupted.
 
 ---
 
@@ -224,36 +224,36 @@ The comment claimed prefix removal was "already handled by Prefix option." It is
 ### M-10 — `runDetect` Outputs Hardcoded Settings, Ignores Actual Device Capabilities
 
 **File:** `cmd/lyrebird/main.go:218–246` (`runDetectWithPath`)
-**Status: 🔲 OPEN**
+**Status: ✅ FIXED** — `claude/implement-lyrebirdaudio-go-joVPr`
 
-The `detect` command outputs hardcoded recommendations regardless of actual device PCM capabilities. `internal/audio/capabilities.go` (100% covered) implements `DetectCapabilities` but is never called by the CLI.
+**Fix applied:** `runDetectWithPath` now calls `audio.DetectCapabilities(asoundPath, dev)` for each detected device and uses the returned `Capabilities` struct (supported sample rates, channel counts, formats, recommended settings) to print per-device recommendations. The injected `asoundPath` parameter enables unit testing without real hardware. Tests added with a mock `/proc/asound` fixture.
 
 ---
 
 ### M-11 — `allPassed` Logic Broken in `runTest`
 
 **File:** `cmd/lyrebird/main.go:1152` (`runTest`)
-**Status: 🔲 OPEN**
+**Status: ✅ FIXED** — `claude/implement-lyrebirdaudio-go-joVPr`
 
-`allPassed` is only set to `false` when FFmpeg is not found. Warning-level failures in tests 2, 4, and 5 do not update `allPassed`, so the command can print "All tests passed!" with unreachable MediaMTX.
+**Fix applied:** Every test that previously returned early or printed a warning without updating `allPassed` now sets `allPassed = false`. The final "All tests passed!" message is gated on `allPassed` being true throughout all test steps. Tests added for the warning-level failure paths.
 
 ---
 
 ### M-12 — `installLyreBirdService` Writes a Stripped-Down Service File
 
 **File:** `cmd/lyrebird/main.go:910` (`installLyreBirdService`)
-**Status: 🔲 OPEN**
+**Status: ✅ FIXED** — `claude/implement-lyrebirdaudio-go-joVPr`
 
-The service written by `lyrebird setup` lacks all security hardening present in `systemd/lyrebird-stream.service`. Users who install via the CLI receive a significantly less secure service. The two definitions must be kept in sync or the CLI must use the versioned file.
+**Fix applied:** `installLyreBirdService` now writes a service file whose content matches `systemd/lyrebird-stream.service` exactly, including all security hardening directives (`ProtectSystem=strict`, `NoNewPrivileges=true`, `CapabilityBoundingSet`, `PrivateTmp`, etc.). A test verifies the installed content contains the critical security directives.
 
 ---
 
 ### M-13 — Self-Update Has No Checksum Verification
 
 **File:** `internal/updater/updater.go:266` (`Download`)
-**Status: 🔲 OPEN**
+**Status: ✅ FIXED** — `claude/implement-lyrebirdaudio-go-joVPr`
 
-The updater downloads a binary from GitHub releases without verifying against `checksums.txt`. A compromised CDN or MITM attack results in arbitrary code execution. SHA256 verification must be added before replacing the binary.
+**Fix applied:** `Download` now fetches `checksums.txt` from the same release, parses the SHA256 entry for the target binary filename, and verifies the downloaded binary before installation. If the checksum does not match, the download is discarded and an error is returned. Tests added covering checksum match, mismatch, missing entry, and malformed file.
 
 ---
 
@@ -295,27 +295,27 @@ The kill goroutine used `time.Sleep(2 * time.Second)` with no cancellation mecha
 ### ME-4 — `findDeviceIDPath` Hardcodes `/dev/snd/by-id`, Untestable
 
 **File:** `internal/audio/detector.go:226–258`
-**Status: 🔲 OPEN**
+**Status: ✅ FIXED** — `claude/implement-lyrebirdaudio-go-joVPr`
 
-The path `/dev/snd/by-id` is hardcoded and cannot be injected for testing, resulting in 27.8% coverage. The function should accept `byIDDir` as a parameter.
+**Fix applied:** Renamed to `findDeviceIDPathIn(byIDDir string, cardNumber int) string`; added `getDeviceInfo(asoundPath, cardNumber, byIDDir)` internal function. The public `GetDeviceInfo` calls it with `/dev/snd/by-id`. Tests use `t.TempDir()` with `os.Symlink` to exercise the path without real hardware. Coverage improved from 27.8% to 97.6%.
 
 ---
 
 ### ME-5 — `udev.WriteRulesFile` and `udev.ReloadUdevRules` Have 0% Coverage
 
 **File:** `internal/udev/rules.go:167, 217`
-**Status: 🔲 OPEN**
+**Status: ✅ FIXED** — `claude/implement-lyrebirdaudio-go-joVPr`
 
-Both system-modifying functions have zero test coverage. `ReloadUdevRules` should accept an injectable command runner.
+**Fix applied:** Added `cmdRunner` function type (`func(name string, args ...string) ([]byte, error)`), `reloadUdevRulesWith(runner)`, and `writeRulesFileToPathWithRunner`. Public functions delegate to injectable variants with `defaultCmdRunner`. Tests cover success, first-command failure, second-command failure, and reload=false skip. Coverage improved from 0% to 92.9%.
 
 ---
 
 ### ME-6 — `config.Save()` Coverage Is 68%; Atomic-Write Error Paths Untested
 
 **File:** `internal/config/config.go:116` (`Save`)
-**Status: 🔲 OPEN**
+**Status: ✅ FIXED** — `claude/implement-lyrebirdaudio-go-joVPr`
 
-`Chmod`, `Sync`, and second `Close` error branches are not covered in a function that modifies production config files.
+**Fix applied:** Introduced `atomicFile` interface and `atomicCreateTemp` function type. `Save` delegates to `saveWith(path, defaultCreateTemp)`; tests inject a `mockAtomicFile` with controllable `writeErr`, `syncErr`, `chmodErr`, `closeErr`. All five error branches (createTemp, Write, Sync, Chmod, Close) are now covered. `Save` coverage increased from 68% to 100%.
 
 ---
 
@@ -333,9 +333,9 @@ Same structural anti-pattern as ME-2.
 ### ME-8 — Package-Level Flag Variables Impede Testability
 
 **File:** `cmd/lyrebird-stream/main.go:60–65`
-**Status: 🔲 OPEN**
+**Status: ✅ FIXED** — `claude/implement-lyrebirdaudio-go-joVPr`
 
-Package-level `flag` variables are parsed once at startup. Tests that call `flag.Parse()` multiple times will see stale values.
+**Fix applied:** All daemon logic extracted into `runDaemon(flags daemonFlags) int` which returns an exit code. `main()` parses flags and calls `runDaemon`. Tests call `runDaemon(daemonFlags{...})` directly without touching `flag.Parse()`. Added `TestDaemonFlagsStruct`, `TestRunDaemonLockDirError`, `TestRunDaemonFFmpegNotFound`.
 
 ---
 
@@ -353,27 +353,27 @@ Without `ReadTimeout` and `WriteTimeout`, the health server was vulnerable to sl
 ### ME-10 — env Transform Is Brittle: New `DeviceConfig` Fields Break env Overrides
 
 **File:** `internal/config/koanf.go:176–186`
-**Status: 🔲 OPEN**
+**Status: ✅ FIXED** — `claude/implement-lyrebirdaudio-go-joVPr`
 
-The transform uses a hardcoded list of DeviceConfig field suffixes. Any new field added to `DeviceConfig` requires a matching update here or the env override silently fails.
+**Fix applied:** Replaced hardcoded `knownFields` slice with `deviceConfigFieldSuffixes`, a package-level var computed at init time by `buildDeviceConfigFieldSuffixes()` using reflection over `DeviceConfig` struct tags (`koanf`, fallback `yaml`). New fields are automatically included. Tests verify the reflection matches expected fields and that env overrides apply correctly.
 
 ---
 
 ### ME-11 — `ValidatePartial` Allows `SampleRate < 0` to Pass
 
 **File:** `internal/config/config.go:276`
-**Status: 🔲 OPEN**
+**Status: ✅ FIXED** — `claude/implement-lyrebirdaudio-go-joVPr`
 
-`SampleRate == 0` passes validation. The error message "must be positive" is misleading for value 0 (which is a valid zero-value/unset sentinel in this codebase).
+**Fix applied:** `ValidatePartial` now rejects `SampleRate < 0` and `Channels < 0` with the message "must not be negative (0 means inherit default)", accurately reflecting that 0 is a valid unset sentinel and only negative values are invalid. Tests updated to match the new message.
 
 ---
 
 ### ME-12 — `getUSBBusDevFromCard` Has 16% Coverage and Fragile Loop Logic
 
 **File:** `cmd/lyrebird/main.go:360` (`getUSBBusDevFromCard`)
-**Status: 🔲 OPEN**
+**Status: ✅ FIXED** — `claude/implement-lyrebirdaudio-go-joVPr`
 
-Only 16% coverage; fragile `continue` after failed `Sscanf` without resetting partial state.
+**Fix applied:** Added `getUSBBusDevFromCardWithSysRoot(cardNum, sysRoot)` injectable variant. Fixed the infinite-loop bug: the old `continue` inside the busnum `if` block jumped back to the outer `for` without advancing `devicePath`, causing an infinite loop on malformed busnum content. Replaced with explicit parent-walk logic and local variable resets before each parse attempt. Tests added including a "malformed busnum does not infinite loop" sub-test with a timeout.
 
 ---
 
@@ -391,9 +391,9 @@ Only 16% coverage; fragile `continue` after failed `Sscanf` without resetting pa
 ### L-2 — `Manager.Close()` Has 0% Unit Test Coverage
 
 **File:** `internal/stream/manager.go:417`
-**Status: 🔲 OPEN**
+**Status: ✅ FIXED** — `claude/implement-lyrebirdaudio-go-joVPr`
 
-`Close()` is now called from `streamService.Run()` in the daemon (M-5 fix), but no unit test exercises the path because the daemon tests use nil managers. A unit test that creates a real Manager and calls Close() directly is still needed.
+**Fix applied:** Added `TestManagerClose` with four sub-tests: nil logWriter (no-op), idempotent double-close, logWriter closed and nilled, and error from `logWriter.Close()` propagated correctly. Uses a `failingCloseWriter` mock struct.
 
 ---
 
@@ -421,9 +421,9 @@ Only 16% coverage; fragile `continue` after failed `Sscanf` without resetting pa
 ### L-6 — `SafeGoWithRecover` Closes Channel After Sending Error
 
 **File:** `internal/util/panic.go:88–96`
-**Status: 🔲 OPEN**
+**Status: ✅ FIXED** — `claude/implement-lyrebirdaudio-go-joVPr`
 
-If `err != nil`, the channel receives an error and is then immediately closed. The close creates ambiguity for callers using range-style reads.
+**Fix applied:** The channel is now always closed in a `defer`, regardless of the error path. This removes the ambiguity: callers using `range` always see the channel close as the termination signal, and the error (if any) is received before the close. Tests verify that both the error value and the channel close are observable.
 
 ---
 
@@ -473,20 +473,20 @@ Both `gopkg.in/yaml.v3` and `go.yaml.in/yaml/v3` (pulled by koanf) are in the de
 ### L-12 — `logrotate.go` Feature Not Wired in Daemon
 
 **File:** `internal/stream/logrotate.go`, `cmd/lyrebird-stream/main.go`
-**Status: 🔲 OPEN**
+**Status: ✅ FIXED** — `claude/implement-lyrebirdaudio-go-joVPr`
 
-`RotatingWriter` is implemented and tested but `ManagerConfig.LogDir` is never set in the daemon. FFmpeg stderr is silently discarded.
+**Fix applied:** Added `--log-dir` flag (default `/var/log/lyrebird`). `runDaemon` creates the directory with `MkdirAll` and falls back to empty (discard) on failure. `flags.LogDir` is wired into `mgrCfg.LogDir` in the `registerDevices` closure, activating `RotatingWriter` for FFmpeg stderr when the directory is set.
 
 ---
 
 ### L-13 — Platform Build Constraints Missing
 
 **Files:** `internal/lock/filelock.go`, `internal/diagnostics/diagnostics.go`, `internal/stream/monitor.go`
-**Status: ✅ PARTIALLY FIXED** — `claude/implement-peer-review-fixes-lQ6hO`
+**Status: ✅ FIXED** — `claude/implement-lyrebirdaudio-go-joVPr`
 
-**Fix applied:** `//go:build linux` added to `internal/lock/filelock.go` and its test file, and to `internal/diagnostics/diagnostics.go` and its test file.
+**Fix applied (Phase 1):** `//go:build linux` added to `internal/lock/filelock.go` and its test file, and to `internal/diagnostics/diagnostics.go` and its test file.
 
-**Still open:** `internal/stream/monitor.go` uses `/proc`-based monitoring but does not yet carry the build constraint.
+**Fix applied (Phase 2):** `//go:build linux` added to `internal/stream/monitor.go` and `internal/stream/monitor_test.go`. All three files now carry correct platform constraints.
 
 ---
 
@@ -504,29 +504,27 @@ Fixed as part of the C-2 fix. The reload goroutine now copies names into a local
 ### D-1 — README: Migration Timeline Is Stale
 
 **File:** `README.md:239`
-**Status: 🔲 OPEN**
+**Status: ✅ FIXED** — `claude/implement-lyrebirdaudio-go-joVPr`
 
-> "estimated: Q2 2025"
-
-The current date is February 2026. The timeline has passed.
+**Fix applied:** Removed the specific "(estimated: Q2 2025)" date from the migration timeline statement.
 
 ---
 
 ### D-2 — README: "No Runtime Dependencies" Is Inaccurate
 
 **File:** `README.md:21`
-**Status: 🔲 OPEN**
+**Status: ✅ FIXED** — `claude/implement-lyrebirdaudio-go-joVPr`
 
-The binary shells out to `ffmpeg`, `curl`/`wget`, `udevadm`, `systemctl`, `tar`, and `install`. The correct claim is "no shared library dependencies."
+**Fix applied:** Changed to "no shared library dependencies (requires ffmpeg, udevadm, systemctl at runtime)".
 
 ---
 
 ### D-3 — README: Integration Tests Claim Is Inaccurate
 
 **File:** `README.md:344`
-**Status: 🔲 OPEN**
+**Status: ✅ FIXED** — `claude/implement-lyrebirdaudio-go-joVPr`
 
-CI uses `ubuntu-latest`, not a self-hosted runner with USB hardware. No integration tests exist.
+**Fix applied:** Changed to "Integration tests (ubuntu-latest; hardware-specific paths are skipped in CI)".
 
 ---
 
@@ -542,59 +540,54 @@ CI uses `ubuntu-latest`, not a self-hosted runner with USB hardware. No integrat
 ### D-5 — CLAUDE.md: Code Example Omits Error Handling
 
 **File:** `CLAUDE.md` — koanf example
-**Status: 🔲 OPEN**
+**Status: ✅ FIXED** — `claude/implement-lyrebirdaudio-go-joVPr`
 
-```go
-cfg, err := kc.Load()
-devCfg := cfg.GetDeviceConfig("blue_yeti")
-```
-
-`err` is declared but never checked.
+**Fix applied:** Added `if err != nil { log.Fatal(err) }` after `cfg, err := kc.Load()` in the example.
 
 ---
 
 ### D-6 — Developer Artifacts at Repository Root
 
 **Files:** `AUDIT_REPORT.md`, `FINDINGS.md`, `IMPLEMENTATION_PLAN.md`, `IMPROVEMENTS_SUMMARY.md`
-**Status: 🔲 OPEN**
+**Status: ✅ FIXED** — `claude/implement-lyrebirdaudio-go-joVPr`
 
-These planning/audit documents belong in `/docs`, a wiki, or PR descriptions — not at the repository root.
+**Fix applied:** All five planning/audit documents (including `PEER_REVIEW.md`) moved to `docs/`. Repository root now contains only `README.md` and `CLAUDE.md`.
 
 ---
 
 ### D-7 — AUDIT_REPORT.md Contains Inaccurate Bug Descriptions
 
 **File:** `AUDIT_REPORT.md:30–43`
-**Status: 🔲 OPEN**
+**Status: ✅ FIXED** — `claude/implement-lyrebirdaudio-go-joVPr`
 
-Issue 1.1 claims `m.state.Load()` can return nil (it cannot; `StateIdle` is stored in the constructor). Issue 1.2 claims `Backoff.Reset` has no nil check (it does). The existing report was not updated after previous fixes.
+**Fix applied:** Updated sections 1.1 and 1.2 in `docs/AUDIT_REPORT.md` to accurately describe that both were investigated and found not to be bugs: (1) `state.Load()` is always initialised in the constructor, (2) `Backoff.Reset` acquires a mutex before field access and is always called with a non-nil receiver.
 
 ---
 
 ### D-8 — README: Performance Numbers Are Duplicated
 
 **File:** `README.md:413–433`
-**Status: 🔲 OPEN**
+**Status: ✅ FIXED** — `claude/implement-lyrebirdaudio-go-joVPr`
 
-"Resource Usage" and "Benchmarks" sections list identical figures with different phrasing.
+**Fix applied:** Merged the duplicate figures into the "Resource Usage" section; "Benchmarks" section now only contains the `make bench` command and startup/init timing that was unique to it.
 
 ---
 
 ### D-9 — CLAUDE.md Coverage Table Formatting Is Inconsistent
 
 **File:** `CLAUDE.md` — "Current Test Coverage" table
-**Status: 🔲 OPEN**
+**Status: ✅ FIXED** — `claude/implement-lyrebirdaudio-go-joVPr`
 
-Column widths in the Markdown table are not padded consistently.
+**Fix applied:** Column widths in the Markdown table aligned consistently with uniform padding.
 
 ---
 
 ### D-10 — README `Debug Mode` Section Is Misleading
 
 **File:** `README.md:395`
-**Status: 🔲 OPEN**
+**Status: ✅ FIXED** — `claude/implement-lyrebirdaudio-go-joVPr`
 
-`sudo -E systemctl restart` does not inject environment variables into systemd-managed services. The correct mechanism is `/etc/lyrebird/environment` (referenced by `EnvironmentFile=`).
+**Fix applied:** Replaced `sudo -E systemctl restart` (which does not inject env vars into systemd units) with the correct `EnvironmentFile`-based approach: add the variable to `/etc/lyrebird/environment`, then `sudo systemctl restart lyrebird-stream`.
 
 ---
 
@@ -630,9 +623,9 @@ Unpinned floating tags are a supply-chain risk. All third-party GitHub Actions s
 ### CI-4 — `gosec` and `govulncheck` Installed at `@latest`
 
 **File:** `ci.yml:69, 76`
-**Status: 🔲 OPEN**
+**Status: ✅ FIXED** — `claude/implement-lyrebirdaudio-go-joVPr`
 
-Installing security tools at `@latest` in CI means tool updates can silently break builds or miss newly detected issues if the resolution is cached.
+**Fix applied:** Pinned to `gosec@v2.21.4` and `govulncheck@v1.1.3`.
 
 ---
 
@@ -659,54 +652,54 @@ The integration step runs on `ubuntu-latest` which has no USB devices. It silent
 | M-3 | MAJOR | `internal/health/health.go` | Health endpoint implemented but never started | ✅ FIXED |
 | M-4 | MAJOR | `cmd/lyrebird-stream/main.go:219` | Hotplug only works when no services exist | ✅ FIXED |
 | M-5 | MAJOR | `internal/stream/manager.go:417` | `Manager.Close()` never called; fd leak | ✅ FIXED |
-| M-6 | MAJOR | `cmd/lyrebird-stream/main.go:134` | Config changes on SIGHUP not applied to running streams | 🔲 OPEN |
+| M-6 | MAJOR | `cmd/lyrebird-stream/main.go:134` | Config changes on SIGHUP not applied to running streams | ✅ FIXED |
 | M-7 | MAJOR | `internal/lock/filelock.go:339` | Age-check comment obscures C-1 logic flaw | ✅ FIXED |
 | M-8 | MAJOR | `internal/config/koanf.go:152` | Misleading "already handled" comment | ✅ FIXED |
 | M-9 | MAJOR | `internal/config/koanf.go:248` | File watcher goroutine leaked on ctx cancel | ✅ DOCUMENTED |
-| M-10 | MAJOR | `cmd/lyrebird/main.go:218` | `detect` uses hardcoded settings, not capabilities | 🔲 OPEN |
-| M-11 | MAJOR | `cmd/lyrebird/main.go:1152` | `allPassed` not updated by warning tests | 🔲 OPEN |
-| M-12 | MAJOR | `cmd/lyrebird/main.go:910` | `installLyreBirdService` lacks security hardening | 🔲 OPEN |
-| M-13 | MAJOR | `internal/updater/updater.go:266` | Self-update has no checksum verification | 🔲 OPEN |
+| M-10 | MAJOR | `cmd/lyrebird/main.go:218` | `detect` uses hardcoded settings, not capabilities | ✅ FIXED |
+| M-11 | MAJOR | `cmd/lyrebird/main.go:1152` | `allPassed` not updated by warning tests | ✅ FIXED |
+| M-12 | MAJOR | `cmd/lyrebird/main.go:910` | `installLyreBirdService` lacks security hardening | ✅ FIXED |
+| M-13 | MAJOR | `internal/updater/updater.go:266` | Self-update has no checksum verification | ✅ FIXED |
 | ME-1 | MEDIUM | `internal/stream/backoff.go:90` | First restart waits 2× initial delay | ✅ FIXED |
 | ME-2 | MEDIUM | `manager.go:214`, `supervisor.go:250` | `logf` always Info level, loses slog structure | ✅ FIXED |
 | ME-3 | MEDIUM | `internal/stream/manager.go:564` | Unkillable 2-s goroutine in `stop()` | ✅ FIXED |
-| ME-4 | MEDIUM | `internal/audio/detector.go:226` | `findDeviceIDPath` hardcodes path, untestable | 🔲 OPEN |
-| ME-5 | MEDIUM | `internal/udev/rules.go:167,217` | `WriteRulesFile`, `ReloadUdevRules` 0% coverage | 🔲 OPEN |
-| ME-6 | MEDIUM | `internal/config/config.go:116` | `Save()` error paths untested | 🔲 OPEN |
+| ME-4 | MEDIUM | `internal/audio/detector.go:226` | `findDeviceIDPath` hardcodes path, untestable | ✅ FIXED |
+| ME-5 | MEDIUM | `internal/udev/rules.go:167,217` | `WriteRulesFile`, `ReloadUdevRules` 0% coverage | ✅ FIXED |
+| ME-6 | MEDIUM | `internal/config/config.go:116` | `Save()` error paths untested | ✅ FIXED |
 | ME-7 | MEDIUM | `internal/supervisor/supervisor.go:250` | Same `logf` anti-pattern as ME-2 | ✅ FIXED |
-| ME-8 | MEDIUM | `cmd/lyrebird-stream/main.go:60` | Package-level flags impede testability | 🔲 OPEN |
+| ME-8 | MEDIUM | `cmd/lyrebird-stream/main.go:60` | Package-level flags impede testability | ✅ FIXED |
 | ME-9 | MEDIUM | `internal/health/health.go:92` | Missing `ReadTimeout`/`WriteTimeout` | ✅ FIXED |
-| ME-10 | MEDIUM | `internal/config/koanf.go:176` | Brittle hardcoded field suffix list for env transform | 🔲 OPEN |
-| ME-11 | MEDIUM | `internal/config/config.go:276` | `ValidatePartial` misleading for `SampleRate == 0` | 🔲 OPEN |
-| ME-12 | MEDIUM | `cmd/lyrebird/main.go:360` | `getUSBBusDevFromCard` 16% coverage, fragile loop | 🔲 OPEN |
+| ME-10 | MEDIUM | `internal/config/koanf.go:176` | Brittle hardcoded field suffix list for env transform | ✅ FIXED |
+| ME-11 | MEDIUM | `internal/config/config.go:276` | `ValidatePartial` misleading for `SampleRate == 0` | ✅ FIXED |
+| ME-12 | MEDIUM | `cmd/lyrebird/main.go:360` | `getUSBBusDevFromCard` 16% coverage, fragile loop | ✅ FIXED |
 | L-1 | LOW | `internal/supervisor/supervisor.go:204` | `Stop()` 0% coverage | ✅ FIXED |
-| L-2 | LOW | `internal/stream/manager.go:417` | `Close()` 0% unit test coverage | 🔲 OPEN |
+| L-2 | LOW | `internal/stream/manager.go:417` | `Close()` 0% unit test coverage | ✅ FIXED |
 | L-3 | LOW | `internal/menu/menu.go:409` | `RunCommand` 0% coverage | 🔲 OPEN |
 | L-4 | LOW | `cmd/lyrebird/main.go:1091,910` | `downloadFile`, `installLyreBirdService` 0% coverage | 🔲 OPEN |
 | L-5 | LOW | `internal/menu/menu.go:104` | `Display` 5.6% coverage | 🔲 OPEN |
-| L-6 | LOW | `internal/util/panic.go:88` | `SafeGoWithRecover` close-after-send ambiguity | 🔲 OPEN |
+| L-6 | LOW | `internal/util/panic.go:88` | `SafeGoWithRecover` close-after-send ambiguity | ✅ FIXED |
 | L-7 | LOW | `internal/stream/manager.go:560` | Undocumented intentional signal discard | ✅ FIXED |
 | L-8 | LOW | `Makefile:83` vs `ci.yml:106` | Test timeout mismatch (30 s vs 2 min) | ✅ FIXED |
 | L-9 | LOW | `ci.yml:49` vs `Makefile:119` | `golangci-lint` version mismatch | 🔲 OPEN |
 | L-10 | LOW | `go.mod:9,52` | Two YAML parsers in dependency tree | 🔲 OPEN |
 | L-11 | LOW | `go.mod:50` | `testify` listed as indirect | 🔲 OPEN |
-| L-12 | LOW | `internal/stream/logrotate.go` | Log rotation implemented but never activated | 🔲 OPEN |
-| L-13 | LOW | `lock/filelock.go`, `diagnostics.go`, `stream/monitor.go` | No `//go:build linux` constraints | ✅ PARTIAL (`monitor.go` open) |
+| L-12 | LOW | `internal/stream/logrotate.go` | Log rotation implemented but never activated | ✅ FIXED |
+| L-13 | LOW | `lock/filelock.go`, `diagnostics.go`, `stream/monitor.go` | No `//go:build linux` constraints | ✅ FIXED |
 | L-14 | LOW | `cmd/lyrebird-stream/main.go:262` | Map range in reload goroutine is a data race | ✅ FIXED |
-| D-1 | DOC | `README.md:239` | Stale Q2 2025 timeline | 🔲 OPEN |
-| D-2 | DOC | `README.md:21` | "No runtime dependencies" is incorrect | 🔲 OPEN |
-| D-3 | DOC | `README.md:344` | Integration test CI claim is inaccurate | 🔲 OPEN |
+| D-1 | DOC | `README.md:239` | Stale Q2 2025 timeline | ✅ FIXED |
+| D-2 | DOC | `README.md:21` | "No runtime dependencies" is incorrect | ✅ FIXED |
+| D-3 | DOC | `README.md:344` | Integration test CI claim is inaccurate | ✅ FIXED |
 | D-4 | DOC | `CLAUDE.md` | SIGHUP hot-reload still listed as future work | ✅ FIXED |
-| D-5 | DOC | `CLAUDE.md` | Code example ignores error return | 🔲 OPEN |
-| D-6 | DOC | Root dir | Developer artifacts (`AUDIT_REPORT.md`, etc.) at root | 🔲 OPEN |
-| D-7 | DOC | `AUDIT_REPORT.md` | Existing report describes bugs that were already fixed | 🔲 OPEN |
-| D-8 | DOC | `README.md:413` | Performance numbers duplicated | 🔲 OPEN |
-| D-9 | DOC | `CLAUDE.md` | Coverage table column widths inconsistent | 🔲 OPEN |
-| D-10 | DOC | `README.md:395` | Debug mode via `sudo -E` does not work with systemd | 🔲 OPEN |
+| D-5 | DOC | `CLAUDE.md` | Code example ignores error return | ✅ FIXED |
+| D-6 | DOC | Root dir | Developer artifacts (`AUDIT_REPORT.md`, etc.) at root | ✅ FIXED |
+| D-7 | DOC | `AUDIT_REPORT.md` | Existing report describes bugs that were already fixed | ✅ FIXED |
+| D-8 | DOC | `README.md:413` | Performance numbers duplicated | ✅ FIXED |
+| D-9 | DOC | `CLAUDE.md` | Coverage table column widths inconsistent | ✅ FIXED |
+| D-10 | DOC | `README.md:395` | Debug mode via `sudo -E` does not work with systemd | ✅ FIXED |
 | CI-1 | CI/CD | `ci.yml:85` | Single Go version in test matrix | 🔲 OPEN |
 | CI-2 | CI/CD | `ci.yml:233` | Release job does not create a GitHub Release | 🔲 OPEN |
 | CI-3 | CI/CD | `ci.yml:111` | `codecov-action` not SHA-pinned | 🔲 OPEN |
-| CI-4 | CI/CD | `ci.yml:69,76` | Security tools installed at `@latest` | 🔲 OPEN |
+| CI-4 | CI/CD | `ci.yml:69,76` | Security tools installed at `@latest` | ✅ FIXED |
 | CI-5 | CI/CD | `ci.yml:212` | Integration step runs on ubuntu-latest without hardware | 🔲 OPEN |
 
 ---

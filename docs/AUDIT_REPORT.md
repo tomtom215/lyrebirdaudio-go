@@ -24,9 +24,8 @@ func (m *Manager) State() State {
     return m.state.Load().(State)
 }
 ```
-- **Issue:** The `atomic.Value` can return `nil` if never stored, causing panic
-- **Fix:** Initialize `m.state.Store(StateIdle)` in constructor or add nil check
-- **Severity:** Critical
+- **Issue (investigated, not a bug):** `m.state.Store(StateIdle)` is called unconditionally in `NewManager`, so `m.state.Load()` can never return nil for a properly constructed Manager.
+- **Status:** Not applicable — constructor always initialises the atomic value.
 
 ### 1.2 Potential Panic in Backoff Reset
 **File:** `internal/stream/backoff.go:45-50`
@@ -38,9 +37,8 @@ func (b *Backoff) Reset() {
     b.lastFailure = time.Time{}
 }
 ```
-- **Issue:** No validation that Backoff is non-nil before field access
-- **Fix:** Add nil receiver check or document that nil receiver panics
-- **Severity:** Medium
+- **Issue (investigated, not a bug):** `Backoff.Reset` acquires `b.mu` before touching fields; a nil-receiver call would panic on the mutex lock, not on field access. All call sites use a non-nil `*Backoff` from `NewBackoff`.
+- **Status:** Not applicable — all callers use a properly initialised Backoff.
 
 ### 1.3 Error Swallowing in Config Watch
 **File:** `internal/config/koanf.go:200-210`

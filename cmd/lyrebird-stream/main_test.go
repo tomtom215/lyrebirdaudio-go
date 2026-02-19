@@ -5,8 +5,11 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/tomtom215/lyrebirdaudio-go/internal/config"
 )
 
 func TestLoadConfigurationKoanf(t *testing.T) {
@@ -282,6 +285,58 @@ func TestLoadConfigurationKoanfNonNilOnSuccess(t *testing.T) {
 	}
 }
 
+// TestDaemonFlagsStruct verifies the daemonFlags struct fields.
+func TestDaemonFlagsStruct(t *testing.T) {
+	flags := daemonFlags{
+		ConfigPath: "/tmp/config.yaml",
+		LockDir:    "/tmp/lyrebird",
+		LogLevel:   "debug",
+	}
+	if flags.ConfigPath != "/tmp/config.yaml" {
+		t.Errorf("ConfigPath = %q, want %q", flags.ConfigPath, "/tmp/config.yaml")
+	}
+	if flags.LockDir != "/tmp/lyrebird" {
+		t.Errorf("LockDir = %q, want %q", flags.LockDir, "/tmp/lyrebird")
+	}
+	if flags.LogLevel != "debug" {
+		t.Errorf("LogLevel = %q, want %q", flags.LogLevel, "debug")
+	}
+}
+
+// TestRunDaemonLockDirError verifies that runDaemon returns 1 when the lock
+// directory cannot be created (e.g. path with null bytes).
+func TestRunDaemonLockDirError(t *testing.T) {
+	flags := daemonFlags{
+		ConfigPath: "/tmp/config.yaml",
+		LockDir:    "/\x00invalid",
+		LogLevel:   "error",
+	}
+	code := runDaemon(flags)
+	if code != 1 {
+		t.Errorf("runDaemon() with invalid lock dir returned %d, want 1", code)
+	}
+}
+
+// TestRunDaemonFFmpegNotFound verifies that runDaemon returns 1 when ffmpeg is not
+// found (use a config path that does not exist, so defaults are used, and put a
+// non-existent lock dir on a real temp path so MkdirAll succeeds before the
+// ffmpeg check).
+func TestRunDaemonFFmpegNotFound(t *testing.T) {
+	if _, err := findFFmpegPath(); err == nil {
+		t.Skip("ffmpeg is installed; cannot test missing-ffmpeg path")
+	}
+	tmpDir := t.TempDir()
+	flags := daemonFlags{
+		ConfigPath: filepath.Join(tmpDir, "nonexistent.yaml"),
+		LockDir:    tmpDir,
+		LogLevel:   "error",
+	}
+	code := runDaemon(flags)
+	if code != 1 {
+		t.Errorf("runDaemon() without ffmpeg returned %d, want 1", code)
+	}
+}
+
 func TestParseSlogLevel(t *testing.T) {
 	tests := []struct {
 		input string
@@ -307,4 +362,77 @@ func TestParseSlogLevel(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestDeviceConfigHash verifies the M-6 config hash function.
+func TestDeviceConfigHash(t *testing.T) {
+	base := config.DeviceConfig{
+		SampleRate:  48000,
+		Channels:    2,
+		Bitrate:     "128k",
+		Codec:       "opus",
+		ThreadQueue: 512,
+	}
+	url := "rtsp://localhost:8554/device"
+
+	t.Run("same config produces same hash", func(t *testing.T) {
+		h1 := deviceConfigHash(base, url)
+		h2 := deviceConfigHash(base, url)
+		if h1 != h2 {
+			t.Errorf("identical configs produced different hashes: %q vs %q", h1, h2)
+		}
+	})
+
+	t.Run("different sample rate produces different hash", func(t *testing.T) {
+		changed := base
+		changed.SampleRate = 44100
+		if deviceConfigHash(base, url) == deviceConfigHash(changed, url) {
+			t.Error("different sample rates should produce different hashes")
+		}
+	})
+
+	t.Run("different channels produces different hash", func(t *testing.T) {
+		changed := base
+		changed.Channels = 1
+		if deviceConfigHash(base, url) == deviceConfigHash(changed, url) {
+			t.Error("different channels should produce different hashes")
+		}
+	})
+
+	t.Run("different bitrate produces different hash", func(t *testing.T) {
+		changed := base
+		changed.Bitrate = "256k"
+		if deviceConfigHash(base, url) == deviceConfigHash(changed, url) {
+			t.Error("different bitrates should produce different hashes")
+		}
+	})
+
+	t.Run("different codec produces different hash", func(t *testing.T) {
+		changed := base
+		changed.Codec = "aac"
+		if deviceConfigHash(base, url) == deviceConfigHash(changed, url) {
+			t.Error("different codecs should produce different hashes")
+		}
+	})
+
+	t.Run("different rtsp url produces different hash", func(t *testing.T) {
+		otherURL := "rtsp://localhost:8554/other"
+		if deviceConfigHash(base, url) == deviceConfigHash(base, otherURL) {
+			t.Error("different RTSP URLs should produce different hashes")
+		}
+	})
+
+	t.Run("hash contains all fields", func(t *testing.T) {
+		h := deviceConfigHash(base, url)
+		// Hash should be non-empty and contain identifiable field values.
+		if h == "" {
+			t.Error("hash must not be empty")
+		}
+		if !strings.Contains(h, "48000") {
+			t.Errorf("hash should contain sample rate; got %q", h)
+		}
+		if !strings.Contains(h, "opus") {
+			t.Errorf("hash should contain codec; got %q", h)
+		}
+	})
 }

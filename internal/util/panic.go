@@ -77,9 +77,11 @@ func SafeGoWithRecover(name string, logger io.Writer, fn func() error, errCh cha
 					onPanic(r, stack)
 				}
 
-				// Send panic as error to channel
+				// Send panic as error to channel and close it so callers
+				// using for-range or a second receive do not block forever.
 				if errCh != nil {
 					errCh <- fmt.Errorf("panic in %s: %v", name, r)
+					close(errCh)
 				}
 			}
 		}()

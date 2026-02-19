@@ -216,6 +216,22 @@ func runDetect(args []string) error {
 // runDetectWithPath detects device capabilities from the specified path.
 // Extracted for testability.
 func runDetectWithPath(asoundPath string, args []string) error {
+	// Parse optional quality tier flag
+	qualityStr := "normal"
+	for i := 0; i < len(args); i++ {
+		switch {
+		case strings.HasPrefix(args[i], "--quality="):
+			qualityStr = strings.TrimPrefix(args[i], "--quality=")
+		case args[i] == "--quality" && i+1 < len(args):
+			qualityStr = args[i+1]
+			i++
+		}
+	}
+	tier, err := audio.ParseQualityTier(qualityStr)
+	if err != nil {
+		return fmt.Errorf("invalid quality tier: %w", err)
+	}
+
 	// Scan for USB audio devices
 	devices, err := audio.DetectDevices(asoundPath)
 	if err != nil {
@@ -227,21 +243,64 @@ func runDetectWithPath(asoundPath string, args []string) error {
 		return nil
 	}
 
-	fmt.Printf("Detected %d device(s) with recommended settings:\n\n", len(devices))
+	fmt.Printf("Detected %d device(s) with actual capabilities and recommended settings:\n\n", len(devices))
 
 	for _, dev := range devices {
 		fmt.Printf("Device: %s\n", dev.Name)
-		fmt.Printf("  ALSA ID:              hw:%d,0\n", dev.CardNumber)
-		fmt.Printf("  Recommended settings:\n")
-		fmt.Printf("    Sample rate:        48000 Hz\n")
-		fmt.Printf("    Channels:           2 (stereo)\n")
-		fmt.Printf("    Codec:              opus\n")
-		fmt.Printf("    Bitrate:            128k\n")
+		fmt.Printf("  ALSA ID:  hw:%d,0\n", dev.CardNumber)
+		fmt.Printf("  USB ID:   %s\n", dev.USBID)
+
+		// Detect actual device capabilities from /proc/asound/cardN/stream0
+		caps, capsErr := audio.DetectCapabilities(asoundPath, dev.CardNumber)
+		if capsErr != nil {
+			// Fallback to defaults when stream0 is unavailable (e.g., test env)
+			fmt.Printf("  Capabilities: (unavailable: %v)\n", capsErr)
+			fmt.Printf("  Recommended settings (defaults):\n")
+			fmt.Printf("    Sample rate: 48000 Hz\n")
+			fmt.Printf("    Channels:    2 (stereo)\n")
+			fmt.Printf("    Codec:       opus\n")
+			fmt.Printf("    Bitrate:     128k\n")
+		} else {
+			rec := audio.RecommendSettings(caps, tier)
+			fmt.Printf("  Capabilities:\n")
+			fmt.Printf("    Formats:      %s\n", strings.Join(caps.Formats, ", "))
+			fmt.Printf("    Sample rates: %s Hz\n", formatIntSliceForDetect(caps.SampleRates))
+			fmt.Printf("    Channels:     %s\n", formatIntSliceForDetect(caps.Channels))
+			if caps.IsBusy {
+				busyMsg := "in use"
+				if caps.BusyBy != "" {
+					busyMsg = fmt.Sprintf("in use (PID %s)", caps.BusyBy)
+				}
+				fmt.Printf("    Status:       %s\n", busyMsg)
+			} else {
+				fmt.Printf("    Status:       available\n")
+			}
+			fmt.Printf("  Recommended settings (%s quality):\n", tier)
+			fmt.Printf("    Sample rate: %d Hz\n", rec.SampleRate)
+			channels := "stereo"
+			if rec.Channels == 1 {
+				channels = "mono"
+			}
+			fmt.Printf("    Channels:    %d (%s)\n", rec.Channels, channels)
+			fmt.Printf("    Codec:       %s\n", rec.Codec)
+			fmt.Printf("    Bitrate:     %s\n", rec.Bitrate)
+			fmt.Printf("    Format:      %s\n", rec.Format)
+		}
 		fmt.Println()
 	}
 
 	fmt.Println("Note: Configure per-device settings in /etc/lyrebird/config.yaml")
+	fmt.Println("      Use --quality=low|normal|high to change recommendation tier.")
 	return nil
+}
+
+// formatIntSliceForDetect formats an int slice as comma-separated string.
+func formatIntSliceForDetect(vals []int) string {
+	strs := make([]string, len(vals))
+	for i, v := range vals {
+		strs[i] = fmt.Sprintf("%d", v)
+	}
+	return strings.Join(strs, ", ")
 }
 
 // runUSBMap creates udev rules for persistent device mapping.
@@ -358,9 +417,15 @@ func runUSBMapWithPath(asoundPath string, args []string) error {
 
 // getUSBBusDevFromCard extracts USB bus and device numbers for an ALSA card.
 func getUSBBusDevFromCard(cardNum int) (busNum, devNum int, err error) {
+	return getUSBBusDevFromCardWithSysRoot(cardNum, "/sys")
+}
+
+// getUSBBusDevFromCardWithSysRoot is the injectable implementation for testing.
+// sysRoot defaults to "/sys" in production.
+func getUSBBusDevFromCardWithSysRoot(cardNum int, sysRoot string) (busNum, devNum int, err error) {
 	// The USB device info is available via sysfs
-	// /sys/class/sound/card{N}/device -> links to the USB device
-	cardPath := fmt.Sprintf("/sys/class/sound/card%d/device", cardNum)
+	// {sysRoot}/class/sound/card{N}/device -> links to the USB device
+	cardPath := filepath.Join(sysRoot, "class", "sound", fmt.Sprintf("card%d", cardNum), "device")
 
 	// Resolve the symlink to get the actual device path
 	devicePath, err := filepath.EvalSymlinks(cardPath)
@@ -368,37 +433,38 @@ func getUSBBusDevFromCard(cardNum int) (busNum, devNum int, err error) {
 		return 0, 0, fmt.Errorf("failed to resolve card device path: %w", err)
 	}
 
-	// Walk up to find the USB device (look for busnum/devnum files)
+	// Walk up to find the USB device (look for busnum/devnum files).
+	// NOTE: partial-state reset — busNum and devNum are reset to 0 before
+	// each attempt so a failed parse in one directory cannot contaminate the
+	// next iteration (replaces the old fragile `continue` idiom).
 	for {
 		busnumPath := filepath.Join(devicePath, "busnum")
 		devnumPath := filepath.Join(devicePath, "devnum")
 
-		if _, err := os.Stat(busnumPath); err == nil {
-			// Found the USB device directory
-			busnumData, err := os.ReadFile(busnumPath)
-			if err != nil {
-				return 0, 0, fmt.Errorf("failed to read busnum: %w", err)
+		if _, statErr := os.Stat(busnumPath); statErr == nil {
+			// Found the USB device directory — try to read bus/dev numbers.
+			busNum, devNum = 0, 0                          // reset partial state before each parse attempt
+			busnumData, readErr := os.ReadFile(busnumPath) // #nosec G304 -- path derived from sysRoot + known sysfs layout
+			if readErr != nil {
+				return 0, 0, fmt.Errorf("failed to read busnum: %w", readErr)
 			}
-			devnumData, err := os.ReadFile(devnumPath)
-			if err != nil {
-				return 0, 0, fmt.Errorf("failed to read devnum: %w", err)
-			}
-
-			if _, err := fmt.Sscanf(strings.TrimSpace(string(busnumData)), "%d", &busNum); err != nil {
-				continue // Try parent directory
-			}
-			if _, err := fmt.Sscanf(strings.TrimSpace(string(devnumData)), "%d", &devNum); err != nil {
-				continue // Try parent directory
+			devnumData, readErr := os.ReadFile(devnumPath) // #nosec G304 -- path derived from sysRoot + known sysfs layout
+			if readErr != nil {
+				return 0, 0, fmt.Errorf("failed to read devnum: %w", readErr)
 			}
 
-			if busNum > 0 && devNum > 0 {
+			_, busParseErr := fmt.Sscanf(strings.TrimSpace(string(busnumData)), "%d", &busNum)
+			_, devParseErr := fmt.Sscanf(strings.TrimSpace(string(devnumData)), "%d", &devNum)
+
+			if busParseErr == nil && devParseErr == nil && busNum > 0 && devNum > 0 {
 				return busNum, devNum, nil
 			}
+			// Parse failed or values out of range — try parent directory
 		}
 
 		// Move up one directory
 		parent := filepath.Dir(devicePath)
-		if parent == devicePath || parent == "/" || parent == "/sys" {
+		if parent == devicePath || parent == "/" || parent == sysRoot {
 			break
 		}
 		devicePath = parent
@@ -456,7 +522,7 @@ func runMigrate(args []string) error {
 	}
 
 	// Create directory if needed
-	if err := os.MkdirAll(filepath.Dir(toPath), 0755); err != nil { // #nosec G301 G703 -- Config directory needs 0755; toPath is from CLI flag
+	if err := os.MkdirAll(filepath.Dir(toPath), 0750); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
@@ -905,31 +971,131 @@ func promptYesNo(prompt string) bool {
 	return strings.ToLower(response) == "y"
 }
 
-// installLyreBirdService installs the lyrebird-stream systemd service.
-func installLyreBirdService() error {
-	serviceContent := `[Unit]
+// lyrebirdServiceContent is the full systemd service file content.
+//
+// This MUST be kept byte-for-byte identical to systemd/lyrebird-stream.service
+// at the repository root. TestInstallLyreBirdServiceMatchesSystemdFile in
+// main_test.go asserts both are identical whenever the test can locate the file.
+var lyrebirdServiceContent = `# LyreBirdAudio Stream Manager Service
+#
+# This service manages audio streaming from USB devices to RTSP via MediaMTX.
+# It automatically detects USB audio devices and maintains persistent streams
+# with automatic restart on failure.
+#
+# Installation:
+#   sudo cp lyrebird-stream.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable lyrebird-stream
+#   sudo systemctl start lyrebird-stream
+#
+# Configuration:
+#   Primary: /etc/lyrebird/config.yaml
+#   Overrides: /etc/lyrebird/environment (optional)
+#
+# Logs: journalctl -u lyrebird-stream -f
+#
+# Hot-reload configuration (no restart required):
+#   sudo systemctl reload lyrebird-stream
+#
+# User Configuration:
+#   The service runs as root by default for reliable ALSA device access.
+#   To run as a dedicated user (recommended for production):
+#   1. Create user: sudo useradd -r -s /usr/sbin/nologin -G audio lyrebird
+#   2. Create directories: sudo mkdir -p /var/run/lyrebird /etc/lyrebird
+#   3. Set ownership: sudo chown lyrebird:audio /var/run/lyrebird
+#   4. Change User=root to User=lyrebird in this file
+#   5. Reload: sudo systemctl daemon-reload && sudo systemctl restart lyrebird-stream
+
+[Unit]
 Description=LyreBirdAudio Stream Manager
 Documentation=https://github.com/tomtom215/lyrebirdaudio-go
 After=network.target sound.target mediamtx.service
 Wants=mediamtx.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/lyrebird-stream --config=/etc/lyrebird/config.yaml
+User=root
+Group=audio
+
+# Optional environment file for configuration overrides
+# Create /etc/lyrebird/environment with:
+#   LYREBIRD_CONFIG=/etc/lyrebird/config.yaml
+#   LYREBIRD_LOG_LEVEL=info
+EnvironmentFile=-/etc/lyrebird/environment
+
+# Default configuration (can be overridden via environment file)
+Environment=LYREBIRD_CONFIG=/etc/lyrebird/config.yaml
+Environment=LYREBIRD_LOG_LEVEL=info
+
+# Main executable
+ExecStart=/usr/local/bin/lyrebird-stream --config=${LYREBIRD_CONFIG} --log-level=${LYREBIRD_LOG_LEVEL}
+
+# Hot-reload configuration without stopping streams
+ExecReload=/bin/kill -HUP $MAINPID
+
+# Graceful shutdown
+ExecStop=/bin/kill -SIGTERM $MAINPID
+TimeoutStopSec=30
+
+# Restart policy
 Restart=always
 RestartSec=10
+# WatchdogSec is intentionally absent: the daemon does not call sd_notify(WATCHDOG=1),
+# so enabling watchdog supervision would cause spurious service restarts (M-2).
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+
+# Allow access to audio devices
+SupplementaryGroups=audio
+DeviceAllow=/dev/snd/* rw
+DevicePolicy=closed
+
+# Allow access to required paths
+ReadWritePaths=/var/run/lyrebird
+ReadOnlyPaths=/etc/lyrebird /proc/asound
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# Environment
+Environment=HOME=/var/run/lyrebird
 
 [Install]
 WantedBy=multi-user.target
 `
-	servicePath := "/etc/systemd/system/lyrebird-stream.service"
+
+// installLyreBirdService installs the lyrebird-stream systemd service.
+func installLyreBirdService() error {
+	return installLyreBirdServiceToPath("/etc/systemd/system/lyrebird-stream.service")
+}
+
+// installLyreBirdServiceToPath writes the lyrebird-stream service file to path
+// and reloads systemd. Separated for testability.
+func installLyreBirdServiceToPath(servicePath string) error {
 	// #nosec G306 - systemd service files should be world-readable
-	if err := os.WriteFile(servicePath, []byte(serviceContent), 0644); err != nil {
+	if err := os.WriteFile(servicePath, []byte(lyrebirdServiceContent), 0644); err != nil {
 		return fmt.Errorf("failed to write service file: %w", err)
 	}
 
 	// Reload systemd
-	reloadCmd := exec.Command("systemctl", "daemon-reload")
+	reloadCmd := exec.Command("systemctl", "daemon-reload") // #nosec G204 -- "systemctl" is a literal
 	if output, err := reloadCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("systemctl daemon-reload failed: %w: %s", err, string(output))
 	}
@@ -1191,6 +1357,7 @@ func runTest(args []string) error {
 	devices, err := audio.DetectDevices("/proc/asound")
 	if err != nil || len(devices) == 0 {
 		fmt.Println("WARNING - No USB audio devices found")
+		allPassed = false
 		if verbose {
 			fmt.Println("      Connect a USB audio device to stream")
 		}
@@ -1224,6 +1391,7 @@ func runTest(args []string) error {
 		cmd := exec.Command(ffmpegPath, testArgs...) // #nosec G204 G702 -- ffmpegPath is from exec.LookPath, not user input
 		if output, err := cmd.CombinedOutput(); err != nil {
 			fmt.Println("WARNING - FFmpeg test failed")
+			allPassed = false
 			if verbose {
 				fmt.Printf("      %s\n", strings.TrimSpace(string(output)))
 			}
@@ -1245,6 +1413,7 @@ func runTest(args []string) error {
 	resp, err := client.Get(apiURL + "/v3/paths/list") // #nosec G704 -- apiURL is from config, not user HTTP request input
 	if err != nil {
 		fmt.Println("WARNING - Not reachable")
+		allPassed = false
 		if verbose {
 			fmt.Printf("      URL: %s\n", apiURL)
 			fmt.Printf("      Error: %v\n", err)
@@ -1255,6 +1424,7 @@ func runTest(args []string) error {
 			fmt.Println("OK")
 		} else {
 			fmt.Printf("WARNING - Status %d\n", resp.StatusCode)
+			allPassed = false
 		}
 	}
 
@@ -1272,6 +1442,7 @@ func runTest(args []string) error {
 	conn, err := net.DialTimeout("tcp", rtspHost, 2*time.Second) // #nosec G704 -- rtspHost is from config, not user HTTP request input
 	if err != nil {
 		fmt.Println("WARNING - Not accessible")
+		allPassed = false
 		if verbose {
 			fmt.Printf("      Address: %s\n", rtspHost)
 		}

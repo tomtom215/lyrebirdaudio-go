@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -893,6 +894,224 @@ func TestRunDetectVerboseOutput(t *testing.T) {
 	if err != nil {
 		t.Errorf("runDetectWithPath() with verbose unexpected error: %v", err)
 	}
+}
+
+// TestInstallLyreBirdServiceMatchesSystemdFile asserts that the embedded
+// lyrebirdServiceContent var is byte-for-byte identical to
+// systemd/lyrebird-stream.service at the repo root (M-12 fix).
+func TestInstallLyreBirdServiceMatchesSystemdFile(t *testing.T) {
+	// Navigate from cmd/lyrebird up to the repo root.
+	systemdPath := filepath.Join("..", "..", "systemd", "lyrebird-stream.service")
+	data, err := os.ReadFile(systemdPath) // #nosec G304 -- test reads a known repo file
+	if err != nil {
+		if os.IsNotExist(err) {
+			t.Skip("systemd/lyrebird-stream.service not found; skipping equivalence check")
+		}
+		t.Fatalf("failed to read systemd service file: %v", err)
+	}
+
+	got := lyrebirdServiceContent
+	want := string(data)
+	if got != want {
+		t.Errorf("lyrebirdServiceContent is out of sync with systemd/lyrebird-stream.service\n"+
+			"Update lyrebirdServiceContent in cmd/lyrebird/main.go to match the file.\n"+
+			"diff (want=file, got=var):\n%s",
+			diffStrings(want, got))
+	}
+}
+
+// diffStrings returns the first line that differs between a and b.
+func diffStrings(a, b string) string {
+	aLines := strings.Split(a, "\n")
+	bLines := strings.Split(b, "\n")
+	for i := 0; i < len(aLines) && i < len(bLines); i++ {
+		if aLines[i] != bLines[i] {
+			return fmt.Sprintf("first difference at line %d:\n  want: %q\n  got:  %q", i+1, aLines[i], bLines[i])
+		}
+	}
+	if len(aLines) != len(bLines) {
+		return fmt.Sprintf("line count differs: want %d, got %d", len(aLines), len(bLines))
+	}
+	return "(no line-level diff found; possibly whitespace)"
+}
+
+// TestInstallLyreBirdServiceToPathWritesFile verifies the service file is written.
+func TestInstallLyreBirdServiceToPathWritesFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	servicePath := filepath.Join(tmpDir, "lyrebird-stream.service")
+
+	// installLyreBirdServiceToPath calls systemctl daemon-reload which won't
+	// work in CI; we test only the write portion by writing directly.
+	// #nosec G306 - test file
+	if err := os.WriteFile(servicePath, []byte(lyrebirdServiceContent), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	data, err := os.ReadFile(servicePath) // #nosec G304 -- test reads from t.TempDir()
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(data) != lyrebirdServiceContent {
+		t.Error("written service content does not match lyrebirdServiceContent")
+	}
+
+	// Verify key hardening directives are present.
+	for _, directive := range []string{
+		"NoNewPrivileges=true",
+		"ProtectSystem=strict",
+		"PrivateTmp=true",
+		"ProtectHome=true",
+		"StartLimitIntervalSec=300",
+		"ExecReload=/bin/kill -HUP $MAINPID",
+	} {
+		if !strings.Contains(string(data), directive) {
+			t.Errorf("service file missing security directive: %s", directive)
+		}
+	}
+}
+
+// TestGetUSBBusDevFromCardWithSysRoot tests the injectable variant.
+func TestGetUSBBusDevFromCardWithSysRoot(t *testing.T) {
+	t.Run("card device symlink not found", func(t *testing.T) {
+		sysRoot := t.TempDir()
+		_, _, err := getUSBBusDevFromCardWithSysRoot(0, sysRoot)
+		if err == nil {
+			t.Fatal("expected error for missing card device symlink")
+		}
+		if !strings.Contains(err.Error(), "failed to resolve card device path") {
+			t.Errorf("error = %q, want 'failed to resolve card device path'", err.Error())
+		}
+	})
+
+	t.Run("busnum and devnum found directly", func(t *testing.T) {
+		sysRoot := t.TempDir()
+
+		// Create the USB device directory with busnum/devnum files
+		usbDevDir := filepath.Join(sysRoot, "bus", "usb", "devices", "1-1.4")
+		if err := os.MkdirAll(usbDevDir, 0755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(usbDevDir, "busnum"), []byte("1\n"), 0644); err != nil {
+			t.Fatalf("WriteFile busnum: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(usbDevDir, "devnum"), []byte("5\n"), 0644); err != nil {
+			t.Fatalf("WriteFile devnum: %v", err)
+		}
+
+		// Create the sound/card0/device symlink pointing at the USB device dir
+		soundDir := filepath.Join(sysRoot, "class", "sound", "card0")
+		if err := os.MkdirAll(soundDir, 0755); err != nil {
+			t.Fatalf("MkdirAll sound: %v", err)
+		}
+		if err := os.Symlink(usbDevDir, filepath.Join(soundDir, "device")); err != nil {
+			t.Fatalf("Symlink: %v", err)
+		}
+
+		busNum, devNum, err := getUSBBusDevFromCardWithSysRoot(0, sysRoot)
+		if err != nil {
+			t.Fatalf("getUSBBusDevFromCardWithSysRoot() error = %v", err)
+		}
+		if busNum != 1 {
+			t.Errorf("busNum = %d, want 1", busNum)
+		}
+		if devNum != 5 {
+			t.Errorf("devNum = %d, want 5", devNum)
+		}
+	})
+
+	t.Run("busnum found in parent directory", func(t *testing.T) {
+		sysRoot := t.TempDir()
+
+		// USB device info is in the parent of where symlink points
+		usbParentDir := filepath.Join(sysRoot, "bus", "usb", "devices", "1-1")
+		childDir := filepath.Join(usbParentDir, "1-1:1.0")
+		if err := os.MkdirAll(childDir, 0755); err != nil {
+			t.Fatalf("MkdirAll child: %v", err)
+		}
+		// busnum/devnum in parent, not in child
+		if err := os.WriteFile(filepath.Join(usbParentDir, "busnum"), []byte("2\n"), 0644); err != nil {
+			t.Fatalf("WriteFile busnum: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(usbParentDir, "devnum"), []byte("7\n"), 0644); err != nil {
+			t.Fatalf("WriteFile devnum: %v", err)
+		}
+
+		// Symlink points to child
+		soundDir := filepath.Join(sysRoot, "class", "sound", "card1")
+		if err := os.MkdirAll(soundDir, 0755); err != nil {
+			t.Fatalf("MkdirAll sound: %v", err)
+		}
+		if err := os.Symlink(childDir, filepath.Join(soundDir, "device")); err != nil {
+			t.Fatalf("Symlink: %v", err)
+		}
+
+		busNum, devNum, err := getUSBBusDevFromCardWithSysRoot(1, sysRoot)
+		if err != nil {
+			t.Fatalf("getUSBBusDevFromCardWithSysRoot() error = %v", err)
+		}
+		if busNum != 2 {
+			t.Errorf("busNum = %d, want 2", busNum)
+		}
+		if devNum != 7 {
+			t.Errorf("devNum = %d, want 7", devNum)
+		}
+	})
+
+	t.Run("busnum and devnum not found anywhere", func(t *testing.T) {
+		sysRoot := t.TempDir()
+
+		// USB device dir with NO busnum/devnum
+		usbDevDir := filepath.Join(sysRoot, "bus", "usb", "devices", "1-2")
+		if err := os.MkdirAll(usbDevDir, 0755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+
+		soundDir := filepath.Join(sysRoot, "class", "sound", "card2")
+		if err := os.MkdirAll(soundDir, 0755); err != nil {
+			t.Fatalf("MkdirAll sound: %v", err)
+		}
+		if err := os.Symlink(usbDevDir, filepath.Join(soundDir, "device")); err != nil {
+			t.Fatalf("Symlink: %v", err)
+		}
+
+		_, _, err := getUSBBusDevFromCardWithSysRoot(2, sysRoot)
+		if err == nil {
+			t.Fatal("expected error when bus/dev not found")
+		}
+		if !strings.Contains(err.Error(), "USB bus/dev numbers not found") {
+			t.Errorf("error = %q, want 'USB bus/dev numbers not found'", err.Error())
+		}
+	})
+
+	t.Run("malformed busnum does not infinite loop", func(t *testing.T) {
+		sysRoot := t.TempDir()
+
+		usbDevDir := filepath.Join(sysRoot, "bus", "usb", "devices", "1-3")
+		if err := os.MkdirAll(usbDevDir, 0755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		// Write non-numeric content to busnum
+		if err := os.WriteFile(filepath.Join(usbDevDir, "busnum"), []byte("not-a-number\n"), 0644); err != nil {
+			t.Fatalf("WriteFile busnum: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(usbDevDir, "devnum"), []byte("5\n"), 0644); err != nil {
+			t.Fatalf("WriteFile devnum: %v", err)
+		}
+
+		soundDir := filepath.Join(sysRoot, "class", "sound", "card3")
+		if err := os.MkdirAll(soundDir, 0755); err != nil {
+			t.Fatalf("MkdirAll sound: %v", err)
+		}
+		if err := os.Symlink(usbDevDir, filepath.Join(soundDir, "device")); err != nil {
+			t.Fatalf("Symlink: %v", err)
+		}
+
+		// This must terminate (old code had infinite loop here)
+		_, _, err := getUSBBusDevFromCardWithSysRoot(3, sysRoot)
+		if err == nil {
+			t.Fatal("expected error for malformed busnum")
+		}
+	})
 }
 
 // TestMain verifies main function integration.
