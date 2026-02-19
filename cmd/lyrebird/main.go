@@ -443,12 +443,12 @@ func getUSBBusDevFromCardWithSysRoot(cardNum int, sysRoot string) (busNum, devNu
 
 		if _, statErr := os.Stat(busnumPath); statErr == nil {
 			// Found the USB device directory — try to read bus/dev numbers.
-			busNum, devNum = 0, 0 // reset partial state before each parse attempt
-			busnumData, readErr := os.ReadFile(busnumPath)
+			busNum, devNum = 0, 0                          // reset partial state before each parse attempt
+			busnumData, readErr := os.ReadFile(busnumPath) // #nosec G304 -- path derived from sysRoot + known sysfs layout
 			if readErr != nil {
 				return 0, 0, fmt.Errorf("failed to read busnum: %w", readErr)
 			}
-			devnumData, readErr := os.ReadFile(devnumPath)
+			devnumData, readErr := os.ReadFile(devnumPath) // #nosec G304 -- path derived from sysRoot + known sysfs layout
 			if readErr != nil {
 				return 0, 0, fmt.Errorf("failed to read devnum: %w", readErr)
 			}
@@ -522,7 +522,7 @@ func runMigrate(args []string) error {
 	}
 
 	// Create directory if needed
-	if err := os.MkdirAll(filepath.Dir(toPath), 0755); err != nil { // #nosec G301 G703 -- Config directory needs 0755; toPath is from CLI flag
+	if err := os.MkdirAll(filepath.Dir(toPath), 0755); err != nil { // #nosec G301 -- config dir needs group-execute (0755); path comes from a validated CLI flag
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
