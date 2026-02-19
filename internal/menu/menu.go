@@ -407,7 +407,7 @@ func inputWithScanner(r io.Reader, w io.Writer, prompt string) string {
 
 // RunCommand runs a shell command and displays output.
 func RunCommand(w io.Writer, name string, args ...string) error {
-	cmd := exec.Command(name, args...)
+	cmd := exec.Command(name, args...) // #nosec G204 G702 -- caller is responsible for providing safe command name and args
 	cmd.Stdout = w
 	cmd.Stderr = w
 	return cmd.Run()

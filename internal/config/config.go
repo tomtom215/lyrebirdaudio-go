@@ -163,7 +163,7 @@ func (c *Config) Save(path string) error {
 	}
 
 	// Atomic rename
-	if err := os.Rename(tmpPath, path); err != nil {
+	if err := os.Rename(tmpPath, path); err != nil { // #nosec G703 -- path is from CLI flag/config, not web request input
 		return fmt.Errorf("failed to rename temp config file: %w", err)
 	}
 

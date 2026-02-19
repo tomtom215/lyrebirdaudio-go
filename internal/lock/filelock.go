@@ -105,7 +105,7 @@ func (fl *FileLock) Acquire(timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for {
 		// Try non-blocking flock
-		err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) // #nosec G115 -- Fd() fits int on all supported platforms (amd64/arm64/arm)
 		if err == nil {
 			// Lock acquired!
 			break
@@ -193,7 +193,7 @@ func (fl *FileLock) AcquireContext(ctx context.Context, timeout time.Duration) e
 
 	for {
 		// Try non-blocking flock
-		err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) // #nosec G115 -- Fd() fits int on all supported platforms (amd64/arm64/arm)
 		if err == nil {
 			// Lock acquired!
 			break
@@ -252,7 +252,7 @@ func (fl *FileLock) Release() error {
 	}
 
 	// Release flock
-	if err := syscall.Flock(int(fl.file.Fd()), syscall.LOCK_UN); err != nil {
+	if err := syscall.Flock(int(fl.file.Fd()), syscall.LOCK_UN); err != nil { // #nosec G115 -- Fd() fits int on all supported platforms (amd64/arm64/arm)
 		return fmt.Errorf("failed to unlock: %w", err)
 	}
 

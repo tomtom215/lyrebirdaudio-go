@@ -276,13 +276,6 @@ func (s *Supervisor) logWarn(format string, args ...interface{}) {
 	}
 }
 
-// logError writes a formatted error-level log message if Logger is configured.
-func (s *Supervisor) logError(format string, args ...interface{}) {
-	if s.logger != nil {
-		s.logger.Error(fmt.Sprintf(format, args...), "component", "supervisor")
-	}
-}
-
 // Add registers a service with the supervisor.
 // If the supervisor is already running, the service is started immediately.
 // Returns an error if a service with the same name already exists.
