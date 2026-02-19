@@ -141,16 +141,17 @@ func (kc *KoanfConfig) reload() error {
 		}
 	}
 
-	// Load environment variables (override YAML)
-	// Transform LYREBIRD_DEVICES_BLUE_YETI_SAMPLE_RATE -> devices.blue_yeti.sample_rate
-	//
-	// Strategy: Use double underscores (__) to indicate nesting levels,
-	// and single underscores (_) within field names.
-	// If no double underscores, fall back to matching known top-level keys.
+	// Load environment variables (override YAML).
+	// Strategy: transform LYREBIRD_DEVICES_BLUE_YETI_SAMPLE_RATE to
+	// devices.blue_yeti.sample_rate by recognising the known top-level key
+	// prefixes and stripping the suffix for known field names.
+	// The env.Provider Prefix option already strips LYREBIRD_ before the
+	// TransformFunc runs, so the function receives the remainder only.
 	envProvider := env.Provider(".", env.Opt{
 		Prefix: kc.envPrefix + "_",
 		TransformFunc: func(k, v string) (string, any) {
-			// Remove prefix (already handled by Prefix option)
+			// k arrives WITHOUT the LYREBIRD_ prefix (stripped by env.Provider).
+			// Convert to lowercase for case-insensitive matching.
 			k = strings.TrimPrefix(k, kc.envPrefix+"_")
 			// Convert to lowercase
 			k = strings.ToLower(k)
@@ -213,10 +214,18 @@ func (kc *KoanfConfig) reload() error {
 // and any error that occurred. The configuration is automatically reloaded before
 // the callback is invoked on success.
 //
-// This enables hot-reload via SIGHUP or file system events.
+// This enables hot-reload via file system events (fsnotify).
+//
+// M-9 known limitation: the underlying koanf file.Provider spawns an fsnotify
+// goroutine internally.  koanf v2 does not expose a Stop() method on file.Provider,
+// so that goroutine cannot be stopped when ctx is cancelled.  The goroutine will
+// be collected when the process exits.  For long-lived applications that need
+// clean goroutine shutdown, prefer triggering manual Reload() calls on SIGHUP
+// instead of calling Watch().
 //
 // Parameters:
-//   - ctx: Context for cancellation
+//   - ctx: Context for cancellation (stops the Watch blocking wait, but not the
+//     underlying fsnotify goroutine — see M-9 note above).
 //   - callback: Function called when configuration changes. Receives event description
 //     and error (nil on success, non-nil on watch/reload errors).
 //

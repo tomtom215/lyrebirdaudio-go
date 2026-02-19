@@ -64,7 +64,8 @@ TimeoutStopSec=30
 # Restart policy
 Restart=always
 RestartSec=10
-WatchdogSec=60
+# WatchdogSec is intentionally absent: the daemon does not call sd_notify(WATCHDOG=1),
+# so enabling watchdog supervision would cause spurious service restarts (M-2).
 
 # Security hardening
 NoNewPrivileges=true

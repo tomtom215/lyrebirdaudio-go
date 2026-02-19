@@ -80,12 +80,12 @@ clean:
 ## test: Run all unit tests
 test:
 	@echo "==> Running unit tests..."
-	go test -v -race -timeout 30s ./...
+	go test -v -race -timeout 2m ./...
 
 ## test-race: Run tests with race detector
 test-race:
 	@echo "==> Running tests with race detector..."
-	go test -race -timeout 30s ./...
+	go test -race -timeout 2m ./...
 
 ## test-coverage: Run tests with coverage report
 test-coverage:

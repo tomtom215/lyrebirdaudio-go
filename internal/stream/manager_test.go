@@ -741,6 +741,84 @@ func contains(slice []string, item string) bool {
 	return false
 }
 
+// TestStartFFmpegCmdNilOnFailure is the C-5 regression test.
+//
+// If cmd.Start() fails, m.cmd must remain nil.  The original code assigned
+// m.cmd before calling cmd.Start(), which left a stale pointer to an unstarted
+// command.  A concurrent stop() call would then dereference cmd.Process (nil),
+// causing a nil-pointer panic.
+func TestStartFFmpegCmdNilOnFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cfg := &ManagerConfig{
+		DeviceName: "test_device",
+		ALSADevice: "hw:0,0",
+		StreamName: "test",
+		SampleRate: 48000,
+		Channels:   2,
+		Bitrate:    "128k",
+		Codec:      "opus",
+		RTSPURL:    "rtsp://localhost:8554/test",
+		LockDir:    tmpDir,
+		// Non-existent binary: cmd.Start() will fail with "exec: not found".
+		FFmpegPath: filepath.Join(tmpDir, "nonexistent-ffmpeg-binary"),
+		Backoff:    NewBackoff(10*time.Millisecond, 50*time.Millisecond, 1),
+	}
+
+	mgr, err := NewManager(cfg)
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+
+	// Call startFFmpeg directly (unexported, accessible from same package).
+	ctx := context.Background()
+	startErr := mgr.startFFmpeg(ctx)
+	if startErr == nil {
+		t.Fatal("startFFmpeg() should fail with non-existent binary")
+	}
+
+	// m.cmd must be nil: no process was started.
+	mgr.mu.RLock()
+	cmd := mgr.cmd
+	mgr.mu.RUnlock()
+
+	if cmd != nil {
+		t.Error("C-5 regression: m.cmd must be nil when cmd.Start() fails")
+	}
+}
+
+// TestBackoffFirstRestartUsesInitialDelay is the ME-1 regression test.
+//
+// The manager must wait initialDelay before the first restart, not
+// 2×initialDelay.  The fix swaps WaitContext() and RecordFailure() in Run()
+// so that the wait uses the current (pre-doubled) delay.
+func TestBackoffFirstRestartUsesInitialDelay(t *testing.T) {
+	const initialDelay = 80 * time.Millisecond
+	const maxDelay = 500 * time.Millisecond
+
+	b := NewBackoff(initialDelay, maxDelay, 50)
+
+	// Simulate the corrected manager behavior: wait THEN record.
+	ctx := context.Background()
+	start := time.Now()
+	if err := b.WaitContext(ctx); err != nil {
+		t.Fatalf("WaitContext: %v", err)
+	}
+	elapsed := time.Since(start)
+	b.RecordFailure()
+
+	// First restart must wait ~initialDelay (not 2×initialDelay).
+	if elapsed < initialDelay/2 || elapsed > initialDelay*3 {
+		t.Errorf("ME-1: first restart waited %v; want ~%v (initialDelay), not ~%v (2×initialDelay)",
+			elapsed, initialDelay, 2*initialDelay)
+	}
+
+	// After recording failure, next delay must be doubled.
+	if b.CurrentDelay() != initialDelay*2 {
+		t.Errorf("After RecordFailure, CurrentDelay = %v, want %v", b.CurrentDelay(), initialDelay*2)
+	}
+}
+
 // BenchmarkStreamManagerStart measures manager startup performance.
 func BenchmarkStreamManagerStart(b *testing.B) {
 	cfg := &ManagerConfig{

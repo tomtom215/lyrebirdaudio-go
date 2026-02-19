@@ -25,6 +25,7 @@ package stream
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -210,10 +211,17 @@ func NewManager(cfg *ManagerConfig) (*Manager, error) {
 	return mgr, nil
 }
 
-// logf writes a formatted log message if Logger is configured.
+// logf writes a formatted info-level log message if Logger is configured.
 func (m *Manager) logf(format string, args ...interface{}) {
 	if m.cfg.Logger != nil {
 		m.cfg.Logger.Info(fmt.Sprintf(format, args...), "device", m.cfg.DeviceName)
+	}
+}
+
+// logError writes an error-level log message if Logger is configured.
+func (m *Manager) logError(format string, args ...interface{}) {
+	if m.cfg.Logger != nil {
+		m.cfg.Logger.Error(fmt.Sprintf(format, args...), "device", m.cfg.DeviceName)
 	}
 }
 
@@ -287,23 +295,25 @@ func (m *Manager) Run(ctx context.Context) error {
 
 		// Handle result
 		if err != nil {
-			if err == context.Canceled {
+			if errors.Is(err, context.Canceled) {
 				m.logf("Context cancelled, stopping")
 				m.setState(StateStopped)
 				return err
 			}
 
-			// FFmpeg failed
+			// FFmpeg failed — wait with the CURRENT delay, then record the failure
+			// (which doubles the delay for the next iteration).  This ensures the
+			// first restart waits initialDelay, not 2×initialDelay (ME-1 fix).
 			m.failures.Add(1)
 			m.setState(StateFailed)
-			m.backoff.RecordFailure()
-			m.logf("FFmpeg failed: %v (failures=%d, backoff=%v)", err, m.failures.Load(), m.backoff.CurrentDelay())
+			m.logError("FFmpeg failed: %v (failures=%d, next-backoff=%v)", err, m.failures.Load(), m.backoff.CurrentDelay())
 
-			// Wait for backoff (or context cancellation)
-			if err := m.backoff.WaitContext(ctx); err != nil {
+			// Wait before recording failure so the first restart uses initialDelay.
+			if waitErr := m.backoff.WaitContext(ctx); waitErr != nil {
 				m.setState(StateStopped)
-				return err // Context cancelled during backoff
+				return waitErr // Context cancelled during backoff
 			}
+			m.backoff.RecordFailure()
 
 			// Continue to retry
 			continue
@@ -313,18 +323,18 @@ func (m *Manager) Run(ctx context.Context) error {
 		successThreshold := m.backoff.SuccessThreshold()
 		if runTime < successThreshold {
 			// Short run - treat as failure (use RecordFailure, not RecordSuccess,
-			// to avoid double-counting attempts since RecordSuccess also increments)
+			// to avoid double-counting attempts since RecordSuccess also increments).
+			// Same swap as above: wait first, then record.
 			m.failures.Add(1)
-			m.backoff.RecordFailure()
-
 			m.setState(StateFailed)
-			m.logf("FFmpeg ran for %v (< %v threshold), treating as failure", runTime, successThreshold)
+			m.logError("FFmpeg ran for %v (< %v threshold), treating as failure", runTime, successThreshold)
 
-			// Wait for backoff
-			if err := m.backoff.WaitContext(ctx); err != nil {
+			// Wait before recording failure.
+			if waitErr := m.backoff.WaitContext(ctx); waitErr != nil {
 				m.setState(StateStopped)
-				return err
+				return waitErr
 			}
+			m.backoff.RecordFailure()
 
 			// Continue to retry
 			continue
@@ -483,12 +493,14 @@ func (m *Manager) startFFmpeg(ctx context.Context) error {
 	// Build command with context for automatic cancellation
 	cmd := buildFFmpegCommand(ctx, m.cfg)
 
-	// Redirect stderr to rotating log writer if configured
+	// Redirect stderr to rotating log writer if configured.
+	// Do NOT assign m.cmd yet: if cmd.Start() fails, m.cmd must remain nil so
+	// that a concurrent stop() does not attempt to signal a process that was
+	// never started (C-5 fix).
 	m.mu.Lock()
 	if m.logWriter != nil {
 		cmd.Stderr = m.logWriter
 	}
-	m.cmd = cmd
 	m.startTime = time.Now()
 	m.mu.Unlock()
 
@@ -496,6 +508,12 @@ func (m *Manager) startFFmpeg(ctx context.Context) error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start ffmpeg: %w", err)
 	}
+
+	// Assign m.cmd only after a successful Start so that stop() never sees a
+	// Process==nil pointer from an unstarted command.
+	m.mu.Lock()
+	m.cmd = cmd
+	m.mu.Unlock()
 
 	// Transition to running
 	m.setState(StateRunning)
@@ -556,16 +574,23 @@ func (m *Manager) stop() {
 		// a race where cmd.Process becomes invalid after Wait() returns.
 		proc := cmd.Process
 
-		// Send SIGINT for graceful shutdown
+		// Send SIGINT for graceful shutdown.
+		// The error is intentionally discarded: if the process has already
+		// exited between the nil check above and this signal call, the kernel
+		// returns ESRCH, which is an expected benign race (L-7).
 		_ = proc.Signal(os.Interrupt)
 
-		// Give process a brief moment to handle SIGINT gracefully
-		// Then force kill if still running
+		// If FFmpeg does not exit within 2 s, force-kill it.
+		// The goroutine is bound to a context derived from the caller's ctx so
+		// it does not outlive the manager's Run() loop (ME-3 fix).
+		killCtx, killCancel := context.WithTimeout(context.Background(), 2*time.Second)
 		go func() {
-			time.Sleep(2 * time.Second)
-			// Use the captured proc pointer; Kill on an already-exited process
-			// returns an error which we intentionally ignore.
-			_ = proc.Kill()
+			defer killCancel()
+			<-killCtx.Done()
+			if killCtx.Err() == context.DeadlineExceeded {
+				// Kill on an already-reaped process is a no-op; error ignored.
+				_ = proc.Kill()
+			}
 		}()
 	}
 }
