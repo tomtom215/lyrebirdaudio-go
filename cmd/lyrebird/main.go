@@ -522,7 +522,7 @@ func runMigrate(args []string) error {
 	}
 
 	// Create directory if needed
-	if err := os.MkdirAll(filepath.Dir(toPath), 0755); err != nil { // #nosec G301 -- config dir needs group-execute (0755); path comes from a validated CLI flag
+	if err := os.MkdirAll(filepath.Dir(toPath), 0750); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
