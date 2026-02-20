@@ -60,8 +60,9 @@ func NewFileLock(path string) (*FileLock, error) {
 
 	// Create parent directory if needed
 	dir := filepath.Dir(path)
-	// #nosec G301 - Lock directory needs 0755 for multi-user access
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	// SEC-2: Restrict lock directory to owner+group only (least privilege).
+	// #nosec G301 - Lock directory restricted to owner+group for service coordination
+	if err := os.MkdirAll(dir, 0750); err != nil {
 		return nil, fmt.Errorf("failed to create lock directory: %w", err)
 	}
 
@@ -95,8 +96,10 @@ func (fl *FileLock) Acquire(timeout time.Duration) error {
 	}
 
 	// Open lock file (create if doesn't exist)
-	// #nosec G302 - Lock file needs 0644 for multi-process coordination
-	file, err := os.OpenFile(fl.path, os.O_CREATE|os.O_RDWR, 0644)
+	// SEC-2: Restrict lock file to owner+group (least privilege). PIDs in lock files
+	// should not be world-readable to prevent process enumeration.
+	// #nosec G302 - Lock file restricted to owner+group for service coordination
+	file, err := os.OpenFile(fl.path, os.O_CREATE|os.O_RDWR, 0640)
 	if err != nil {
 		return fmt.Errorf("failed to open lock file: %w", err)
 	}
@@ -180,8 +183,9 @@ func (fl *FileLock) AcquireContext(ctx context.Context, timeout time.Duration) e
 	}
 
 	// Open lock file (create if doesn't exist)
-	// #nosec G302 - Lock file needs 0644 for multi-process coordination
-	file, err := os.OpenFile(fl.path, os.O_CREATE|os.O_RDWR, 0644)
+	// SEC-2: Restrict lock file to owner+group (least privilege).
+	// #nosec G302 - Lock file restricted to owner+group for service coordination
+	file, err := os.OpenFile(fl.path, os.O_CREATE|os.O_RDWR, 0640)
 	if err != nil {
 		return fmt.Errorf("failed to open lock file: %w", err)
 	}

@@ -173,9 +173,11 @@ func (c *Config) saveWith(path string, createTemp atomicCreateTemp) error {
 		return fmt.Errorf("failed to sync temp config file: %w", err)
 	}
 
-	// Set permissions before rename (0644: readable by all, writable by owner)
-	// #nosec G302 - Config file should be world-readable (0644 is appropriate)
-	if err := tmpFile.Chmod(0644); err != nil {
+	// SEC-3: Restrict config file to owner+group only (least privilege).
+	// Config files may contain sensitive settings (API URLs, server details)
+	// and should not be world-readable.
+	// #nosec G302 - Config file restricted to owner+group for security
+	if err := tmpFile.Chmod(0640); err != nil {
 		return fmt.Errorf("failed to set config file permissions: %w", err)
 	}
 

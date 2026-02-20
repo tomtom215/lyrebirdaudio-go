@@ -798,10 +798,10 @@ func TestSaveConfigAtomicPermissions(t *testing.T) {
 		t.Fatalf("Stat error = %v", err)
 	}
 
-	// Check permissions (masking umask bits)
+	// SEC-3: Config files are saved with 0640 (owner+group, no world-read).
 	perm := info.Mode().Perm()
-	if perm&0644 != 0644 {
-		t.Errorf("File permissions = %o, want at least 0644", perm)
+	if perm != 0640 {
+		t.Errorf("File permissions = %04o, want 0640 (SEC-3 least privilege)", perm)
 	}
 }
 

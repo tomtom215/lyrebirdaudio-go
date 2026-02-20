@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -1121,6 +1122,12 @@ func runInstallMediaMTX(args []string) error {
 		}
 	}
 
+	// SEC-5: Validate version format to prevent URL path injection.
+	// Only allow vX.Y.Z or X.Y.Z format (with optional pre-release suffix).
+	if !isValidMediaMTXVersion(version) {
+		return fmt.Errorf("invalid version format %q: must be vX.Y.Z (e.g., v1.9.3)", version)
+	}
+
 	fmt.Println("MediaMTX Installation")
 	fmt.Println("=====================")
 	fmt.Println()
@@ -1273,6 +1280,15 @@ func downloadFile(url, dest string) error {
 	}
 
 	return fmt.Errorf("neither curl nor wget found - install one of them first")
+}
+
+// isValidMediaMTXVersion checks that a version string matches the expected
+// semver format (vX.Y.Z or X.Y.Z, with optional pre-release suffix like -rc1).
+// SEC-5: Prevents URL path injection when constructing download URLs.
+var validVersionRe = regexp.MustCompile(`^v?\d+\.\d+\.\d+(-[a-zA-Z0-9.]+)?$`)
+
+func isValidMediaMTXVersion(v string) bool {
+	return validVersionRe.MatchString(v)
 }
 
 // installMediaMTXService installs the MediaMTX systemd service.
