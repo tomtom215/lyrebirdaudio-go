@@ -19,6 +19,29 @@ This document is intended to improve session-over-session quality and prevent re
 
 ## Go-Specific Pitfalls
 
+### LL-0: Always Run `gofmt -s -w .` Before Committing
+
+**CI Failure (Phase 2)**: Hand-aligned inline comments with extra spaces caused CI to reject the commit. `gofmt` has strict rules about comment alignment.
+
+**Pattern**: ALWAYS run `gofmt -s -w .` as the last step before `git add`. Never hand-align comments, struct fields, or table-driven test data — `gofmt` owns all whitespace decisions.
+
+**Anti-pattern**: Aligning comments for readability:
+```go
+// WRONG — gofmt will reject this
+{"v1.9", false},           // missing patch
+{"v1", false},             // missing minor+patch
+```
+
+```go
+// RIGHT — let gofmt handle spacing
+{"v1.9", false}, // missing patch
+{"v1", false},   // missing minor+patch
+```
+
+**Root cause**: AI assistants (including Claude) naturally try to align comments for visual consistency, but Go's formatter uses its own rules. This mismatch is easy to miss without running `gofmt -s -l .` before committing.
+
+---
+
 ### LL-1: Closure Variable Capture in `if` Blocks
 
 **BUG-2 (Opus Audit)**: A `defer` inside an `if _, err := ...; err == nil { }` block captured the block-scoped `err` (always nil), not the function's return error. The rollback mechanism was dead code.

@@ -33,6 +33,7 @@ go mod tidy                      # Tidy modules
 ```
 
 ### Critical Rules (Non-Negotiable)
+- **gofmt Before Commit**: Run `gofmt -s -w .` before every commit. CI will reject unformatted code. NEVER hand-align comments or struct fields with extra spaces — `gofmt` owns all whitespace decisions.
 - **TDD Required**: Write tests FIRST, then implementation
 - **Race-Free**: `go test -race ./...` must pass with zero warnings
 - **Coverage Floor**: 65% minimum (CI-enforced), 90%+ target for internal packages
@@ -181,6 +182,7 @@ systemd/               → lyrebird-stream.service (18 security hardening direct
 - [ ] Check `git log --oneline -10` for recent context
 
 ### Before Committing
+- [ ] `gofmt -s -l .` returns no files (run `gofmt -s -w .` to fix)
 - [ ] `go test -race ./...` passes
 - [ ] `go vet ./...` clean
 - [ ] Coverage not decreased (`go test -cover ./...`)

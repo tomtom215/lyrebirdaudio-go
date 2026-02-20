@@ -1305,8 +1305,8 @@ func TestIsValidMediaMTXVersion(t *testing.T) {
 		{"v1.9.3/%2e%2e/", false},
 		{"v1.9.3; rm -rf /", false},
 		{"../../../etc/passwd", false},
-		{"v1.9", false},           // missing patch
-		{"v1", false},             // missing minor+patch
+		{"v1.9", false}, // missing patch
+		{"v1", false},   // missing minor+patch
 		{"v1.9.3\nmalicious", false},
 		{"v1.9.3 --help", false},
 		{"v1.9.3&foo=bar", false},
