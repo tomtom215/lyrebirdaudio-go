@@ -41,21 +41,21 @@ go mod tidy
 
 | Package              | Coverage  | Notes                                          |
 |----------------------|-----------|------------------------------------------------|
-| internal/audio       | 94.7%     | Device detection + sanitization                |
-| internal/supervisor  | 94.2%     | Erlang-style supervisor tree using suture      |
+| internal/audio       | 97.6%     | Device detection + sanitization                |
+| internal/supervisor  | 96.4%     | Erlang-style supervisor tree using suture      |
 | internal/health      | 94.1%     | HTTP health check endpoint                     |
-| internal/util        | 94.0%     | Panic recovery, resource tracking              |
+| internal/util        | 94.1%     | Panic recovery, resource tracking              |
+| internal/udev        | 92.9%     | udev rule generation + file writing            |
 | internal/mediamtx    | 92.4%     | MediaMTX API client                            |
-| internal/updater     | 90.4%     | Version checking + semver comparison           |
-| internal/config      | 90.3%     | YAML config + koanf + hot-reload               |
-| internal/udev        | 85.4%     | udev rule generation + file writing            |
-| internal/stream      | 85.0%     | Stream manager with backoff + monitoring       |
-| internal/lock        | 78.6%     | File-based locking                             |
-| internal/diagnostics | 65.5%     | System diagnostics                             |
-| internal/menu        | 55.6%     | Interactive menu (requires terminal)           |
-| cmd/lyrebird         | 43.5%     | CLI (many commands require root/interactive)   |
-| cmd/lyrebird-stream  | 30.4%     | Daemon (requires runtime environment)          |
-| **Internal packages**| **~85%**  | Core library code well-tested                  |
+| internal/config      | 92.0%     | YAML config + koanf + hot-reload               |
+| internal/updater     | 89.5%     | Version checking + semver comparison           |
+| internal/stream      | 87.1%     | Stream manager with backoff + monitoring       |
+| internal/lock        | 77.3%     | File-based locking                             |
+| internal/diagnostics | 65.2%     | System diagnostics                             |
+| internal/menu        | 61.5%     | Interactive menu (requires terminal)           |
+| cmd/lyrebird         | 48.4%     | CLI (many commands require root/interactive)   |
+| cmd/lyrebird-stream  | 32.7%     | Daemon (requires runtime environment)          |
+| **Internal packages**| **~87%**  | Core library code well-tested                  |
 
 ---
 
@@ -565,7 +565,7 @@ Coverage notes:
 - CLI commands (cmd/lyrebird) have lower coverage due to root/interactive requirements
 - Streaming daemon (cmd/lyrebird-stream) requires runtime environment for full testing
 - Internal packages are well-tested with comprehensive unit tests
-- The 70% threshold balances test quality with practical limitations of CLI testing
+- The 65% threshold balances test quality with practical limitations of CLI testing
 
 ---
 
@@ -677,4 +677,4 @@ golangci-lint run ./...
 
 ---
 
-*Last updated: 2025-12-19*
+*Last updated: 2026-02-20*

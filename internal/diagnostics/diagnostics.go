@@ -588,7 +588,14 @@ func (r *Runner) checkMediaMTXAPI(ctx context.Context) CheckResult {
 
 	// Try to connect to API
 	client := &http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Get("http://localhost:9997/v3/paths/list")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://localhost:9997/v3/paths/list", nil)
+	if err != nil {
+		result.Status = StatusError
+		result.Message = "Failed to create request"
+		result.Duration = time.Since(start)
+		return result
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		result.Status = StatusWarning
 		result.Message = "MediaMTX API not reachable"

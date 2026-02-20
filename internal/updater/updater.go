@@ -327,7 +327,7 @@ func (u *Updater) Download(ctx context.Context, url, destPath string, progress f
 //  5. Verify the new binary works
 //
 // If anything fails, the backup is restored.
-func (u *Updater) Update(ctx context.Context, info *UpdateInfo, binaryPath string, progress func(downloaded, total int64)) error {
+func (u *Updater) Update(ctx context.Context, info *UpdateInfo, binaryPath string, progress func(downloaded, total int64)) (retErr error) {
 	if info.DownloadURL == "" {
 		return fmt.Errorf("no download URL available for this platform")
 	}
@@ -371,7 +371,9 @@ func (u *Updater) Update(ctx context.Context, info *UpdateInfo, binaryPath strin
 		return fmt.Errorf("failed to make executable: %w", err)
 	}
 
-	// Backup current binary
+	// Backup current binary.
+	// The defer references the named return retErr so it can observe the
+	// final outcome of the function and roll back only on failure.
 	backupPath := binaryPath + ".backup"
 	if _, err := os.Stat(binaryPath); err == nil {
 		if err := copyFile(binaryPath, backupPath); err != nil {
@@ -379,7 +381,7 @@ func (u *Updater) Update(ctx context.Context, info *UpdateInfo, binaryPath strin
 		}
 		defer func() {
 			// Restore backup if update failed
-			if err != nil {
+			if retErr != nil {
 				_ = os.Rename(backupPath, binaryPath)
 			} else {
 				_ = os.Remove(backupPath)
@@ -758,7 +760,7 @@ func FormatUpdateInfo(info *UpdateInfo) string {
 
 	if info.UpdateAvailable {
 		sb.WriteString("\n✓ Update available!\n")
-		if info.PublishedAt.IsZero() {
+		if !info.PublishedAt.IsZero() {
 			sb.WriteString(fmt.Sprintf("Published: %s\n", info.PublishedAt.Format("2006-01-02")))
 		}
 	} else {
