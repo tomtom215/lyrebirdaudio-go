@@ -49,6 +49,7 @@ import (
 	"github.com/tomtom215/lyrebirdaudio-go/internal/audio"
 	"github.com/tomtom215/lyrebirdaudio-go/internal/config"
 	"github.com/tomtom215/lyrebirdaudio-go/internal/health"
+	"github.com/tomtom215/lyrebirdaudio-go/internal/mediamtx"
 	"github.com/tomtom215/lyrebirdaudio-go/internal/stream"
 	"github.com/tomtom215/lyrebirdaudio-go/internal/supervisor"
 )
@@ -196,6 +197,18 @@ func runDaemon(flags daemonFlags) int {
 			registeredMu.RUnlock()
 			if alreadyRegistered {
 				continue
+			}
+
+			// P-7 fix: Wait for USB device to finish Linux initialization
+			// before creating the stream manager. Without this delay, a
+			// hot-plugged device may not be fully ready when FFmpeg opens it.
+			if cfg.Stream.USBStabilizationDelay > 0 {
+				logger.Debug("waiting for USB device to stabilize", "device", devName, "delay", cfg.Stream.USBStabilizationDelay)
+				select {
+				case <-time.After(cfg.Stream.USBStabilizationDelay):
+				case <-ctx.Done():
+					return registered
+				}
 			}
 
 			devCfg := cfg.GetDeviceConfig(devName)
@@ -381,13 +394,126 @@ func runDaemon(flags daemonFlags) int {
 	// SEC-1: Bind to localhost only to prevent network exposure of service status.
 	// The health endpoint is intended for local monitoring (systemd, localhost probes)
 	// and should not be accessible from the network by default.
-	healthHandler := health.NewHandler(nil) // nil provider: basic liveness only
+	// P-4 fix: Wire real StatusProvider that reports supervisor service states,
+	// replacing the nil provider that always returned 503.
+	healthHandler := health.NewHandler(&supervisorStatusProvider{sup: sup})
 	go func() {
 		if err := health.ListenAndServe(ctx, "127.0.0.1:9998", healthHandler); err != nil {
 			// Not fatal: health endpoint failure must not crash the daemon.
 			logger.Warn("health endpoint error", "error", err)
 		}
 	}()
+
+	// P-3 fix: Periodic recovery for permanently failed streams.
+	// When a stream exceeds MaxRestartAttempts, it enters StateFailed and the
+	// manager's Run() returns. This goroutine periodically clears failed
+	// registrations so that the device polling loop can re-register them with
+	// a fresh manager and reset backoff — but only if the USB device is still
+	// present. This prevents permanent death after transient failures.
+	go func() {
+		recoveryInterval := cfg.Monitor.Interval
+		if recoveryInterval <= 0 {
+			recoveryInterval = 5 * time.Minute
+		}
+		ticker := time.NewTicker(recoveryInterval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				statuses := sup.Status()
+				for _, status := range statuses {
+					if status.State != supervisor.ServiceStateFailed {
+						continue
+					}
+					logger.Info("attempting recovery of failed stream", "device", status.Name, "restarts", status.Restarts)
+					if removeErr := sup.Remove(status.Name); removeErr != nil {
+						logger.Warn("failed to remove failed service for recovery", "device", status.Name, "error", removeErr)
+						continue
+					}
+					registeredMu.Lock()
+					delete(registeredServices, status.Name)
+					delete(registeredConfigHashes, status.Name)
+					registeredMu.Unlock()
+					logger.Info("cleared failed stream for re-registration", "device", status.Name)
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	// P-1/P-2 fix: Stream health check loop using MediaMTX API client.
+	// This wires the previously dead-code mediamtx client into the daemon to
+	// detect silent/stalled streams. Polls MediaMTX API at the configured
+	// monitor interval. If a stream's bytes_received stops increasing for
+	// maxStallChecks consecutive polls, the stream is restarted.
+	if cfg.Monitor.Enabled {
+		go func() {
+			mtxClient := mediamtx.NewClient(cfg.MediaMTX.APIURL)
+			checkInterval := cfg.Monitor.Interval
+			if checkInterval <= 0 {
+				checkInterval = 5 * time.Minute
+			}
+			ticker := time.NewTicker(checkInterval)
+			defer ticker.Stop()
+
+			// Track bytes received per stream for stall detection.
+			prevBytes := make(map[string]int64)
+			stallCount := make(map[string]int)
+			const maxStallChecks = 3
+
+			for {
+				select {
+				case <-ticker.C:
+					registeredMu.RLock()
+					names := make([]string, 0, len(registeredServices))
+					for name := range registeredServices {
+						names = append(names, name)
+					}
+					registeredMu.RUnlock()
+
+					for _, name := range names {
+						stats, err := mtxClient.GetStreamStats(ctx, name)
+						if err != nil {
+							// MediaMTX may not be running yet; debug-level only.
+							logger.Debug("stream health check failed", "stream", name, "error", err)
+							continue
+						}
+
+						if stats.Ready && stats.BytesReceived > 0 {
+							if prev, ok := prevBytes[name]; ok && stats.BytesReceived <= prev {
+								stallCount[name]++
+								logger.Warn("stream data stalled", "stream", name, "bytes", stats.BytesReceived, "stall_count", stallCount[name])
+							} else {
+								stallCount[name] = 0
+							}
+							prevBytes[name] = stats.BytesReceived
+						} else {
+							stallCount[name]++
+							logger.Warn("stream not ready or no data", "stream", name, "ready", stats.Ready, "bytes", stats.BytesReceived, "stall_count", stallCount[name])
+						}
+
+						if cfg.Monitor.RestartUnhealthy && stallCount[name] >= maxStallChecks {
+							logger.Warn("restarting stalled stream", "stream", name, "stall_count", stallCount[name])
+							if removeErr := sup.Remove(name); removeErr != nil {
+								logger.Warn("failed to remove stalled service", "stream", name, "error", removeErr)
+								continue
+							}
+							registeredMu.Lock()
+							delete(registeredServices, name)
+							delete(registeredConfigHashes, name)
+							registeredMu.Unlock()
+							delete(stallCount, name)
+							delete(prevBytes, name)
+						}
+					}
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	}
 
 	// Run supervisor (blocks until shutdown)
 	logger.Info("starting supervisor", "streams", sup.ServiceCount())
@@ -398,6 +524,30 @@ func runDaemon(flags daemonFlags) int {
 
 	logger.Info("shutdown complete")
 	return 0
+}
+
+// supervisorStatusProvider implements health.StatusProvider by querying the
+// supervisor for live service state. This replaces the nil provider that was
+// previously passed to health.NewHandler (P-4 fix).
+type supervisorStatusProvider struct {
+	sup *supervisor.Supervisor
+}
+
+func (p *supervisorStatusProvider) Services() []health.ServiceInfo {
+	statuses := p.sup.Status()
+	services := make([]health.ServiceInfo, len(statuses))
+	for i, s := range statuses {
+		services[i] = health.ServiceInfo{
+			Name:    s.Name,
+			State:   s.State.String(),
+			Uptime:  s.Uptime,
+			Healthy: s.State == supervisor.ServiceStateRunning,
+		}
+		if s.LastError != nil {
+			services[i].Error = s.LastError.Error()
+		}
+	}
+	return services
 }
 
 // streamService wraps a stream.Manager to implement supervisor.Service.

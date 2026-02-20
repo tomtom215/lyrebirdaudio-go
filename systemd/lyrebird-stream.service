@@ -96,6 +96,13 @@ ReadOnlyPaths=/etc/lyrebird /proc/asound
 LimitNOFILE=65536
 LimitNPROC=4096
 
+# P-10 fix: Memory limits to prevent OOM on resource-constrained devices
+# (e.g., Raspberry Pi with 1-4 GB RAM and multiple USB microphones).
+# MemoryHigh triggers memory pressure reclaim; MemoryMax is a hard kill limit.
+# 512M is conservative for audio-only FFmpeg streams (typically 20-50 MB each).
+MemoryHigh=384M
+MemoryMax=512M
+
 # Environment
 Environment=HOME=/var/run/lyrebird
 

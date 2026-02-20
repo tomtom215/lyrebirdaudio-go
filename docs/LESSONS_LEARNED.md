@@ -251,4 +251,38 @@ Backoff that resets after N seconds of successful running prevents permanent slo
 
 ---
 
+## Production Readiness Patterns (Phase 6)
+
+### LL-12: Dead Code Is Invisible Infrastructure Debt
+
+**Pattern**: The MediaMTX API client (92.4% coverage) was never imported by any production code. High test coverage created a false sense of completeness — the code *worked* but was never *used*.
+
+**Lesson**: Coverage alone does not prove integration. After writing a supporting module, search for callers (`grep -r "package/name" --include="*.go"`) outside of tests. If there are none, the module is dead code regardless of its coverage score.
+
+### LL-13: Always Verify Claims Before Acting
+
+**Pattern**: Of 15 production-readiness findings from a prior session, 2 were demonstrably false (P-6: config validation exists; P-13: menu IS fully wired), and 1 was partially incorrect (P-10: some resource limits did exist). Blindly implementing "fixes" for non-issues wastes time and can introduce bugs.
+
+**Lesson**: Before fixing any finding, verify it by reading the actual code. Search for the specific function calls, imports, and code paths mentioned. Trust evidence, not assertions.
+
+### LL-14: Daemon Goroutines Resist Unit Testing
+
+**Pattern**: Adding the P-3 recovery loop, P-1/P-2 health check loop, and P-7 USB stabilization delay increased daemon code by ~100 lines but decreased coverage from 32.7% to 26.3%. These goroutines run in production context and require real MediaMTX, FFmpeg, and USB devices to exercise.
+
+**Lesson**: Extract testable logic into named functions or types (like `supervisorStatusProvider`). Goroutine-based daemon logic should be tested via integration tests or by injecting mock dependencies. Accept that daemon coverage will be lower than library coverage.
+
+### LL-15: Embedded Service Files Need Sync Tests
+
+**Pattern**: Updating `systemd/lyrebird-stream.service` (P-10 memory limits) immediately broke `TestInstallLyreBirdServiceMatchesSystemdFile` because the embedded copy in `main.go` was out of sync. The test caught this instantly.
+
+**Lesson**: When a file has an embedded copy (like service templates), the sync test is essential. Always update both copies simultaneously.
+
+### LL-16: Backup Before Save Is a Caller Responsibility
+
+**Pattern**: The `BackupBeforeSave` function existed but was never called because `Config.Save()` doesn't internally call it. This is correct — Save is a general-purpose method that shouldn't always create backups.
+
+**Lesson**: Backup-before-write is a *caller* concern, not a method concern. CLI commands that modify user config should call `BackupConfig()` before `Save()`. The daemon (which only reads config) has no need for backups.
+
+---
+
 *Last updated: 2026-02-20*
