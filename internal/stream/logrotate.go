@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -32,6 +33,7 @@ const (
 //   - Retention of up to maxFiles rotated logs
 //   - Optional gzip compression of rotated logs
 //   - Thread-safe writes
+//   - Error reporting via optional logger (M-3 fix)
 //
 // Reference: mediamtx-stream-manager.sh log rotation
 type RotatingWriter struct {
@@ -39,6 +41,7 @@ type RotatingWriter struct {
 	maxSize  int64
 	maxFiles int
 	compress bool
+	logger   *slog.Logger // M-3 fix: optional logger for rotation errors
 
 	mu     sync.Mutex
 	wg     sync.WaitGroup
@@ -68,6 +71,14 @@ func WithMaxFiles(count int) RotatingWriterOption {
 func WithCompression(compress bool) RotatingWriterOption {
 	return func(w *RotatingWriter) {
 		w.compress = compress
+	}
+}
+
+// WithRotateLogger sets a logger for rotation error reporting (M-3 fix).
+// Without this, rotation errors are silently discarded.
+func WithRotateLogger(logger *slog.Logger) RotatingWriterOption {
+	return func(w *RotatingWriter) {
+		w.logger = logger
 	}
 }
 
@@ -127,9 +138,12 @@ func (w *RotatingWriter) Write(p []byte) (n int, err error) {
 
 	// Check if rotation needed
 	if w.size+int64(len(p)) > w.maxSize {
-		// Log rotation may fail, but we try to write anyway
-		// (better to potentially exceed size than lose logs)
-		_ = w.rotate()
+		// M-3 fix: Log rotation errors instead of silently discarding them.
+		// Rotation may fail (e.g., disk full), but we still try to write
+		// (better to potentially exceed size than lose logs).
+		if err := w.rotate(); err != nil && w.logger != nil {
+			w.logger.Warn("log rotation failed", "path", w.path, "error", err)
+		}
 	}
 
 	// Ensure file is open
@@ -267,11 +281,15 @@ func (w *RotatingWriter) rotatedPath(n int) string {
 }
 
 // compressFile compresses a log file with gzip.
+// M-3 fix: errors are now logged instead of silently discarded.
 func (w *RotatingWriter) compressFile(path string) {
 	// Read original file
 	// #nosec G304 -- path is from controlled log rotation paths
 	data, err := os.ReadFile(path)
 	if err != nil {
+		if w.logger != nil {
+			w.logger.Warn("log compression: failed to read file", "path", path, "error", err)
+		}
 		return
 	}
 
@@ -280,6 +298,9 @@ func (w *RotatingWriter) compressFile(path string) {
 	// #nosec G304 -- gzPath is from controlled log rotation paths
 	gzFile, err := os.Create(gzPath)
 	if err != nil {
+		if w.logger != nil {
+			w.logger.Warn("log compression: failed to create gz file", "path", gzPath, "error", err)
+		}
 		return
 	}
 	defer func() { _ = gzFile.Close() }()
@@ -287,10 +308,16 @@ func (w *RotatingWriter) compressFile(path string) {
 	// Write compressed data
 	gzWriter := gzip.NewWriter(gzFile)
 	if _, err := gzWriter.Write(data); err != nil {
+		if w.logger != nil {
+			w.logger.Warn("log compression: failed to write compressed data", "path", gzPath, "error", err)
+		}
 		_ = os.Remove(gzPath)
 		return
 	}
 	if err := gzWriter.Close(); err != nil {
+		if w.logger != nil {
+			w.logger.Warn("log compression: failed to finalize compressed file", "path", gzPath, "error", err)
+		}
 		_ = os.Remove(gzPath)
 		return
 	}

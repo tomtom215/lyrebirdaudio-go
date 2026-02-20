@@ -80,15 +80,17 @@ func BackupConfig(configPath, backupDir string) (string, error) {
 	}
 
 	// Generate backup filename
+	// M-1 fix: Use UTC to ensure deterministic backup ordering regardless of
+	// system timezone changes (NTP corrections, DST, manual changes).
 	baseName := filepath.Base(configPath)
-	timestamp := time.Now().Format(BackupTimestampFormat)
+	timestamp := time.Now().UTC().Format(BackupTimestampFormat)
 	backupName := fmt.Sprintf("%s.%s%s", baseName, timestamp, BackupSuffix)
 	backupPath := filepath.Join(backupDir, backupName)
 
 	// Check if backup already exists (same second)
 	if _, err := os.Stat(backupPath); err == nil {
 		// Add milliseconds to make unique
-		timestamp = time.Now().Format("2006-01-02T15-04-05.000")
+		timestamp = time.Now().UTC().Format("2006-01-02T15-04-05.000")
 		backupName = fmt.Sprintf("%s.%s%s", baseName, timestamp, BackupSuffix)
 		backupPath = filepath.Join(backupDir, backupName)
 	}

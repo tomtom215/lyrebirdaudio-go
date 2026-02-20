@@ -158,10 +158,27 @@ type serviceWrapper struct {
 	// Without this mutex, concurrent Serve + Stop calls race on the field.
 	mu     sync.Mutex
 	cancel context.CancelFunc
+
+	// M-4 fix: done is closed when Serve() returns, allowing Remove() to
+	// wait for the service to fully stop before re-registration.
+	done chan struct{}
 }
 
 // Serve implements suture.Service.
 func (w *serviceWrapper) Serve(ctx context.Context) error {
+	// M-4 fix: Reset the done channel for each Serve invocation so that
+	// Remove() can wait for this specific run to complete.
+	w.mu.Lock()
+	w.done = make(chan struct{})
+	w.mu.Unlock()
+	defer func() {
+		w.mu.Lock()
+		if w.done != nil {
+			close(w.done)
+		}
+		w.mu.Unlock()
+	}()
+
 	// Create a cancellable context for this service and store cancel under mu
 	// so that a concurrent Stop() call cannot race with this assignment.
 	serviceCtx, cancel := context.WithCancel(ctx)
@@ -312,14 +329,24 @@ func (s *Supervisor) Add(svc Service) error {
 }
 
 // Remove unregisters and stops a service.
+// M-4 fix: Remove now waits for the service's Serve() to return before
+// deleting from the map, preventing races where a new manager is registered
+// before the old FFmpeg process has fully exited.
 // Returns an error if the service doesn't exist.
 func (s *Supervisor) Remove(name string) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	entry, exists := s.services[name]
 	if !exists {
+		s.mu.Unlock()
 		return fmt.Errorf("service %q not found", name)
+	}
+
+	// Capture done channel before releasing lock.
+	var doneCh chan struct{}
+	if entry.wrapper != nil {
+		entry.wrapper.mu.Lock()
+		doneCh = entry.wrapper.done
+		entry.wrapper.mu.Unlock()
 	}
 
 	// Remove from suture (this stops the service)
@@ -334,6 +361,20 @@ func (s *Supervisor) Remove(name string) error {
 	}
 
 	delete(s.services, name)
+	s.mu.Unlock()
+
+	// M-4 fix: Wait for Serve() to return so the old process is fully stopped
+	// before the caller can re-register the service. Uses a timeout to prevent
+	// indefinite blocking if the service is stuck.
+	if doneCh != nil {
+		select {
+		case <-doneCh:
+			// Service fully stopped
+		case <-time.After(10 * time.Second):
+			s.logWarn("timeout waiting for service %s to stop", name)
+		}
+	}
+
 	s.logf("Removed service: %s", name)
 
 	return nil

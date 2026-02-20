@@ -882,3 +882,84 @@ func TestSupervisor_StopCoverage(t *testing.T) {
 	cancel()
 	<-errCh
 }
+
+// ==========================================================================
+// M-4 fix test: Remove waits for service stop
+// ==========================================================================
+
+// TestRemoveWaitsForServiceStop verifies M-4 fix: Remove() blocks until the
+// service's Serve() goroutine returns, preventing races when re-registering.
+func TestRemoveWaitsForServiceStop(t *testing.T) {
+	sup := New(Config{
+		ShutdownTimeout: 5 * time.Second,
+	})
+
+	svc := &slowStopService{
+		name:    "slow-stop",
+		started: make(chan struct{}, 1),
+		stopped: make(chan struct{}, 1),
+	}
+
+	if err := sup.Add(svc); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- sup.Run(ctx)
+	}()
+
+	// Wait for service to start
+	select {
+	case <-svc.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("service did not start")
+	}
+
+	// Remove should block until the service's Serve() returns.
+	// The slowStopService takes 200ms to stop.
+	start := time.Now()
+	if err := sup.Remove("slow-stop"); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	// Should have waited for service stop (at least ~200ms)
+	if elapsed < 100*time.Millisecond {
+		t.Errorf("M-4: Remove() returned too quickly (%v), should wait for service stop", elapsed)
+	}
+
+	// Service should be fully stopped
+	select {
+	case <-svc.stopped:
+		// Good - service stopped
+	default:
+		t.Error("M-4: service Serve() did not complete before Remove() returned")
+	}
+
+	cancel()
+	<-errCh
+}
+
+// slowStopService takes a configurable time to stop for testing M-4.
+type slowStopService struct {
+	name    string
+	started chan struct{}
+	stopped chan struct{}
+}
+
+func (s *slowStopService) Name() string {
+	return s.name
+}
+
+func (s *slowStopService) Run(ctx context.Context) error {
+	s.started <- struct{}{}
+	<-ctx.Done()
+	// Simulate slow cleanup (e.g., FFmpeg flushing buffers)
+	time.Sleep(200 * time.Millisecond)
+	s.stopped <- struct{}{}
+	return ctx.Err()
+}
