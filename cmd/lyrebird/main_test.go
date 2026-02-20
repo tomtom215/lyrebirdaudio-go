@@ -1225,6 +1225,121 @@ func TestDownloadFileWgetFailure(t *testing.T) {
 	}
 }
 
+// TestVerifyDownloadIntegrity verifies the P-14 download integrity check.
+func TestVerifyDownloadIntegrity(t *testing.T) {
+	t.Run("valid file returns SHA256 hash", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "test.tar.gz")
+		content := []byte("test content for hashing")
+		if err := os.WriteFile(path, content, 0644); err != nil {
+			t.Fatal(err)
+		}
+		hash, err := verifyDownloadIntegrity(path)
+		if err != nil {
+			t.Fatalf("verifyDownloadIntegrity() unexpected error: %v", err)
+		}
+		if len(hash) != 64 {
+			t.Errorf("hash length = %d, want 64 hex chars", len(hash))
+		}
+		// Verify hash is deterministic.
+		hash2, _ := verifyDownloadIntegrity(path)
+		if hash != hash2 {
+			t.Errorf("non-deterministic hash: %q != %q", hash, hash2)
+		}
+	})
+
+	t.Run("empty file returns error", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "empty.tar.gz")
+		if err := os.WriteFile(path, []byte{}, 0644); err != nil {
+			t.Fatal(err)
+		}
+		_, err := verifyDownloadIntegrity(path)
+		if err == nil {
+			t.Fatal("verifyDownloadIntegrity() expected error for empty file")
+		}
+		if !strings.Contains(err.Error(), "empty") {
+			t.Errorf("error = %q, want containing 'empty'", err.Error())
+		}
+	})
+
+	t.Run("nonexistent file returns error", func(t *testing.T) {
+		_, err := verifyDownloadIntegrity("/nonexistent/file.tar.gz")
+		if err == nil {
+			t.Fatal("verifyDownloadIntegrity() expected error for nonexistent file")
+		}
+	})
+}
+
+// TestVerifyChecksumFile verifies the P-14 checksum verification against an
+// official checksums file (sha256sum output format).
+func TestVerifyChecksumFile(t *testing.T) {
+	t.Run("matching hash passes", func(t *testing.T) {
+		dir := t.TempDir()
+		checksumPath := filepath.Join(dir, "checksums.sha256")
+		content := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890  mediamtx_v1.0.0_linux_amd64.tar.gz\n"
+		if err := os.WriteFile(checksumPath, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+		err := verifyChecksumFile(checksumPath, "mediamtx_v1.0.0_linux_amd64.tar.gz", "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890")
+		if err != nil {
+			t.Errorf("verifyChecksumFile() unexpected error: %v", err)
+		}
+	})
+
+	t.Run("mismatched hash fails", func(t *testing.T) {
+		dir := t.TempDir()
+		checksumPath := filepath.Join(dir, "checksums.sha256")
+		content := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890  mediamtx_v1.0.0_linux_amd64.tar.gz\n"
+		if err := os.WriteFile(checksumPath, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+		err := verifyChecksumFile(checksumPath, "mediamtx_v1.0.0_linux_amd64.tar.gz", "0000000000000000000000000000000000000000000000000000000000000000")
+		if err == nil {
+			t.Fatal("verifyChecksumFile() expected error for hash mismatch")
+		}
+		if !strings.Contains(err.Error(), "hash mismatch") {
+			t.Errorf("error = %q, want containing 'hash mismatch'", err.Error())
+		}
+	})
+
+	t.Run("filename not found in checksums", func(t *testing.T) {
+		dir := t.TempDir()
+		checksumPath := filepath.Join(dir, "checksums.sha256")
+		content := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890  mediamtx_v1.0.0_linux_arm64.tar.gz\n"
+		if err := os.WriteFile(checksumPath, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+		err := verifyChecksumFile(checksumPath, "mediamtx_v1.0.0_linux_amd64.tar.gz", "abcdef")
+		if err == nil {
+			t.Fatal("verifyChecksumFile() expected error for missing filename")
+		}
+		if !strings.Contains(err.Error(), "not found") {
+			t.Errorf("error = %q, want containing 'not found'", err.Error())
+		}
+	})
+
+	t.Run("nonexistent checksums file returns error", func(t *testing.T) {
+		err := verifyChecksumFile("/nonexistent/checksums.sha256", "test.tar.gz", "abc")
+		if err == nil {
+			t.Fatal("verifyChecksumFile() expected error for nonexistent file")
+		}
+	})
+
+	t.Run("case insensitive hash comparison", func(t *testing.T) {
+		dir := t.TempDir()
+		checksumPath := filepath.Join(dir, "checksums.sha256")
+		content := "ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890  test.tar.gz\n"
+		if err := os.WriteFile(checksumPath, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+		err := verifyChecksumFile(checksumPath, "test.tar.gz", "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890")
+		if err != nil {
+			t.Errorf("verifyChecksumFile() should be case-insensitive: %v", err)
+		}
+	})
+}
+
 // TestInstallLyreBirdServiceToPathSuccess covers the happy path with a fake systemctl.
 func TestInstallLyreBirdServiceToPathSuccess(t *testing.T) {
 	tmpBin := t.TempDir()

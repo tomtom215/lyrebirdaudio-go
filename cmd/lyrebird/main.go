@@ -4,8 +4,11 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -527,6 +530,16 @@ func runMigrate(args []string) error {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
+	// P-5 fix: Backup existing config before overwriting.
+	backupDir := config.GetBackupDir(toPath)
+	if _, err := os.Stat(toPath); err == nil {
+		if backupPath, backupErr := config.BackupConfig(toPath, backupDir); backupErr != nil {
+			fmt.Printf("  [!] Warning: failed to backup existing config: %v\n", backupErr)
+		} else {
+			fmt.Printf("  [✓] Backed up existing config to %s\n", backupPath)
+		}
+	}
+
 	// Save
 	if err := cfg.Save(toPath); err != nil {
 		return fmt.Errorf("failed to save config: %w", err)
@@ -913,10 +926,21 @@ func runSetup(args []string) error {
 			// Ensure directory exists
 			if err := os.MkdirAll(filepath.Dir(defaultConfigPath), 0750); err != nil { // #nosec G301 -- config dir needs to be readable
 				fmt.Printf("  [!] Failed to create config directory: %v\n", err)
-			} else if err := cfg.Save(defaultConfigPath); err != nil {
-				fmt.Printf("  [!] Failed to save configuration: %v\n", err)
 			} else {
-				fmt.Printf("  [✓] Configuration saved to %s\n", defaultConfigPath)
+				// P-5 fix: Backup existing config before overwriting.
+				setupBackupDir := config.GetBackupDir(defaultConfigPath)
+				if _, statErr := os.Stat(defaultConfigPath); statErr == nil {
+					if bkPath, bkErr := config.BackupConfig(defaultConfigPath, setupBackupDir); bkErr != nil {
+						fmt.Printf("  [!] Warning: failed to backup existing config: %v\n", bkErr)
+					} else {
+						fmt.Printf("  [✓] Backed up existing config to %s\n", bkPath)
+					}
+				}
+				if err := cfg.Save(defaultConfigPath); err != nil {
+					fmt.Printf("  [!] Failed to save configuration: %v\n", err)
+				} else {
+					fmt.Printf("  [✓] Configuration saved to %s\n", defaultConfigPath)
+				}
 			}
 		} else {
 			fmt.Println("  [!] Skipping configuration creation")
@@ -1075,6 +1099,13 @@ ReadOnlyPaths=/etc/lyrebird /proc/asound
 LimitNOFILE=65536
 LimitNPROC=4096
 
+# P-10 fix: Memory limits to prevent OOM on resource-constrained devices
+# (e.g., Raspberry Pi with 1-4 GB RAM and multiple USB microphones).
+# MemoryHigh triggers memory pressure reclaim; MemoryMax is a hard kill limit.
+# 512M is conservative for audio-only FFmpeg streams (typically 20-50 MB each).
+MemoryHigh=384M
+MemoryMax=512M
+
 # Environment
 Environment=HOME=/var/run/lyrebird
 
@@ -1176,13 +1207,36 @@ func runInstallMediaMTX(args []string) error {
 	if err := downloadFile(downloadURL, tarPath); err != nil {
 		return fmt.Errorf("download failed: %w", err)
 	}
-	fmt.Println("Download complete.")
 
-	// Extract
+	// P-14 fix: Verify download integrity against official checksums.
+	// MediaMTX publishes checksums.sha256 in each GitHub release.
+	hash, err := verifyDownloadIntegrity(tarPath)
+	if err != nil {
+		return fmt.Errorf("download integrity check failed: %w", err)
+	}
+	fmt.Printf("Download complete (SHA256: %s)\n", hash)
+
+	// Attempt to verify against official checksums from GitHub release.
+	checksumURL := fmt.Sprintf(
+		"https://github.com/bluenviron/mediamtx/releases/download/%s/checksums.sha256",
+		version,
+	)
+	checksumPath := filepath.Join(tmpDir, "checksums.sha256")
+	archiveFilename := fmt.Sprintf("mediamtx_%s_linux_%s.tar.gz", version, arch)
+	if dlErr := downloadFile(checksumURL, checksumPath); dlErr != nil {
+		fmt.Printf("Warning: could not download checksums file: %v\n", dlErr)
+		fmt.Println("Skipping checksum verification — verify manually if needed.")
+	} else if verifyErr := verifyChecksumFile(checksumPath, archiveFilename, hash); verifyErr != nil {
+		return fmt.Errorf("checksum verification FAILED: %w", verifyErr)
+	} else {
+		fmt.Println("Checksum verification passed.")
+	}
+
+	// Extract (tar -xzf validates gzip and tar structure — corrupt files fail here)
 	fmt.Println("Extracting...")
 	extractCmd := exec.Command("tar", "-xzf", tarPath, "-C", tmpDir) // #nosec G204 -- tarPath and tmpDir are controlled
 	if output, err := extractCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("extraction failed: %w: %s", err, string(output))
+		return fmt.Errorf("extraction failed (archive may be corrupt): %w: %s", err, string(output))
 	}
 
 	// Install binary
@@ -1280,6 +1334,65 @@ func downloadFile(url, dest string) error {
 	}
 
 	return fmt.Errorf("neither curl nor wget found - install one of them first")
+}
+
+// verifyDownloadIntegrity checks that a downloaded file exists, is non-empty,
+// and computes its SHA256 hash. The hash is returned for operator verification
+// against the official release checksums (P-14 fix).
+func verifyDownloadIntegrity(path string) (string, error) {
+	// #nosec G304 -- path is from controlled temp directory
+	f, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("cannot open downloaded file: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	info, err := f.Stat()
+	if err != nil {
+		return "", fmt.Errorf("cannot stat downloaded file: %w", err)
+	}
+	if info.Size() == 0 {
+		return "", fmt.Errorf("downloaded file is empty (0 bytes)")
+	}
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", fmt.Errorf("failed to compute hash: %w", err)
+	}
+
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// verifyChecksumFile checks a SHA256 hash against an official checksums file.
+// The checksums file format is: "<hash>  <filename>\n" (sha256sum output format).
+func verifyChecksumFile(checksumPath, filename, actualHash string) error {
+	// #nosec G304 -- checksumPath is from controlled temp directory
+	data, err := os.ReadFile(checksumPath)
+	if err != nil {
+		return fmt.Errorf("cannot read checksums file: %w", err)
+	}
+
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// Format: "hash  filename" or "hash *filename" (binary mode)
+		parts := strings.Fields(line)
+		if len(parts) != 2 {
+			continue
+		}
+		expectedHash := parts[0]
+		checksumFilename := strings.TrimPrefix(parts[1], "*")
+		if checksumFilename == filename {
+			if !strings.EqualFold(actualHash, expectedHash) {
+				return fmt.Errorf("hash mismatch for %s: expected %s, got %s", filename, expectedHash, actualHash)
+			}
+			return nil
+		}
+	}
+
+	return fmt.Errorf("filename %q not found in checksums file", filename)
 }
 
 // isValidMediaMTXVersion checks that a version string matches the expected
