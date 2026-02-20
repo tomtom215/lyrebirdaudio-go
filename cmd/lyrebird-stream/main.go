@@ -378,9 +378,12 @@ func runDaemon(flags daemonFlags) int {
 	}()
 
 	// Start health check HTTP server (M-3 fix).
+	// SEC-1: Bind to localhost only to prevent network exposure of service status.
+	// The health endpoint is intended for local monitoring (systemd, localhost probes)
+	// and should not be accessible from the network by default.
 	healthHandler := health.NewHandler(nil) // nil provider: basic liveness only
 	go func() {
-		if err := health.ListenAndServe(ctx, ":9998", healthHandler); err != nil {
+		if err := health.ListenAndServe(ctx, "127.0.0.1:9998", healthHandler); err != nil {
 			// Not fatal: health endpoint failure must not crash the daemon.
 			logger.Warn("health endpoint error", "error", err)
 		}

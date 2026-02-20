@@ -66,8 +66,9 @@ func BackupConfig(configPath, backupDir string) (string, error) {
 	}
 
 	// Create backup directory if needed
-	// #nosec G301 -- backup directory needs to be accessible
-	if err := os.MkdirAll(backupDir, 0755); err != nil {
+	// SEC-4: Restrict backup directory to owner+group (least privilege).
+	// #nosec G301 -- backup directory restricted to owner+group
+	if err := os.MkdirAll(backupDir, 0750); err != nil {
 		return "", fmt.Errorf("failed to create backup directory: %w", err)
 	}
 
@@ -210,14 +211,17 @@ func RestoreBackup(backupPath, configPath, backupDir string) (string, error) {
 	}
 
 	// Create parent directory if needed
-	// #nosec G301 -- config directory needs to be accessible
-	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
+	// SEC-4: Restrict config directory to owner+group (least privilege).
+	// #nosec G301 -- config directory restricted to owner+group
+	if err := os.MkdirAll(filepath.Dir(configPath), 0750); err != nil {
 		return previousBackup, fmt.Errorf("failed to create config directory: %w", err)
 	}
 
 	// Write restored config
-	// #nosec G306 -- config file needs to be readable by service
-	if err := os.WriteFile(configPath, data, 0644); err != nil {
+	// SEC-4: Match backup creation permissions (0640) — restored configs should
+	// not become less secure than the originals. Consistent with SEC-3 (config save).
+	// #nosec G306 -- config file restricted to owner+group for security
+	if err := os.WriteFile(configPath, data, 0640); err != nil {
 		return previousBackup, fmt.Errorf("failed to restore config: %w", err)
 	}
 

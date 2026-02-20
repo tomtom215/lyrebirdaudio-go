@@ -1,680 +1,199 @@
-# CLAUDE.md - LyreBirdAudio Go Codebase Guide
+# CLAUDE.md — AI Session Guide for LyreBirdAudio-Go
 
-**Project**: LyreBirdAudio - USB audio streaming to RTSP (Go port)
-**Go Version**: 1.24+ (required for koanf file watching via fsnotify)
-**Repository**: github.com/tomtom215/lyrebirdaudio-go
+> **Last updated**: 2026-02-20
+> **Go Version**: 1.24+
+> **Repository**: github.com/tomtom215/lyrebirdaudio-go
+
+---
+
+## Table of Contents
+
+1. [Quick Reference](#quick-reference)
+2. [Project Overview](#project-overview)
+3. [Codebase Map](#codebase-map)
+4. [Mandatory Standards](#mandatory-standards)
+5. [Security Posture](#security-posture)
+6. [Test Coverage Dashboard](#test-coverage-dashboard)
+7. [Modular Documentation Index](#modular-documentation-index)
+8. [Session Checklist](#session-checklist)
 
 ---
 
 ## Quick Reference
 
-### Common Commands
-
+### Essential Commands
 ```bash
-# Run all tests
-go test ./...
-
-# Run tests with race detector
-go test -race ./...
-
-# Run tests with coverage
-go test -cover ./...
-
-# Generate coverage report
-go test -coverprofile=coverage.out ./... && go tool cover -func=coverage.out
-
-# Build binary
-go build -o bin/lyrebird ./cmd/lyrebird
-
-# Run linters
-go vet ./...
-golangci-lint run ./...
-
-# Format code
-gofmt -s -w .
-
-# Tidy modules
-go mod tidy
+go test -race ./...              # Run all tests (MUST pass before commit)
+go test -cover ./...             # Coverage report
+go vet ./...                     # Static analysis
+go build -o bin/lyrebird ./cmd/lyrebird  # Build CLI
+go build -o bin/lyrebird-stream ./cmd/lyrebird-stream  # Build daemon
+gofmt -s -w .                    # Format code
+go mod tidy                      # Tidy modules
 ```
 
-### Current Test Coverage
-
-| Package              | Coverage  | Notes                                          |
-|----------------------|-----------|------------------------------------------------|
-| internal/audio       | 97.6%     | Device detection + sanitization                |
-| internal/supervisor  | 96.4%     | Erlang-style supervisor tree using suture      |
-| internal/health      | 94.1%     | HTTP health check endpoint                     |
-| internal/util        | 94.1%     | Panic recovery, resource tracking              |
-| internal/udev        | 92.9%     | udev rule generation + file writing            |
-| internal/mediamtx    | 92.4%     | MediaMTX API client                            |
-| internal/config      | 92.0%     | YAML config + koanf + hot-reload               |
-| internal/updater     | 89.5%     | Version checking + semver comparison           |
-| internal/stream      | 87.1%     | Stream manager with backoff + monitoring       |
-| internal/lock        | 77.3%     | File-based locking                             |
-| internal/diagnostics | 65.2%     | System diagnostics                             |
-| internal/menu        | 61.5%     | Interactive menu (requires terminal)           |
-| cmd/lyrebird         | 48.4%     | CLI (many commands require root/interactive)   |
-| cmd/lyrebird-stream  | 32.7%     | Daemon (requires runtime environment)          |
-| **Internal packages**| **~87%**  | Core library code well-tested                  |
+### Critical Rules (Non-Negotiable)
+- **TDD Required**: Write tests FIRST, then implementation
+- **Race-Free**: `go test -race ./...` must pass with zero warnings
+- **Coverage Floor**: 65% minimum (CI-enforced), 90%+ target for internal packages
+- **No TODO Comments**: Every test and fix must be complete
+- **Error Wrapping**: Always `fmt.Errorf("context: %w", err)`
+- **Context Propagation**: All async operations take `context.Context`
 
 ---
 
 ## Project Overview
 
-LyreBirdAudio captures audio from USB microphones and streams them via RTSP using FFmpeg and MediaMTX. This is a Go port of the original bash implementation, designed for 24/7 unattended operation.
+LyreBirdAudio captures audio from USB microphones and streams via RTSP using FFmpeg and MediaMTX. Go port of the original bash implementation. Designed for 24/7/365 unattended operation at industrial reliability levels.
 
-### Key Features
-
-- Automatic USB audio device detection
-- Persistent device identification via USB port mapping
-- Multi-source configuration (YAML + environment variables + hot-reload)
-- Stream lifecycle management with exponential backoff
-- File-based locking to prevent duplicate streams
-- Configuration hot-reload via SIGHUP (no downtime)
-- Environment variable overrides for 12-factor app deployment
+**Key architectural decisions**: See [docs/CHRONOLOGY.md](docs/CHRONOLOGY.md)
+**Lessons from past sessions**: See [docs/LESSONS_LEARNED.md](docs/LESSONS_LEARNED.md)
 
 ---
 
-## ⚠️ CRITICAL: Strict Test-Driven Development (TDD)
+## Codebase Map
 
-**This project follows STRICT Test-Driven Development practices. This is NON-NEGOTIABLE.**
+```
+cmd/lyrebird/          → CLI: devices, detect, usb-map, migrate, validate, status, setup, install-mediamtx, diagnose, check-system, update, menu
+cmd/lyrebird-stream/   → Daemon: supervisor tree, signal handling (SIGINT/SIGTERM/SIGHUP), device polling, config hot-reload
+internal/audio/        → USB audio detection via /proc/asound + device name sanitization (97.6%)
+internal/config/       → YAML + koanf + env vars + hot-reload + backup/restore (92.0%)
+internal/diagnostics/  → 24 system health checks (65.2%)
+internal/health/       → HTTP health endpoint at 127.0.0.1:9998 (94.1%)
+internal/lock/         → flock(2)-based file locking with stale detection (77.3%)
+internal/mediamtx/     → MediaMTX REST API client (92.4%)
+internal/menu/         → Interactive TUI menus via charmbracelet/huh (61.5%)
+internal/stream/       → FFmpeg lifecycle + exponential backoff + state machine (87.1%)
+internal/supervisor/   → Erlang-style supervisor tree via suture v4 (96.4%)
+internal/udev/         → udev rule generation, byte-for-byte bash compatible (92.9%)
+internal/updater/      → Self-update from GitHub releases + semver (89.5%)
+internal/util/         → SafeGo panic recovery + resource tracking (94.1%)
+systemd/               → lyrebird-stream.service (18 security hardening directives)
+```
 
-### Reliability Requirements
+---
 
-LyreBirdAudio must achieve **industrial control system (RTOS) level reliability** for 24/7/365 unattended operation. The original bash version has been field-tested by real users running continuously for years. This Go port must be **AT LEAST as stable** and should aim for:
+## Mandatory Standards
 
-- Zero unexpected crashes or panics
-- Graceful degradation under all failure scenarios
-- Recovery from every conceivable edge case
-- Deterministic behavior under all conditions
-- Defense against operator error and environmental disruption
-
-### TDD Workflow - MANDATORY
-
-**Every single line of production code MUST have corresponding tests written FIRST.**
-
-1. **Write the test first** - Before any implementation
-   - Cover the happy path
-   - Cover all error paths
-   - Cover boundary conditions
-   - Cover edge cases (even "impossible" ones)
-   - Cover race conditions and timing issues
-
-2. **Watch it fail** - Verify the test fails for the right reason
-
-3. **Write minimal code** - Just enough to make the test pass
-
-4. **Refactor** - Improve code while keeping tests green
-
-5. **Repeat** - For every feature, bug fix, or change
-
-### Coverage Requirements
-
-- **Minimum**: 65% (enforced by CI)
-- **Target**: 90%+ for internal packages
-- **Internal packages**: ~87% (well-tested core libraries)
-- **CLI packages**: Lower coverage due to root/interactive/network requirements
-- **Critical components** (stream manager, lock, config): 100% of realistic paths
-- **Error paths**: Every error return must have a test that triggers it
-- **Panic recovery**: Every potential panic must be tested
-- **Concurrent code**: Must pass `go test -race` with zero warnings
+### TDD Workflow
+1. Write test → 2. Watch it fail → 3. Write minimal code → 4. Refactor → 5. Repeat
 
 ### What Must Be Tested
-
-1. **Happy paths** - Normal operation
-2. **Error paths** - Every `if err != nil` branch
-3. **Boundary conditions** - Empty inputs, max values, zero values
-4. **Invalid inputs** - Malformed data, wrong types, nil pointers
-5. **File system failures** - Missing files, permission denied, disk full, read-only FS
-6. **Process failures** - Command not found, command crashes, signals
-7. **Network failures** - Connection refused, timeouts, DNS failures
-8. **Concurrent access** - Race conditions, deadlocks, data corruption
-9. **Resource exhaustion** - Out of memory, file descriptors, disk space
-10. **Signal handling** - SIGINT, SIGTERM, SIGHUP during various states
-11. **State transitions** - Every valid and invalid state change
-12. **Time-based behavior** - Timeouts, delays, backoff, expiration
-13. **Platform differences** - Different kernels, filesystems, architectures
-
-### Test Quality Standards
-
-- Use table-driven tests for comprehensive coverage
-- Test names must clearly describe the scenario
-- Tests must be deterministic (no flaky tests)
-- Tests must be fast (< 100ms for unit tests)
-- Tests must be isolated (no shared state)
-- Tests must clean up resources (files, goroutines)
-- Mock external dependencies (ffmpeg, udev, MediaMTX)
-- Use `t.TempDir()` for file operations
-- Check error messages, not just error existence
-
-### Forbidden Practices
-
-- ❌ Writing code without tests first
-- ❌ Skipping tests for "simple" code
-- ❌ Testing only happy paths
-- ❌ Ignoring race detector warnings
-- ❌ Committing code with failing tests
-- ❌ Lowering coverage thresholds
-- ❌ Using `// TODO: add tests`
-- ❌ Mocking time.Sleep() without testing backoff logic
-
----
-
-## Codebase Structure
-
-```
-lyrebirdaudio-go/
-├── cmd/
-│   ├── lyrebird/           # Main CLI application
-│   │   ├── main.go         # Entry point, all CLI commands
-│   │   └── main_test.go    # CLI tests
-│   └── lyrebird-stream/    # Streaming daemon
-│       ├── main.go         # Daemon with supervisor tree
-│       └── main_test.go    # Daemon tests
-├── internal/
-│   ├── audio/              # USB audio device detection
-│   │   ├── detector.go     # Scans /proc/asound for devices
-│   │   ├── sanitize.go     # Device name sanitization
-│   │   └── *_test.go
-│   ├── config/             # Configuration management
-│   │   ├── config.go       # YAML loading/saving/validation
-│   │   ├── migrate.go      # Bash → YAML migration
-│   │   └── *_test.go
-│   ├── lock/               # File-based locking
-│   │   ├── filelock.go     # flock(2) based locking
-│   │   └── *_test.go
-│   ├── stream/             # Core stream manager
-│   │   ├── manager.go      # FFmpeg lifecycle management
-│   │   ├── backoff.go      # Exponential backoff
-│   │   └── *_test.go
-│   ├── supervisor/         # Service supervision (NEW)
-│   │   ├── supervisor.go   # Erlang-style supervisor tree (suture v4.0.6)
-│   │   └── *_test.go
-│   ├── udev/               # udev rule generation
-│   │   ├── mapper.go       # USB port path detection
-│   │   ├── rules.go        # Rule generation + file writing
-│   │   └── *_test.go
-│   └── util/               # Utility functions
-│       ├── panic.go        # Panic recovery (SafeGo)
-│       ├── resources.go    # Resource tracking
-│       └── *_test.go
-├── systemd/                # Systemd service templates (NEW)
-│   └── lyrebird-stream.service
-├── testdata/               # Test fixtures
-│   └── config/
-├── Makefile               # Build automation
-├── go.mod
-├── go.sum
-└── .github/workflows/ci.yml
-```
-
----
-
-## Component Guide
-
-### 1. Audio Detection (`internal/audio`)
-
-Scans `/proc/asound/card*` for USB audio devices.
-
-**Key Types:**
-```go
-type Device struct {
-    CardNumber int    // ALSA card number (0-31)
-    Name       string // Device name
-    USBID      string // vendor:product (e.g., "0d8c:0014")
-    VendorID   string
-    ProductID  string
-    DeviceID   string // From /dev/snd/by-id/ (optional)
-}
-```
-
-**Key Functions:**
-- `DetectDevices(asoundPath)` - Returns all USB audio devices
-- `GetDeviceInfo(asoundPath, cardNum)` - Gets info for specific card
-- `ParseUSBID(usbID)` - Splits "VVVV:PPPP" into vendor/product
-- `SanitizeDeviceName(name)` - Converts to safe identifier
-
-**Testing:** Uses temp directories with mock /proc/asound structure.
-
-### 2. Configuration (`internal/config`)
-
-**Multi-source configuration system** using [koanf v2.3.0](https://github.com/knadh/koanf) with support for:
-- YAML configuration files
-- Environment variable overrides
-- Hot-reload via SIGHUP signal
-- Backward compatibility with original LoadConfig API
-
-**Config Structure:**
-```yaml
-devices:
-  blue_yeti:
-    sample_rate: 48000
-    channels: 2
-    bitrate: 192k
-    codec: opus
-
-default:
-  sample_rate: 48000
-  channels: 2
-  bitrate: 128k
-  codec: opus
-
-stream:
-  initial_restart_delay: 10s
-  max_restart_delay: 300s
-  max_restart_attempts: 50
-
-mediamtx:
-  api_url: http://localhost:9997
-  rtsp_url: rtsp://localhost:8554
-```
-
-**Environment Variable Overrides:**
-```bash
-# Override default settings
-export LYREBIRD_DEFAULT_SAMPLE_RATE=44100
-export LYREBIRD_DEFAULT_CODEC=aac
-export LYREBIRD_DEFAULT_BITRATE=256k
-
-# Override device-specific settings
-export LYREBIRD_DEVICES_BLUE_YETI_SAMPLE_RATE=96000
-export LYREBIRD_DEVICES_BLUE_YETI_CODEC=aac
-
-# Override stream settings
-export LYREBIRD_STREAM_MAX_RESTART_DELAY=600s
-
-# Override MediaMTX settings
-export LYREBIRD_MEDIAMTX_API_URL=http://custom-host:9997
-```
-
-**Precedence Order** (highest to lowest):
-1. Environment variables (`LYREBIRD_*`)
-2. YAML configuration file
-3. Built-in defaults
-
-**Key Functions:**
-
-*Legacy API (backward compatible):*
-- `LoadConfig(path)` - Loads and validates YAML (yaml.v3)
-- `MigrateFromBash(path)` - Converts bash env vars to YAML
-- `GetDeviceConfig(name)` - Returns device config with defaults merged
-- `DefaultConfig()` - Returns production defaults
-
-*Enhanced API (koanf-based):*
-- `NewKoanfConfig(opts...)` - Creates koanf config loader
-- `WithYAMLFile(path)` - Option: specify YAML file
-- `WithEnvPrefix(prefix)` - Option: set env var prefix (default: LYREBIRD)
-- `kc.Load()` - Loads and unmarshals config
-- `kc.Reload()` - Reloads config from all sources
-- `kc.Watch(ctx, callback)` - Watches file for changes
-- `kc.GetString(key)`, `kc.GetInt(key)`, etc. - Type-safe getters
-
-**Example Usage:**
-```go
-// Load with YAML + env vars
-kc, err := config.NewKoanfConfig(
-    config.WithYAMLFile("/etc/lyrebird/config.yaml"),
-    config.WithEnvPrefix("LYREBIRD"),
-)
-
-// Access configuration
-cfg, err := kc.Load()
-if err != nil {
-    log.Fatal(err)
-}
-devCfg := cfg.GetDeviceConfig("blue_yeti")
-
-// Hot-reload on file changes
-ctx, cancel := context.WithCancel(context.Background())
-go kc.Watch(ctx, func(event string, err error) {
-    if err != nil {
-        log.Println("Config watch error:", err)
-        return
-    }
-    log.Println("Config reloaded:", event)
-    // Restart affected streams...
-})
-
-// Manual reload (e.g., on SIGHUP)
-kc.Reload()
-```
-
-**Hot-Reload Support:**
-
-The daemon now supports configuration hot-reload via SIGHUP:
-```bash
-# Edit configuration
-vim /etc/lyrebird/config.yaml
-
-# Reload without restart
-sudo systemctl reload lyrebird-stream
-# OR
-sudo pkill -HUP lyrebird-stream
-```
-
-Configuration changes are reloaded without stopping streams (planned: restart only affected streams).
-
-### 3. Stream Manager (`internal/stream`)
-
-The core component managing FFmpeg process lifecycle.
-
-**State Machine:**
-```
-idle → starting → running ⟲
-                    ↓
-                  failed → (backoff) → starting
-                    ↓
-                  stopped
-```
-
-**Key Types:**
-```go
-type ManagerConfig struct {
-    DeviceName  string        // e.g., "blue_yeti"
-    ALSADevice  string        // e.g., "hw:0,0"
-    SampleRate  int           // e.g., 48000
-    Channels    int           // e.g., 2
-    Bitrate     string        // e.g., "128k"
-    Codec       string        // "opus" or "aac"
-    RTSPURL     string        // Output URL
-    LockDir     string        // For lock files
-    FFmpegPath  string        // Path to ffmpeg binary
-    Backoff     *Backoff      // Backoff policy
-}
-
-type State int
-const (
-    StateIdle State = iota
-    StateStarting
-    StateRunning
-    StateStopping
-    StateFailed
-    StateStopped
-)
-```
-
-**Key Functions:**
-- `NewManager(cfg)` - Creates new manager
-- `Run(ctx)` - Main loop (blocks until context cancelled)
-- `State()` - Returns current state (thread-safe)
-- `Metrics()` - Returns uptime, attempts, failures
-
-**Backoff Algorithm:**
-- Initial delay: 10s
-- Max delay: 300s (5 min)
-- Doubles on each failure
-- Resets after 300s of successful running
-
-### 4. File Locking (`internal/lock`)
-
-Prevents multiple managers for the same device.
-
-```go
-lock, _ := NewFileLock("/var/run/lyrebird/device.lock")
-lock.Acquire(30 * time.Second)  // Blocks up to 30s
-defer lock.Release()
-```
-
-### 5. udev Rules (`internal/udev`)
-
-Generates persistent device symlinks based on USB port.
-
-**Rule Format (byte-for-byte bash compatible):**
-```
-SUBSYSTEM=="sound", KERNEL=="controlC[0-9]*", ATTRS{busnum}=="1", ATTRS{devnum}=="5", SYMLINK+="snd/by-usb-port/1-1.4"
-```
-
-**Key Functions:**
-- `GetUSBPhysicalPort(sysfsPath, busNum, devNum)` - Maps bus/dev to port path
-- `GenerateRule(portPath, busNum, devNum)` - Creates single rule
-- `GenerateRulesFile(devices)` - Creates complete rules file
-
----
-
-## CLI Commands
-
-### Main CLI (lyrebird)
-```
-lyrebird help              # Show usage
-lyrebird version           # Show version info
-lyrebird devices           # List detected USB audio devices
-lyrebird detect            # Detect capabilities and recommend settings
-lyrebird usb-map           # Create udev rules (requires root)
-lyrebird migrate           # Convert bash config to YAML
-lyrebird validate          # Validate configuration file
-lyrebird status            # Show stream status and RTSP URLs
-lyrebird setup             # Interactive setup wizard (requires root)
-lyrebird install-mediamtx  # Install MediaMTX RTSP server (requires root)
-lyrebird diagnose          # Run system diagnostics
-lyrebird check-system      # Check system compatibility
-lyrebird test              # Test config (stub - not yet implemented)
-```
-
-### Streaming Daemon (lyrebird-stream)
-```
-lyrebird-stream                          # Run with default config
-lyrebird-stream --config=/path/to/yaml   # Custom config path
-lyrebird-stream --lock-dir=/var/run/x    # Custom lock directory
-lyrebird-stream --log-level=debug        # Enable debug logging
-```
-
-**Common Flags:**
-```bash
---config=/path/to/config.yaml    # Config file path
---from=/path/to/bash.conf        # Source for migration
---to=/path/to/output.yaml        # Destination for migration
---force                          # Overwrite existing files
---dry-run                        # Preview without writing
---output=/path/to/rules          # Output path for udev rules
---auto, -y                       # Non-interactive mode (setup)
---version=vX.Y.Z                 # MediaMTX version (install-mediamtx)
---no-service                     # Skip systemd service (install-mediamtx)
-```
-
----
-
-## Development Workflow
-
-### Adding New Features
-
-1. **Write tests first** - Create `*_test.go` with test cases
-2. **Implement minimum code** - Make tests pass
-3. **Add edge cases** - Cover error paths
-4. **Run full test suite** - `go test -race ./...`
-5. **Check coverage** - `go test -cover ./...`
-6. **Run linters** - `go vet ./... && golangci-lint run`
-
-### Test Patterns
-
-**Table-driven tests:**
-```go
-func TestSomething(t *testing.T) {
-    tests := []struct {
-        name     string
-        input    string
-        expected string
-        wantErr  bool
-    }{
-        {"valid", "input", "output", false},
-        {"invalid", "", "", true},
-    }
-
-    for _, tt := range tests {
-        t.Run(tt.name, func(t *testing.T) {
-            got, err := Something(tt.input)
-            if (err != nil) != tt.wantErr {
-                t.Errorf("error = %v, wantErr %v", err, tt.wantErr)
-            }
-            if got != tt.expected {
-                t.Errorf("got %q, want %q", got, tt.expected)
-            }
-        })
-    }
-}
-```
-
-**Temp directories for file tests:**
-```go
-func TestFileOperation(t *testing.T) {
-    tmpDir := t.TempDir()  // Auto-cleaned up
-    // Create test fixtures in tmpDir
-}
-```
+| Category | Examples |
+|----------|---------|
+| Happy paths | Normal operation flows |
+| Error paths | Every `if err != nil` branch |
+| Boundary conditions | Empty, zero, max values |
+| File system failures | Missing files, permission denied |
+| Process failures | Command not found, crashes, signals |
+| Network failures | Connection refused, timeouts |
+| Concurrent access | Race conditions, deadlocks |
+| Signal handling | SIGINT/SIGTERM/SIGHUP during operations |
+| State transitions | Every valid and invalid state change |
 
 ### Code Conventions
-
-1. **Error handling**: Always wrap errors with context
-   ```go
-   if err != nil {
-       return fmt.Errorf("failed to do X: %w", err)
-   }
-   ```
-
-2. **Context propagation**: Pass `context.Context` through async operations
-   ```go
-   func Run(ctx context.Context) error
-   ```
-
-3. **Thread safety**: Use `atomic.Value` for state, `sync.RWMutex` for complex types
-   ```go
-   state atomic.Value  // For State enum
-   mu    sync.RWMutex  // For pointers
-   ```
-
-4. **Validation**: Validate config at load time, not use time
-   ```go
-   cfg, err := LoadConfig(path)  // Validates internally
-   ```
+- Table-driven tests with descriptive names
+- `t.TempDir()` for all file operations in tests
+- `atomic.Value` for state, `sync.RWMutex` for complex types
+- Validate config at load time, not use time
+- Mock external dependencies (ffmpeg, udev, MediaMTX)
 
 ---
 
-## CI/CD Pipeline
+## Security Posture
 
-GitHub Actions workflow (`.github/workflows/ci.yml`):
+### File Permissions (Least Privilege)
+| Resource | Mode | Rationale |
+|----------|------|-----------|
+| Lock directory | `0750` | Owner+group only; prevents PID enumeration |
+| Lock files | `0640` | Owner+group read/write for service coordination |
+| Config files | `0640` | May contain API URLs; no world-read |
+| Config directories | `0750` | Restrict traversal to owner+group |
+| Backup files | `0600` | Owner-only; contains full config data |
+| Backup directories | `0750` | Restrict traversal to owner+group |
+| systemd service files | `0644` | Standard (must be system-readable) |
+| Log directories | `0750` | May contain sensitive device/URL info |
 
-1. **Quality** - Format check, go vet, golangci-lint
-2. **Security** - gosec, govulncheck
-3. **Test** - Race detector, coverage threshold (65%)
-4. **Build** - Cross-compile for linux/amd64, arm64, arm/v7, arm/v6
+### Network Security
+- Health endpoint binds to `127.0.0.1:9998` (localhost only)
+- MediaMTX API defaults to `http://localhost:9997` (localhost only)
+- Version strings validated with regex before URL construction
 
-### Coverage Threshold
+### Systemd Hardening (18 directives)
+`NoNewPrivileges=true`, `ProtectSystem=strict`, `ProtectHome=true`, `PrivateTmp=true`,
+`ProtectKernelTunables=true`, `ProtectKernelModules=true`, `ProtectControlGroups=true`,
+`RestrictSUIDSGID=yes`, `RestrictNamespaces=yes`, `LockPersonality=yes`,
+`MemoryDenyWriteExecute=yes`, `RestrictRealtime=yes`, `SystemCallFilter=@system-service`,
+`SystemCallArchitectures=native`, `DevicePolicy=closed`, `DeviceAllow=/dev/snd/* rw`,
+`ReadWritePaths=/var/run/lyrebird`, `ReadOnlyPaths=/etc/lyrebird /proc/asound`
 
-CI enforces 65% minimum coverage. Internal packages average **~87%**.
-
-Coverage notes:
-- CLI commands (cmd/lyrebird) have lower coverage due to root/interactive requirements
-- Streaming daemon (cmd/lyrebird-stream) requires runtime environment for full testing
-- Internal packages are well-tested with comprehensive unit tests
-- The 65% threshold balances test quality with practical limitations of CLI testing
-
----
-
-## Key Design Decisions
-
-### 1. Bash Compatibility
-
-udev rules are byte-for-byte compatible with the bash version. This is validated with character-by-character comparison tests.
-
-### 2. Exponential Backoff
-
-Streams that crash are restarted with exponential backoff (10s → 20s → 40s → ... → 300s max). After 300s of successful running, backoff resets.
-
-### 3. File-Based Locking
-
-Each device gets a lock file (`/var/run/lyrebird/{device}.lock`) using `flock(2)`. Prevents duplicate stream managers.
-
-### 4. Context Cancellation
-
-All long-running operations respect `context.Context` for graceful shutdown. Signal handlers cancel context on SIGINT/SIGTERM.
-
-### 5. State Machine
-
-Manager uses explicit 6-state machine for predictable lifecycle management. State changes are atomic.
+### Audit Trail
+- **Initial peer review**: [docs/PEER_REVIEW.md](docs/PEER_REVIEW.md) — 59 issues, all resolved
+- **Opus deep audit**: [docs/OPUS_AUDIT_REPORT.md](docs/OPUS_AUDIT_REPORT.md) — 3 bugs found and fixed
+- **Security audit**: [docs/SECURITY_AUDIT.md](docs/SECURITY_AUDIT.md) — Permissions hardening (SEC-1 through SEC-5)
 
 ---
 
-## Troubleshooting
+## Test Coverage Dashboard
 
-### Tests failing with "ffmpeg not found"
-
-Stream integration tests require ffmpeg:
-```bash
-sudo apt-get install ffmpeg
-```
-
-### Coverage below 80%
-
-The stream manager's `startFFmpeg()` and `Run()` require ffmpeg. Unit tests cover validation logic; integration tests cover process management.
-
-### Race conditions
-
-Always run tests with race detector:
-```bash
-go test -race ./...
-```
-
-### Linter errors
-
-```bash
-# Fix formatting
-gofmt -s -w .
-
-# Check for issues
-golangci-lint run ./...
-```
+| Package | Coverage | Status |
+|---------|----------|--------|
+| internal/audio | 97.6% | ✅ Excellent |
+| internal/supervisor | 96.4% | ✅ Excellent |
+| internal/health | 94.1% | ✅ Excellent |
+| internal/util | 94.1% | ✅ Excellent |
+| internal/udev | 92.9% | ✅ Excellent |
+| internal/mediamtx | 92.4% | ✅ Excellent |
+| internal/config | 92.0% | ✅ Excellent |
+| internal/updater | 89.5% | ✅ Good |
+| internal/stream | 87.1% | ✅ Good |
+| internal/lock | 77.3% | ⬜ Acceptable |
+| internal/diagnostics | 65.2% | ⬜ Acceptable |
+| internal/menu | 61.5% | ⬜ Acceptable (requires terminal) |
+| cmd/lyrebird | 48.5% | ⬜ CLI (root/interactive) |
+| cmd/lyrebird-stream | 32.7% | ⬜ Daemon (runtime env) |
+| **Internal avg** | **~87%** | **Target: 90%+** |
+| **Overall** | **~74%** | **CI min: 65%** |
 
 ---
 
-## Future Work
+## Modular Documentation Index
 
-### Completed (Phase 1-5)
-- ✅ Supervisor tree for service management (`internal/supervisor`)
-- ✅ Streaming daemon (`cmd/lyrebird-stream`)
-- ✅ udev rules file writing and reloading
-- ✅ Systemd service template (`systemd/lyrebird-stream.service`)
-- ✅ CLI commands: status, diagnose, check-system, setup, install-mediamtx
-- ✅ Hot-reload configuration via SIGHUP (daemon reloads koanf config and re-registers devices)
-- ✅ Peer-review fixes (Phases 1-2): C-1 lock theft, C-2 registeredServices race, C-3 nil koanfCfg,
-  C-4 supervisor cancel race, C-5 cmd.Start failure, M-1 errors.Is, M-2 WatchdogSec,
-  M-3 health endpoint, M-4 device polling, M-5 manager.Close, ME-1 backoff first delay,
-  ME-2/ME-7 log levels, ME-3 unkillable goroutine, ME-9 health timeouts, L-7..L-13
-- ✅ All 59 peer-review issues closed (Phase 3): L-3/L-4/L-5 test coverage, L-9 lint version pin,
-  L-10 duplicate YAML parser removed, L-11 orphaned testify pin removed, CI-1 multi-Go-version
-  matrix, CI-2 GitHub Release creation, CI-3 codecov SHA pin, CI-5 hardware notice
-
-### Remaining
-- `lyrebird test` command - Test config without modifying system
-- MediaMTX API client for runtime stream management
-- Prometheus metrics endpoint
+| Document | Purpose | Audience |
+|----------|---------|----------|
+| [README.md](README.md) | Project overview, installation, usage | End users, contributors |
+| [docs/PEER_REVIEW.md](docs/PEER_REVIEW.md) | Initial code review (59 issues) | Reviewers, auditors |
+| [docs/AUDIT_REPORT.md](docs/AUDIT_REPORT.md) | Pre-release assessment (100+ items) | Reviewers, auditors |
+| [docs/OPUS_AUDIT_REPORT.md](docs/OPUS_AUDIT_REPORT.md) | Deep audit by Opus 4.6 (3 bugs fixed) | Reviewers, auditors |
+| [docs/SECURITY_AUDIT.md](docs/SECURITY_AUDIT.md) | Permissions/privilege security audit | Security reviewers |
+| [docs/CHRONOLOGY.md](docs/CHRONOLOGY.md) | Timeline of all changes and decisions | AI sessions, contributors |
+| [docs/LESSONS_LEARNED.md](docs/LESSONS_LEARNED.md) | What worked, what didn't, patterns | AI sessions, contributors |
+| [docs/SESSION_SETUP_INSTRUCTIONS.md](docs/SESSION_SETUP_INSTRUCTIONS.md) | How to start an effective session | AI assistants |
 
 ---
 
-## External Dependencies
+## Session Checklist
 
-**Go Libraries:**
-- **go.yaml.in/yaml/v3** - YAML parsing (consolidated from gopkg.in/yaml.v3 in Phase 3)
-- **github.com/knadh/koanf/v2** - Multi-source configuration management
-  - `koanf/parsers/yaml` - YAML parser
-  - `koanf/providers/file` - File provider with watch capability
-  - `koanf/providers/env/v2` - Environment variable provider
-- **github.com/thejerf/suture/v4** - Erlang-style supervisor trees for 24/7 reliability
-- **github.com/fsnotify/fsnotify** - File system notifications (via koanf)
+### Before Starting Work
+- [ ] Read this file (CLAUDE.md)
+- [ ] Check `docs/LESSONS_LEARNED.md` for relevant patterns
+- [ ] Run `go test -race ./...` to verify clean baseline
+- [ ] Check `git log --oneline -10` for recent context
 
-**Runtime Dependencies:**
-- **FFmpeg** - Audio encoding
-- **MediaMTX** - RTSP server
+### Before Committing
+- [ ] `go test -race ./...` passes
+- [ ] `go vet ./...` clean
+- [ ] Coverage not decreased (`go test -cover ./...`)
+- [ ] No `// TODO` comments added
+- [ ] Error messages include context
+- [ ] New public functions have godoc comments
+- [ ] Security: file permissions follow least-privilege table above
 
----
-
-## References
-
-- [Original Bash Implementation](https://github.com/tomtom215/LyreBirdAudio)
-- [MediaMTX Documentation](https://github.com/bluenviron/mediamtx)
-- [FFmpeg Documentation](https://ffmpeg.org/documentation.html)
-- [ALSA Documentation](https://www.alsa-project.org/wiki/Main_Page)
-- [koanf - Configuration Management](https://github.com/knadh/koanf)
-- [suture - Erlang-style Supervisor Trees](https://github.com/thejerf/suture)
+### After Session
+- [ ] Update `docs/LESSONS_LEARNED.md` if new patterns discovered
+- [ ] Update coverage table if numbers changed significantly
+- [ ] Update `docs/CHRONOLOGY.md` with session summary
 
 ---
 
-*Last updated: 2026-02-20*
+*This file is optimized for AI coding assistants. For human developers, see [README.md](README.md).*

@@ -198,7 +198,7 @@ The lock package uses `os.MkdirAll(dir, 0755)` while the daemon uses `os.MkdirAl
 
 ---
 
-## Files Modified in This Audit
+## Files Modified in Phase 1 (Deep Audit)
 
 | File | Change |
 |------|--------|
@@ -207,3 +207,68 @@ The lock package uses `os.MkdirAll(dir, 0755)` while the daemon uses `os.MkdirAl
 | `internal/diagnostics/diagnostics.go` | Fix BUG-3 (context propagation) |
 | `CLAUDE.md` | Update coverage table, fix threshold text, update date |
 | `docs/OPUS_AUDIT_REPORT.md` | This report |
+
+---
+
+## Phase 2: Security Audit — Permissions, Ownership & Least Privilege
+
+**Date**: 2026-02-20
+**Scope**: All file permissions, network binding, input validation, privilege levels
+
+### Security Findings Fixed
+
+| ID | File | Issue | Fix |
+|----|------|-------|-----|
+| SEC-1 | `cmd/lyrebird-stream/main.go` | Health endpoint bound to `0.0.0.0:9998` (all interfaces) | Bind to `127.0.0.1:9998` |
+| SEC-2 | `internal/lock/filelock.go` | Lock directory `0755`, lock files `0644` | Dir `0750`, files `0640` |
+| SEC-3 | `internal/config/config.go` | Config save permissions `0644` | Save `0640` |
+| SEC-4 | `internal/config/backup.go` | Backup dir `0755`, restore `0644` | Dir `0750`, restore `0640` |
+| SEC-5 | `cmd/lyrebird/main.go` | MediaMTX version string not validated | Regex validation added |
+
+### Tests Added
+
+| Test | File | Verifies |
+|------|------|----------|
+| `TestFileLockDirectoryPermissions` | `internal/lock/filelock_test.go` | Lock dir is `0750` |
+| `TestFileLockFilePermissions` | `internal/lock/filelock_test.go` | Lock file is `0640` via Acquire |
+| `TestFileLockFilePermissionsContext` | `internal/lock/filelock_test.go` | Lock file is `0640` via AcquireContext |
+| `TestSaveConfigAtomicPermissions` (updated) | `internal/config/config_test.go` | Config save is `0640` |
+| `TestBackupDirectoryPermissions` | `internal/config/backup_test.go` | Backup dir is `0750` |
+| `TestBackupFilePermissions` | `internal/config/backup_test.go` | Backup file is `0600` |
+| `TestRestoreBackupPermissions` | `internal/config/backup_test.go` | Restored config is `0640` |
+| `TestRestoreConfigDirectoryPermissions` | `internal/config/backup_test.go` | Config dir is `0750` |
+| `TestIsValidMediaMTXVersion` | `cmd/lyrebird/main_test.go` | 15 valid/invalid version cases |
+| `TestInstallMediaMTXVersionValidation` | `cmd/lyrebird/main_test.go` | Version rejection integration |
+
+### LIMIT-3 Resolved
+
+The lock directory permission inconsistency (LIMIT-3 from Phase 1) is now resolved. The lock package uses `0750` to match the daemon's convention.
+
+### Files Modified in Phase 2
+
+| File | Change |
+|------|--------|
+| `cmd/lyrebird-stream/main.go` | SEC-1: Health endpoint `127.0.0.1:9998` |
+| `internal/lock/filelock.go` | SEC-2: Dir `0750`, files `0640` |
+| `internal/lock/filelock_test.go` | 3 permission tests added |
+| `internal/config/config.go` | SEC-3: Save `0640` |
+| `internal/config/config_test.go` | Permission test updated |
+| `internal/config/backup.go` | SEC-4: Dir `0750`, restore `0640` |
+| `internal/config/backup_test.go` | 4 permission tests added |
+| `cmd/lyrebird/main.go` | SEC-5: Version validation + `regexp` import |
+| `cmd/lyrebird/main_test.go` | 2 version validation tests |
+| `CLAUDE.md` | Reorganized with ToC, security posture, documentation index |
+| `docs/SECURITY_AUDIT.md` | Full security audit report (new) |
+| `docs/CHRONOLOGY.md` | Project timeline (new) |
+| `docs/LESSONS_LEARNED.md` | Patterns and anti-patterns (new) |
+| `docs/SESSION_SETUP_INSTRUCTIONS.md` | AI session guide (new) |
+| `docs/OPUS_AUDIT_REPORT.md` | Phase 2 findings appended |
+
+### Phase 2 Verification
+
+| Check | Result |
+|-------|--------|
+| `go test -race ./...` | ALL PASS (14/14 packages, 0 races) |
+| `go vet ./...` | CLEAN |
+| Total coverage | 73.7%+ |
+| CI threshold (65%) | MET |
