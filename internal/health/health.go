@@ -9,6 +9,7 @@ package health
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"time"
 )
@@ -88,9 +89,32 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // ListenAndServe starts the health check HTTP server on the given address.
 // It shuts down gracefully when ctx is cancelled.
+//
+// H-3 fix: The function now binds the listener synchronously before returning
+// to the caller via the ready channel, so bind failures (e.g., port already in
+// use) are detected immediately rather than being silently swallowed in a
+// goroutine. If ready is nil, the function blocks as before.
 func ListenAndServe(ctx context.Context, addr string, handler http.Handler) error {
+	return ListenAndServeReady(ctx, addr, handler, nil)
+}
+
+// ListenAndServeReady starts the health check HTTP server and signals readiness.
+//
+// H-3 fix: Binds the listener synchronously. If the bind fails, the error is
+// returned immediately. Once the server is listening, the ready channel is
+// closed (if non-nil) to signal that the endpoint is available. This allows
+// the daemon to verify the health endpoint is actually listening before
+// completing initialization.
+func ListenAndServeReady(ctx context.Context, addr string, handler http.Handler, ready chan<- struct{}) error {
+	// H-3 fix: Bind synchronously so port-in-use errors are detected before
+	// the goroutine is launched. Previously, ListenAndServe ran in a goroutine
+	// and bind errors were only visible after ctx.Done(), making them invisible.
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+
 	srv := &http.Server{
-		Addr:              addr,
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		// ME-9: cap per-request time to prevent slow clients from holding goroutines.
@@ -98,9 +122,14 @@ func ListenAndServe(ctx context.Context, addr string, handler http.Handler) erro
 		WriteTimeout: 10 * time.Second,
 	}
 
+	// Signal readiness now that we're bound to the port.
+	if ready != nil {
+		close(ready)
+	}
+
 	errCh := make(chan error, 1)
 	go func() {
-		if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+		if err := srv.Serve(ln); err != http.ErrServerClosed {
 			errCh <- err
 		}
 		close(errCh)

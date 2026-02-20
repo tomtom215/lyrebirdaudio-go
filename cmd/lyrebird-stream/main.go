@@ -217,18 +217,22 @@ func runDaemon(flags daemonFlags) int {
 			alsaDevice := fmt.Sprintf("hw:%d,0", dev.CardNumber)
 
 			mgrCfg := &stream.ManagerConfig{
-				DeviceName:  devName,
-				ALSADevice:  alsaDevice,
-				StreamName:  streamName,
-				SampleRate:  devCfg.SampleRate,
-				Channels:    devCfg.Channels,
-				Bitrate:     devCfg.Bitrate,
-				Codec:       devCfg.Codec,
-				ThreadQueue: devCfg.ThreadQueue,
-				RTSPURL:     rtspURL,
-				LockDir:     flags.LockDir,
-				LogDir:      flags.LogDir,
-				FFmpegPath:  ffmpegPath,
+				DeviceName:      devName,
+				ALSADevice:      alsaDevice,
+				StreamName:      streamName,
+				SampleRate:      devCfg.SampleRate,
+				Channels:        devCfg.Channels,
+				Bitrate:         devCfg.Bitrate,
+				Codec:           devCfg.Codec,
+				ThreadQueue:     devCfg.ThreadQueue,
+				RTSPURL:         rtspURL,
+				LockDir:         flags.LockDir,
+				LogDir:          flags.LogDir,
+				FFmpegPath:      ffmpegPath,
+				StopTimeout:     cfg.Stream.StopTimeout,     // H-1 fix
+				LocalRecordDir:  cfg.Stream.LocalRecordDir,  // C-1 fix
+				SegmentDuration: cfg.Stream.SegmentDuration, // C-1 fix
+				SegmentFormat:   cfg.Stream.SegmentFormat,   // C-1 fix
 				Backoff: stream.NewBackoff(
 					cfg.Stream.InitialRestartDelay,
 					cfg.Stream.MaxRestartDelay,
@@ -256,7 +260,7 @@ func runDaemon(flags daemonFlags) int {
 
 			registeredMu.Lock()
 			registeredServices[devName] = true
-			registeredConfigHashes[devName] = deviceConfigHash(devCfg, rtspURL)
+			registeredConfigHashes[devName] = deviceConfigHash(devCfg, rtspURL, cfg.Stream)
 			registeredMu.Unlock()
 			registered++
 			logger.Info("registered stream", "alsa_device", alsaDevice, "rtsp_url", rtspURL)
@@ -349,7 +353,7 @@ func runDaemon(flags daemonFlags) int {
 				for _, devName := range names {
 					newDevCfg := newCfg.GetDeviceConfig(devName)
 					newRTSPURL := fmt.Sprintf("%s/%s", newCfg.MediaMTX.RTSPURL, devName)
-					newHash := deviceConfigHash(newDevCfg, newRTSPURL)
+					newHash := deviceConfigHash(newDevCfg, newRTSPURL, newCfg.Stream)
 
 					registeredMu.RLock()
 					oldHash := registeredConfigHashes[devName]
@@ -396,13 +400,26 @@ func runDaemon(flags daemonFlags) int {
 	// and should not be accessible from the network by default.
 	// P-4 fix: Wire real StatusProvider that reports supervisor service states,
 	// replacing the nil provider that always returned 503.
+	// H-3 fix: Use ListenAndServeReady with a ready channel to verify the health
+	// endpoint is actually listening before completing initialization. Bind failures
+	// (e.g., port already in use) are detected synchronously.
 	healthHandler := health.NewHandler(&supervisorStatusProvider{sup: sup})
+	healthReady := make(chan struct{})
 	go func() {
-		if err := health.ListenAndServe(ctx, "127.0.0.1:9998", healthHandler); err != nil {
+		if err := health.ListenAndServeReady(ctx, "127.0.0.1:9998", healthHandler, healthReady); err != nil {
 			// Not fatal: health endpoint failure must not crash the daemon.
 			logger.Warn("health endpoint error", "error", err)
 		}
 	}()
+	// H-3 fix: Wait for health endpoint to bind or detect bind failure.
+	select {
+	case <-healthReady:
+		logger.Info("health endpoint listening", "addr", "127.0.0.1:9998")
+	case <-time.After(2 * time.Second):
+		logger.Warn("health endpoint did not start within 2s, continuing without health monitoring")
+	case <-ctx.Done():
+		// Shutting down before health started
+	}
 
 	// P-3 fix: Periodic recovery for permanently failed streams.
 	// When a stream exceeds MaxRestartAttempts, it enters StateFailed and the
@@ -446,14 +463,20 @@ func runDaemon(flags daemonFlags) int {
 	// P-1/P-2 fix: Stream health check loop using MediaMTX API client.
 	// This wires the previously dead-code mediamtx client into the daemon to
 	// detect silent/stalled streams. Polls MediaMTX API at the configured
-	// monitor interval. If a stream's bytes_received stops increasing for
+	// stall check interval. If a stream's bytes_received stops increasing for
 	// maxStallChecks consecutive polls, the stream is restarted.
+	//
+	// H-2 fix: Uses separate StallCheckInterval (default 60s) instead of the
+	// general monitor interval (5 min). This reduces stall detection from
+	// 15 minutes (3 x 5 min) to 3 minutes (3 x 60s).
 	if cfg.Monitor.Enabled {
 		go func() {
 			mtxClient := mediamtx.NewClient(cfg.MediaMTX.APIURL)
-			checkInterval := cfg.Monitor.Interval
+			// H-2 fix: use StallCheckInterval for stall detection, falling back
+			// to 60 seconds if unset, rather than the general monitor interval.
+			checkInterval := cfg.Monitor.StallCheckInterval
 			if checkInterval <= 0 {
-				checkInterval = 5 * time.Minute
+				checkInterval = 60 * time.Second
 			}
 			ticker := time.NewTicker(checkInterval)
 			defer ticker.Stop()
@@ -461,7 +484,11 @@ func runDaemon(flags daemonFlags) int {
 			// Track bytes received per stream for stall detection.
 			prevBytes := make(map[string]int64)
 			stallCount := make(map[string]int)
-			const maxStallChecks = 3
+			// H-2 fix: use configurable MaxStallChecks instead of hardcoded 3.
+			maxStallChecks := cfg.Monitor.MaxStallChecks
+			if maxStallChecks <= 0 {
+				maxStallChecks = 3
+			}
 
 			for {
 				select {
@@ -682,13 +709,21 @@ func printUsage() {
 //
 // The hash includes every field that changes the FFmpeg command line so that
 // parameter changes are never silently ignored.
-func deviceConfigHash(devCfg config.DeviceConfig, rtspURL string) string {
-	return fmt.Sprintf("%d/%d/%s/%s/%d/%s",
+//
+// M-2 fix: Now accepts the full stream config to include LocalRecordDir,
+// SegmentDuration, SegmentFormat, and StopTimeout in the hash, ensuring that
+// changes to these fields trigger a stream restart on SIGHUP.
+func deviceConfigHash(devCfg config.DeviceConfig, rtspURL string, streamCfg config.StreamConfig) string {
+	return fmt.Sprintf("%d/%d/%s/%s/%d/%s/%s/%d/%s/%v",
 		devCfg.SampleRate,
 		devCfg.Channels,
 		devCfg.Bitrate,
 		devCfg.Codec,
 		devCfg.ThreadQueue,
 		rtspURL,
+		streamCfg.LocalRecordDir,
+		streamCfg.SegmentDuration,
+		streamCfg.SegmentFormat,
+		streamCfg.StopTimeout,
 	)
 }

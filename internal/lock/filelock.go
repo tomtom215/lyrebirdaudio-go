@@ -74,12 +74,9 @@ func NewFileLock(path string) (*FileLock, error) {
 
 // Acquire attempts to acquire the exclusive lock with a timeout.
 //
-// Acquisition process:
-//  1. Check for stale lock (dead process, old age)
-//  2. Remove stale lock if found
-//  3. Open/create lock file
-//  4. Call flock(2) with timeout
-//  5. Write our PID to lock file
+// Deprecated: Use AcquireContext instead, which supports context cancellation
+// for graceful shutdown. Acquire delegates to AcquireContext with a
+// background context (H-5 fix).
 //
 // Parameters:
 //   - timeout: Maximum time to wait for lock (0 = try once, no wait)
@@ -87,65 +84,11 @@ func NewFileLock(path string) (*FileLock, error) {
 // Returns:
 //   - nil on success
 //   - error on timeout or other failure
-//
-// Reference: mediamtx-stream-manager.sh acquire_lock() lines 837-906
 func (fl *FileLock) Acquire(timeout time.Duration) error {
-	// Check for stale lock and remove if found
-	if stale, _ := isLockStale(fl.path, DefaultStaleThreshold); stale {
-		_ = os.Remove(fl.path) // Explicitly ignore error - file might not exist
-	}
-
-	// Open lock file (create if doesn't exist)
-	// SEC-2: Restrict lock file to owner+group (least privilege). PIDs in lock files
-	// should not be world-readable to prevent process enumeration.
-	// #nosec G302 - Lock file restricted to owner+group for service coordination
-	file, err := os.OpenFile(fl.path, os.O_CREATE|os.O_RDWR, 0640)
-	if err != nil {
-		return fmt.Errorf("failed to open lock file: %w", err)
-	}
-
-	// Try to acquire lock with timeout
-	deadline := time.Now().Add(timeout)
-	for {
-		// Try non-blocking flock
-		err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) // #nosec G115 -- Fd() fits int on all supported platforms (amd64/arm64/arm)
-		if err == nil {
-			// Lock acquired!
-			break
-		}
-
-		// Check if timeout expired
-		if time.Now().After(deadline) {
-			_ = file.Close()
-			return fmt.Errorf("failed to acquire lock after %v: %w", timeout, err)
-		}
-
-		// Wait a bit before retrying
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	// Write our PID to lock file
-	if err := file.Truncate(0); err != nil {
-		_ = file.Close()
-		return fmt.Errorf("failed to truncate lock file: %w", err)
-	}
-	if _, err := file.Seek(0, 0); err != nil {
-		_ = file.Close()
-		return fmt.Errorf("failed to seek lock file: %w", err)
-	}
-	if _, err := fmt.Fprintf(file, "%d\n", fl.pid); err != nil {
-		_ = file.Close()
-		return fmt.Errorf("failed to write PID to lock file: %w", err)
-	}
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
-		return fmt.Errorf("failed to sync lock file: %w", err)
-	}
-
-	fl.mu.Lock()
-	fl.file = file
-	fl.mu.Unlock()
-	return nil
+	// H-5 fix: Delegate to AcquireContext instead of using blocking time.Sleep.
+	// The old implementation polled with time.Sleep(100ms) which could not be
+	// interrupted by shutdown signals. AcquireContext uses ticker.C + ctx.Done().
+	return fl.AcquireContext(context.Background(), timeout)
 }
 
 // AcquireContext attempts to acquire the exclusive lock with context cancellation support.

@@ -92,6 +92,10 @@ type ManagerConfig struct {
 	LogDir          string                // Directory for FFmpeg log files (empty = no logging)
 	MonitorInterval time.Duration         // Interval for resource monitoring (0 = disabled)
 	AlertCallback   func([]ResourceAlert) // Optional callback for resource alerts
+	StopTimeout     time.Duration         // Timeout for graceful FFmpeg stop before force-kill (default: 5s) (H-1 fix)
+	LocalRecordDir  string                // Directory for local audio recording segments (C-1 fix, empty = disabled)
+	SegmentDuration int                   // Duration in seconds for local recording segments (default: 3600 = 1 hour)
+	SegmentFormat   string                // Format for local recording segments: "wav", "flac", "ogg" (default: "wav")
 }
 
 // Manager manages a single audio stream's lifecycle.
@@ -225,6 +229,17 @@ func (m *Manager) logError(format string, args ...interface{}) {
 	}
 }
 
+// logStructuredEvent emits a structured log event with machine-parseable fields
+// for post-hoc failure analysis from journald or log aggregation (H-4 fix).
+func (m *Manager) logStructuredEvent(event string, attrs ...interface{}) {
+	if m.cfg.Logger != nil {
+		allAttrs := make([]interface{}, 0, len(attrs)+4)
+		allAttrs = append(allAttrs, "event", event, "device", m.cfg.DeviceName, "stream", m.cfg.StreamName)
+		allAttrs = append(allAttrs, attrs...)
+		m.cfg.Logger.Info("stream_event", allAttrs...)
+	}
+}
+
 // Run starts the stream manager's main loop.
 //
 // This function:
@@ -306,6 +321,15 @@ func (m *Manager) Run(ctx context.Context) error {
 			// first restart waits initialDelay, not 2×initialDelay (ME-1 fix).
 			m.failures.Add(1)
 			m.setState(StateFailed)
+			// H-4 fix: Emit structured failure event with machine-parseable fields
+			// for post-hoc analysis from journald or log aggregation systems.
+			m.logStructuredEvent("stream_failure",
+				"error", err.Error(),
+				"attempt", m.attempts.Load(),
+				"failures", m.failures.Load(),
+				"run_duration", runTime.String(),
+				"next_backoff", m.backoff.CurrentDelay().String(),
+			)
 			m.logError("FFmpeg failed: %v (failures=%d, next-backoff=%v)", err, m.failures.Load(), m.backoff.CurrentDelay())
 
 			// Wait before recording failure so the first restart uses initialDelay.
@@ -327,6 +351,13 @@ func (m *Manager) Run(ctx context.Context) error {
 			// Same swap as above: wait first, then record.
 			m.failures.Add(1)
 			m.setState(StateFailed)
+			// H-4 fix: structured event for short-run failure
+			m.logStructuredEvent("stream_short_run_failure",
+				"run_duration", runTime.String(),
+				"threshold", successThreshold.String(),
+				"attempt", m.attempts.Load(),
+				"failures", m.failures.Load(),
+			)
 			m.logError("FFmpeg ran for %v (< %v threshold), treating as failure", runTime, successThreshold)
 
 			// Wait before recording failure.
@@ -341,6 +372,13 @@ func (m *Manager) Run(ctx context.Context) error {
 		}
 
 		m.logf("FFmpeg ran successfully for %v", runTime)
+
+		// H-4 fix: structured recovery event
+		m.logStructuredEvent("stream_recovery",
+			"run_duration", runTime.String(),
+			"attempt", m.attempts.Load(),
+			"total_failures", m.failures.Load(),
+		)
 
 		// Long successful run - reset backoff
 		m.backoff.RecordSuccess(runTime)
@@ -580,10 +618,18 @@ func (m *Manager) stop() {
 		// returns ESRCH, which is an expected benign race (L-7).
 		_ = proc.Signal(os.Interrupt)
 
-		// If FFmpeg does not exit within 2 s, force-kill it.
+		// H-1 fix: Use configurable stop timeout (default 5s, was hardcoded 2s).
+		// Audio codecs like Opus need time to flush their encoder buffer; 2s was
+		// insufficient for clean shutdown of buffered audio data.
+		stopTimeout := m.cfg.StopTimeout
+		if stopTimeout <= 0 {
+			stopTimeout = 5 * time.Second
+		}
+
+		// If FFmpeg does not exit within the timeout, force-kill it.
 		// The goroutine is bound to a context derived from the caller's ctx so
 		// it does not outlive the manager's Run() loop (ME-3 fix).
-		killCtx, killCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		killCtx, killCancel := context.WithTimeout(context.Background(), stopTimeout)
 		go func() {
 			defer killCancel()
 			<-killCtx.Done()
@@ -620,13 +666,21 @@ func (m *Manager) forceStop() error {
 
 // buildFFmpegCommand constructs the FFmpeg command line.
 //
-// Command format:
+// Command format (simple RTSP):
 //
 //	ffmpeg -f alsa -i hw:X,Y \
 //	  -ar RATE -ac CHANNELS \
 //	  -c:a CODEC -b:a BITRATE \
 //	  [-thread_queue_size SIZE] \
-//	  -f [rtsp|null] RTSP_URL
+//	  -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 30 \
+//	  -f rtsp RTSP_URL
+//
+// Command format (tee muxer with local recording, C-1 fix):
+//
+//	ffmpeg -f alsa -i hw:X,Y \
+//	  -ar RATE -ac CHANNELS \
+//	  -c:a CODEC -b:a BITRATE \
+//	  -f tee "[f=rtsp]rtsp://...|[f=segment:segment_time=3600]dir/stream_%Y%m%d_%H%M%S.wav"
 //
 // Parameters:
 //   - cfg: Manager configuration
@@ -682,8 +736,37 @@ func buildFFmpegCommand(ctx context.Context, cfg *ManagerConfig) *exec.Cmd {
 		}
 	}
 
-	// Output format and URL
-	if outputFormat != "" {
+	// C-1 fix: When LocalRecordDir is set and output is RTSP, use tee muxer
+	// to simultaneously stream to RTSP and record locally as segmented files.
+	// This prevents audio data loss during MediaMTX outages.
+	if cfg.LocalRecordDir != "" && outputFormat == "rtsp" {
+		segDuration := cfg.SegmentDuration
+		if segDuration <= 0 {
+			segDuration = 3600 // Default: 1-hour segments
+		}
+		segFormat := cfg.SegmentFormat
+		if segFormat == "" {
+			segFormat = "wav"
+		}
+		segPattern := filepath.Join(cfg.LocalRecordDir, cfg.StreamName+"_%Y%m%d_%H%M%S."+segFormat)
+
+		// C-2 fix: Include reconnect flags in the RTSP output within the tee.
+		teeOutput := fmt.Sprintf(
+			"[f=rtsp:reconnect=1:reconnect_streamed=1:reconnect_delay_max=30]%s|[f=segment:segment_time=%d:strftime=1]%s",
+			cfg.RTSPURL, segDuration, segPattern,
+		)
+		args = append(args, "-f", "tee", teeOutput)
+	} else if outputFormat == "rtsp" {
+		// C-2 fix: Add FFmpeg RTSP reconnection flags for non-tee RTSP output.
+		// Without these, FFmpeg exits immediately when the RTSP connection drops
+		// (e.g., MediaMTX restart), forcing a full process restart with backoff delay.
+		args = append(args,
+			"-reconnect", "1",
+			"-reconnect_streamed", "1",
+			"-reconnect_delay_max", "30",
+			"-f", outputFormat, cfg.RTSPURL,
+		)
+	} else if outputFormat != "" {
 		args = append(args, "-f", outputFormat, cfg.RTSPURL)
 	} else {
 		// No format specified - let FFmpeg auto-detect

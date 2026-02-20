@@ -47,6 +47,10 @@ type StreamConfig struct {
 	MaxRestartDelay       time.Duration `yaml:"max_restart_delay" koanf:"max_restart_delay"`             // Maximum backoff delay
 	MaxRestartAttempts    int           `yaml:"max_restart_attempts" koanf:"max_restart_attempts"`       // Max attempts before giving up
 	USBStabilizationDelay time.Duration `yaml:"usb_stabilization_delay" koanf:"usb_stabilization_delay"` // Wait after USB changes
+	StopTimeout           time.Duration `yaml:"stop_timeout" koanf:"stop_timeout"`                       // H-1 fix: graceful stop timeout (default: 5s)
+	LocalRecordDir        string        `yaml:"local_record_dir" koanf:"local_record_dir"`               // C-1 fix: local recording directory (empty = disabled)
+	SegmentDuration       int           `yaml:"segment_duration" koanf:"segment_duration"`               // C-1 fix: segment duration in seconds (default: 3600)
+	SegmentFormat         string        `yaml:"segment_format" koanf:"segment_format"`                   // C-1 fix: segment format: wav, flac, ogg (default: wav)
 }
 
 // MediaMTXConfig contains MediaMTX server integration settings.
@@ -58,9 +62,11 @@ type MediaMTXConfig struct {
 
 // MonitorConfig contains health monitoring settings.
 type MonitorConfig struct {
-	Enabled          bool          `yaml:"enabled" koanf:"enabled"`                     // Enable health monitoring
-	Interval         time.Duration `yaml:"interval" koanf:"interval"`                   // Health check interval
-	RestartUnhealthy bool          `yaml:"restart_unhealthy" koanf:"restart_unhealthy"` // Auto-restart failed streams
+	Enabled            bool          `yaml:"enabled" koanf:"enabled"`                           // Enable health monitoring
+	Interval           time.Duration `yaml:"interval" koanf:"interval"`                         // Health check / recovery interval
+	StallCheckInterval time.Duration `yaml:"stall_check_interval" koanf:"stall_check_interval"` // H-2 fix: separate stall-check interval (default: 60s)
+	MaxStallChecks     int           `yaml:"max_stall_checks" koanf:"max_stall_checks"`         // H-2 fix: consecutive stall checks before restart (default: 3)
+	RestartUnhealthy   bool          `yaml:"restart_unhealthy" koanf:"restart_unhealthy"`       // Auto-restart failed streams
 }
 
 // LoadConfig reads and parses the configuration file.
@@ -341,6 +347,10 @@ func DefaultConfig() *Config {
 			MaxRestartDelay:       300 * time.Second,
 			MaxRestartAttempts:    50,
 			USBStabilizationDelay: 5 * time.Second,
+			StopTimeout:           5 * time.Second, // H-1 fix: 5s default (was hardcoded 2s)
+			SegmentDuration:       3600,            // C-1: 1-hour segments by default
+			SegmentFormat:         "wav",           // C-1: lossless WAV by default
+			// LocalRecordDir: empty by default (local recording disabled)
 		},
 		MediaMTX: MediaMTXConfig{
 			APIURL:     "http://localhost:9997",
@@ -348,9 +358,11 @@ func DefaultConfig() *Config {
 			ConfigPath: "/etc/mediamtx/mediamtx.yml",
 		},
 		Monitor: MonitorConfig{
-			Enabled:          true,
-			Interval:         5 * time.Minute,
-			RestartUnhealthy: true,
+			Enabled:            true,
+			Interval:           5 * time.Minute,
+			StallCheckInterval: 60 * time.Second, // H-2 fix: check for stalls every 60s (was 5 min)
+			MaxStallChecks:     3,                // H-2 fix: 3 consecutive checks = 3 min detection
+			RestartUnhealthy:   true,
 		},
 	}
 }

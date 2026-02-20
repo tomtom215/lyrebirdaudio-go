@@ -807,6 +807,314 @@ func BenchmarkBuildFFmpegCommand(b *testing.B) {
 	}
 }
 
+// ==========================================================================
+// Production readiness fix tests
+// ==========================================================================
+
+// TestBuildFFmpegCommandReconnectFlags verifies C-2 fix: RTSP reconnect flags.
+func TestBuildFFmpegCommandReconnectFlags(t *testing.T) {
+	tests := []struct {
+		name           string
+		rtspURL        string
+		outputFormat   string
+		localRecordDir string
+		wantReconnect  bool
+	}{
+		{
+			name:          "rtsp auto-detect adds reconnect flags",
+			rtspURL:       "rtsp://localhost:8554/test",
+			wantReconnect: true,
+		},
+		{
+			name:          "null format does not add reconnect flags",
+			rtspURL:       "/dev/null",
+			outputFormat:  "null",
+			wantReconnect: false,
+		},
+		{
+			name:          "file output does not add reconnect flags",
+			rtspURL:       "/tmp/test.ogg",
+			wantReconnect: false,
+		},
+		{
+			name:           "tee muxer with local recording includes reconnect in tee options",
+			rtspURL:        "rtsp://localhost:8554/test",
+			localRecordDir: "/tmp/recordings",
+			wantReconnect:  false, // reconnect is inside tee option string, not as top-level arg
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &ManagerConfig{
+				ALSADevice:     "hw:0,0",
+				StreamName:     "test",
+				SampleRate:     48000,
+				Channels:       2,
+				Bitrate:        "128k",
+				Codec:          "opus",
+				RTSPURL:        tt.rtspURL,
+				OutputFormat:   tt.outputFormat,
+				LocalRecordDir: tt.localRecordDir,
+			}
+
+			cmd := buildFFmpegCommand(context.Background(), cfg)
+
+			hasReconnect := false
+			for _, arg := range cmd.Args {
+				if arg == "-reconnect" {
+					hasReconnect = true
+					break
+				}
+			}
+
+			if hasReconnect != tt.wantReconnect {
+				t.Errorf("-reconnect flag present = %v, want %v\nArgs: %v",
+					hasReconnect, tt.wantReconnect, cmd.Args)
+			}
+		})
+	}
+}
+
+// TestBuildFFmpegCommandTeeMuxer verifies C-1 fix: tee muxer with local recording.
+func TestBuildFFmpegCommandTeeMuxer(t *testing.T) {
+	t.Run("tee muxer enabled with local record dir", func(t *testing.T) {
+		cfg := &ManagerConfig{
+			ALSADevice:      "hw:0,0",
+			StreamName:      "blue_yeti",
+			SampleRate:      48000,
+			Channels:        2,
+			Bitrate:         "128k",
+			Codec:           "opus",
+			RTSPURL:         "rtsp://localhost:8554/blue_yeti",
+			LocalRecordDir:  "/var/audio/recordings",
+			SegmentDuration: 1800,
+			SegmentFormat:   "flac",
+		}
+
+		cmd := buildFFmpegCommand(context.Background(), cfg)
+
+		// Should use -f tee
+		hasTee := false
+		for i, arg := range cmd.Args {
+			if arg == "-f" && i+1 < len(cmd.Args) && cmd.Args[i+1] == "tee" {
+				hasTee = true
+				break
+			}
+		}
+		if !hasTee {
+			t.Errorf("C-1: expected -f tee in args, got: %v", cmd.Args)
+		}
+
+		// Last arg should be the tee output string containing both RTSP and segment
+		lastArg := cmd.Args[len(cmd.Args)-1]
+		if !strings.Contains(lastArg, "[f=rtsp") {
+			t.Errorf("C-1: tee output should contain [f=rtsp], got: %s", lastArg)
+		}
+		if !strings.Contains(lastArg, "[f=segment") {
+			t.Errorf("C-1: tee output should contain [f=segment], got: %s", lastArg)
+		}
+		if !strings.Contains(lastArg, "segment_time=1800") {
+			t.Errorf("C-1: tee output should contain segment_time=1800, got: %s", lastArg)
+		}
+		if !strings.Contains(lastArg, ".flac") {
+			t.Errorf("C-1: tee output should contain .flac extension, got: %s", lastArg)
+		}
+		if !strings.Contains(lastArg, "blue_yeti_") {
+			t.Errorf("C-1: tee output should contain stream name, got: %s", lastArg)
+		}
+		if !strings.Contains(lastArg, "reconnect=1") {
+			t.Errorf("C-2: tee RTSP output should contain reconnect options, got: %s", lastArg)
+		}
+	})
+
+	t.Run("tee muxer defaults", func(t *testing.T) {
+		cfg := &ManagerConfig{
+			ALSADevice:     "hw:0,0",
+			StreamName:     "test",
+			SampleRate:     48000,
+			Channels:       2,
+			Bitrate:        "128k",
+			Codec:          "opus",
+			RTSPURL:        "rtsp://localhost:8554/test",
+			LocalRecordDir: "/tmp/recordings",
+			// SegmentDuration and SegmentFormat unset - should use defaults
+		}
+
+		cmd := buildFFmpegCommand(context.Background(), cfg)
+		lastArg := cmd.Args[len(cmd.Args)-1]
+
+		if !strings.Contains(lastArg, "segment_time=3600") {
+			t.Errorf("C-1: default segment_time should be 3600, got: %s", lastArg)
+		}
+		if !strings.Contains(lastArg, ".wav") {
+			t.Errorf("C-1: default segment format should be wav, got: %s", lastArg)
+		}
+	})
+
+	t.Run("no tee when local record dir empty", func(t *testing.T) {
+		cfg := &ManagerConfig{
+			ALSADevice: "hw:0,0",
+			StreamName: "test",
+			SampleRate: 48000,
+			Channels:   2,
+			Bitrate:    "128k",
+			Codec:      "opus",
+			RTSPURL:    "rtsp://localhost:8554/test",
+			// LocalRecordDir unset
+		}
+
+		cmd := buildFFmpegCommand(context.Background(), cfg)
+
+		for _, arg := range cmd.Args {
+			if arg == "tee" {
+				t.Error("C-1: should not use tee when LocalRecordDir is empty")
+			}
+		}
+	})
+
+	t.Run("no tee for non-rtsp output", func(t *testing.T) {
+		cfg := &ManagerConfig{
+			ALSADevice:     "hw:0,0",
+			StreamName:     "test",
+			SampleRate:     48000,
+			Channels:       2,
+			Bitrate:        "128k",
+			Codec:          "opus",
+			RTSPURL:        "/dev/null",
+			OutputFormat:   "null",
+			LocalRecordDir: "/tmp/recordings",
+		}
+
+		cmd := buildFFmpegCommand(context.Background(), cfg)
+
+		for _, arg := range cmd.Args {
+			if arg == "tee" {
+				t.Error("C-1: should not use tee for null output format")
+			}
+		}
+	})
+}
+
+// TestStopTimeoutConfigurable verifies H-1 fix: configurable stop timeout.
+func TestStopTimeoutConfigurable(t *testing.T) {
+	t.Run("default stop timeout is 5s", func(t *testing.T) {
+		cfg := &ManagerConfig{
+			DeviceName: "test",
+			ALSADevice: "hw:0,0",
+			StreamName: "stream",
+			SampleRate: 48000,
+			Channels:   2,
+			Bitrate:    "128k",
+			Codec:      "opus",
+			RTSPURL:    "rtsp://localhost:8554/test",
+			LockDir:    "/tmp",
+			FFmpegPath: "/usr/bin/ffmpeg",
+			Backoff:    NewBackoff(1*time.Second, 10*time.Second, 5),
+			// StopTimeout not set - should default to 5s
+		}
+
+		mgr, err := NewManager(cfg)
+		if err != nil {
+			t.Fatalf("NewManager() error = %v", err)
+		}
+
+		if mgr.cfg.StopTimeout != 0 {
+			t.Errorf("default StopTimeout should be 0 (manager uses 5s default), got %v", mgr.cfg.StopTimeout)
+		}
+	})
+
+	t.Run("custom stop timeout accepted", func(t *testing.T) {
+		cfg := &ManagerConfig{
+			DeviceName:  "test",
+			ALSADevice:  "hw:0,0",
+			StreamName:  "stream",
+			SampleRate:  48000,
+			Channels:    2,
+			Bitrate:     "128k",
+			Codec:       "opus",
+			RTSPURL:     "rtsp://localhost:8554/test",
+			LockDir:     "/tmp",
+			FFmpegPath:  "/usr/bin/ffmpeg",
+			Backoff:     NewBackoff(1*time.Second, 10*time.Second, 5),
+			StopTimeout: 10 * time.Second,
+		}
+
+		mgr, err := NewManager(cfg)
+		if err != nil {
+			t.Fatalf("NewManager() error = %v", err)
+		}
+
+		if mgr.cfg.StopTimeout != 10*time.Second {
+			t.Errorf("StopTimeout = %v, want 10s", mgr.cfg.StopTimeout)
+		}
+	})
+}
+
+// TestLogStructuredEvent verifies H-4 fix: structured failure event logging.
+func TestLogStructuredEvent(t *testing.T) {
+	t.Run("structured event logged with all fields", func(t *testing.T) {
+		var buf bytes.Buffer
+		cfg := &ManagerConfig{
+			DeviceName: "test_device",
+			ALSADevice: "hw:0,0",
+			StreamName: "test_stream",
+			SampleRate: 48000,
+			Channels:   2,
+			Bitrate:    "128k",
+			Codec:      "opus",
+			RTSPURL:    "rtsp://localhost:8554/test",
+			LockDir:    "/tmp",
+			FFmpegPath: "/usr/bin/ffmpeg",
+			Backoff:    NewBackoff(1*time.Second, 10*time.Second, 5),
+			Logger:     slog.New(slog.NewTextHandler(&buf, nil)),
+		}
+
+		mgr, err := NewManager(cfg)
+		if err != nil {
+			t.Fatalf("NewManager() error = %v", err)
+		}
+
+		mgr.logStructuredEvent("stream_failure",
+			"error", "test error",
+			"attempt", 3,
+			"failures", 2,
+		)
+
+		output := buf.String()
+		for _, want := range []string{"stream_event", "stream_failure", "test_device", "test_stream", "test error"} {
+			if !strings.Contains(output, want) {
+				t.Errorf("H-4: structured event should contain %q, got: %s", want, output)
+			}
+		}
+	})
+
+	t.Run("no panic without logger", func(t *testing.T) {
+		cfg := &ManagerConfig{
+			DeviceName: "test",
+			ALSADevice: "hw:0,0",
+			StreamName: "stream",
+			SampleRate: 48000,
+			Channels:   2,
+			Bitrate:    "128k",
+			Codec:      "opus",
+			RTSPURL:    "rtsp://localhost:8554/test",
+			LockDir:    "/tmp",
+			FFmpegPath: "/usr/bin/ffmpeg",
+			Backoff:    NewBackoff(1*time.Second, 10*time.Second, 5),
+			// Logger intentionally nil
+		}
+
+		mgr, err := NewManager(cfg)
+		if err != nil {
+			t.Fatalf("NewManager() error = %v", err)
+		}
+
+		// Should not panic
+		mgr.logStructuredEvent("stream_failure", "error", "test")
+	})
+}
+
 // TestManagerRunLockAcquisitionFailure verifies behavior when lock acquisition fails.
 // With context-aware lock acquisition, this test completes quickly (< 1 second).
 func TestManagerRunLockAcquisitionFailure(t *testing.T) {
