@@ -417,9 +417,11 @@ func runDaemon(flags daemonFlags) int {
 	if healthAddr == "" {
 		healthAddr = "127.0.0.1:9998"
 	}
+	// DiskLowThresholdMB is validated non-negative in Config.Validate; safe to
+	// convert to uint64 for unsigned comparison with syscall.Statfs free bytes.
 	sysInfoProvider := &daemonSystemInfoProvider{
 		recordDir:        cfg.Stream.LocalRecordDir,
-		diskLowThreshold: cfg.Monitor.DiskLowThresholdMB * 1024 * 1024,
+		diskLowThreshold: uint64(cfg.Monitor.DiskLowThresholdMB) * 1024 * 1024, //#nosec G115 -- cfg.Monitor.DiskLowThresholdMB is always ≥ 0
 	}
 	healthHandler := health.NewHandler(&supervisorStatusProvider{sup: sup}).
 		WithSystemInfo(sysInfoProvider)
@@ -825,7 +827,7 @@ func startWatchdog(ctx context.Context, logger *slog.Logger) {
 // It reports disk space for the recording directory and NTP sync status (GAP-7, GAP-1d).
 type daemonSystemInfoProvider struct {
 	recordDir        string // LocalRecordDir, or "/" if empty
-	diskLowThreshold int64  // bytes; 0 = disabled
+	diskLowThreshold uint64 // bytes; 0 = disabled (always initialized from a positive int64)
 }
 
 func (p *daemonSystemInfoProvider) SystemInfo() health.SystemInfo {
@@ -841,7 +843,7 @@ func (p *daemonSystemInfoProvider) SystemInfo() health.SystemInfo {
 	if err := syscall.Statfs(dir, &stat); err == nil {
 		si.DiskFreeBytes = stat.Bavail * uint64(stat.Bsize)  //#nosec G115 -- Bavail and Bsize are always ≥ 0
 		si.DiskTotalBytes = stat.Blocks * uint64(stat.Bsize) //#nosec G115 -- same
-		if p.diskLowThreshold > 0 && int64(si.DiskFreeBytes) < p.diskLowThreshold {
+		if p.diskLowThreshold > 0 && si.DiskFreeBytes < p.diskLowThreshold {
 			si.DiskLowWarning = true
 		}
 	}
@@ -989,9 +991,9 @@ func runDiskSpaceMonitor(ctx context.Context, logger *slog.Logger, cfg *config.C
 			return
 		}
 
-		freeBytes := stat.Bavail * uint64(stat.Bsize)  //#nosec G115
-		totalBytes := stat.Blocks * uint64(stat.Bsize) //#nosec G115
-		thresholdBytes := uint64(cfg.Monitor.DiskLowThresholdMB) * 1024 * 1024
+		freeBytes := stat.Bavail * uint64(stat.Bsize)                          //#nosec G115
+		totalBytes := stat.Blocks * uint64(stat.Bsize)                         //#nosec G115
+		thresholdBytes := uint64(cfg.Monitor.DiskLowThresholdMB) * 1024 * 1024 //#nosec G115 -- DiskLowThresholdMB > 0 is checked before goroutine start
 
 		if freeBytes < thresholdBytes {
 			logger.Warn("LOW DISK SPACE WARNING",
