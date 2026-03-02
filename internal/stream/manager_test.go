@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -972,5 +973,85 @@ func BenchmarkStreamManagerStart(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _ = NewManager(cfg)
+	}
+}
+
+// TestStartFFmpegCreatesLocalRecordDir verifies that startFFmpeg auto-creates
+// LocalRecordDir before launching FFmpeg (GAP-1a / A-1).
+func TestStartFFmpegCreatesLocalRecordDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	lockDir := t.TempDir()
+
+	// Point to a directory that does NOT exist yet.
+	recordDir := filepath.Join(tmpDir, "recordings", "nested")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cfg := &ManagerConfig{
+		DeviceName:     "test_device",
+		ALSADevice:     "hw:0,0",
+		StreamName:     "test",
+		SampleRate:     48000,
+		Channels:       2,
+		Bitrate:        "128k",
+		Codec:          "aac",
+		RTSPURL:        "rtsp://localhost:8554/test",
+		OutputFormat:   "rtsp",
+		LockDir:        lockDir,
+		FFmpegPath:     "/nonexistent/ffmpeg", // will fail to start, but dir should be created first
+		Backoff:        NewBackoff(1*time.Second, 10*time.Second, 3),
+		LocalRecordDir: recordDir,
+	}
+
+	mgr, err := NewManager(cfg)
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+
+	// startFFmpeg creates the dir, then fails to start because FFmpeg doesn't exist.
+	_ = mgr.startFFmpeg(ctx)
+
+	// The recording directory must have been created.
+	if _, err := os.Stat(recordDir); os.IsNotExist(err) {
+		t.Errorf("LocalRecordDir %q was not created by startFFmpeg", recordDir)
+	}
+}
+
+// TestStartFFmpegNoLocalRecordDir verifies that startFFmpeg succeeds (or fails
+// for unrelated reasons) when LocalRecordDir is empty.
+func TestStartFFmpegNoLocalRecordDir(t *testing.T) {
+	lockDir := t.TempDir()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cfg := &ManagerConfig{
+		DeviceName:     "test_device",
+		ALSADevice:     "hw:0,0",
+		StreamName:     "test",
+		SampleRate:     48000,
+		Channels:       2,
+		Bitrate:        "128k",
+		Codec:          "aac",
+		RTSPURL:        "rtsp://localhost:8554/test",
+		LockDir:        lockDir,
+		FFmpegPath:     "/nonexistent/ffmpeg",
+		Backoff:        NewBackoff(1*time.Second, 10*time.Second, 3),
+		LocalRecordDir: "", // disabled
+	}
+
+	mgr, err := NewManager(cfg)
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+
+	// Should fail for ffmpeg not found, not for directory creation.
+	err = mgr.startFFmpeg(ctx)
+	if err == nil {
+		t.Fatal("expected error from non-existent ffmpeg binary")
+	}
+	if !strings.Contains(err.Error(), "ffmpeg") {
+		t.Errorf("expected ffmpeg error, got: %v", err)
 	}
 }

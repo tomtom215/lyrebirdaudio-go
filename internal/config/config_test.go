@@ -1097,3 +1097,120 @@ devices:
 		}
 	})
 }
+
+// TestStreamConfigValidate tests SegmentFormat validation (GAP-1b / A-2).
+func TestStreamConfigValidate(t *testing.T) {
+	tests := []struct {
+		name        string
+		cfg         StreamConfig
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name: "empty segment format is valid (uses default wav)",
+			cfg:  StreamConfig{SegmentFormat: ""},
+		},
+		{
+			name: "wav is valid",
+			cfg:  StreamConfig{SegmentFormat: "wav"},
+		},
+		{
+			name: "flac is valid",
+			cfg:  StreamConfig{SegmentFormat: "flac"},
+		},
+		{
+			name: "ogg is valid",
+			cfg:  StreamConfig{SegmentFormat: "ogg"},
+		},
+		{
+			name:        "mp3 is invalid",
+			cfg:         StreamConfig{SegmentFormat: "mp3"},
+			wantErr:     true,
+			errContains: "segment_format",
+		},
+		{
+			name:        "xyz is invalid",
+			cfg:         StreamConfig{SegmentFormat: "xyz"},
+			wantErr:     true,
+			errContains: "segment_format",
+		},
+		{
+			name:        "WAV uppercase is invalid (must be lowercase)",
+			cfg:         StreamConfig{SegmentFormat: "WAV"},
+			wantErr:     true,
+			errContains: "segment_format",
+		},
+		{
+			name:        "negative total bytes is invalid",
+			cfg:         StreamConfig{SegmentMaxTotalBytes: -1},
+			wantErr:     true,
+			errContains: "segment_max_total_bytes",
+		},
+		{
+			name: "zero total bytes is valid (disabled)",
+			cfg:  StreamConfig{SegmentMaxTotalBytes: 0},
+		},
+		{
+			name: "positive total bytes is valid",
+			cfg:  StreamConfig{SegmentMaxTotalBytes: 32 * 1024 * 1024 * 1024},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.cfg.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("StreamConfig.Validate() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr && tt.errContains != "" {
+				if !strings.Contains(err.Error(), tt.errContains) {
+					t.Errorf("StreamConfig.Validate() error = %q, want to contain %q", err.Error(), tt.errContains)
+				}
+			}
+		})
+	}
+}
+
+// TestConfigValidateStreamConfig verifies that Config.Validate() calls StreamConfig.Validate().
+func TestConfigValidateStreamConfig(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Stream.SegmentFormat = "mp3" // invalid
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Config.Validate() should fail for invalid SegmentFormat")
+	}
+	if !strings.Contains(err.Error(), "stream config") {
+		t.Errorf("error should mention 'stream config', got: %v", err)
+	}
+}
+
+// TestDefaultConfigSegmentRetentionDefaults verifies default retention settings.
+func TestDefaultConfigSegmentRetentionDefaults(t *testing.T) {
+	cfg := DefaultConfig()
+
+	wantMaxAge := 7 * 24 * time.Hour
+	if cfg.Stream.SegmentMaxAge != wantMaxAge {
+		t.Errorf("SegmentMaxAge = %v, want %v", cfg.Stream.SegmentMaxAge, wantMaxAge)
+	}
+	if cfg.Stream.SegmentMaxTotalBytes != 0 {
+		t.Errorf("SegmentMaxTotalBytes = %d, want 0 (disabled by default)", cfg.Stream.SegmentMaxTotalBytes)
+	}
+}
+
+// TestDefaultConfigHealthAddr verifies the health address default.
+func TestDefaultConfigHealthAddr(t *testing.T) {
+	cfg := DefaultConfig()
+	want := "127.0.0.1:9998"
+	if cfg.Monitor.HealthAddr != want {
+		t.Errorf("Monitor.HealthAddr = %q, want %q", cfg.Monitor.HealthAddr, want)
+	}
+}
+
+// TestDefaultConfigDiskLowThreshold verifies the disk low threshold default.
+func TestDefaultConfigDiskLowThreshold(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.Monitor.DiskLowThresholdMB <= 0 {
+		t.Errorf("Monitor.DiskLowThresholdMB = %d, want positive default", cfg.Monitor.DiskLowThresholdMB)
+	}
+}

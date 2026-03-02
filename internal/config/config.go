@@ -51,6 +51,8 @@ type StreamConfig struct {
 	LocalRecordDir        string        `yaml:"local_record_dir" koanf:"local_record_dir"`               // C-1 fix: local recording directory (empty = disabled)
 	SegmentDuration       int           `yaml:"segment_duration" koanf:"segment_duration"`               // C-1 fix: segment duration in seconds (default: 3600)
 	SegmentFormat         string        `yaml:"segment_format" koanf:"segment_format"`                   // C-1 fix: segment format: wav, flac, ogg (default: wav)
+	SegmentMaxAge         time.Duration `yaml:"segment_max_age" koanf:"segment_max_age"`                 // GAP-1c: max age of recording segments before deletion (0 = no limit)
+	SegmentMaxTotalBytes  int64         `yaml:"segment_max_total_bytes" koanf:"segment_max_total_bytes"` // GAP-1c: max total bytes in LocalRecordDir before oldest deletion (0 = no limit)
 }
 
 // MediaMTXConfig contains MediaMTX server integration settings.
@@ -62,11 +64,13 @@ type MediaMTXConfig struct {
 
 // MonitorConfig contains health monitoring settings.
 type MonitorConfig struct {
-	Enabled            bool          `yaml:"enabled" koanf:"enabled"`                           // Enable health monitoring
-	Interval           time.Duration `yaml:"interval" koanf:"interval"`                         // Health check / recovery interval
-	StallCheckInterval time.Duration `yaml:"stall_check_interval" koanf:"stall_check_interval"` // H-2 fix: separate stall-check interval (default: 60s)
-	MaxStallChecks     int           `yaml:"max_stall_checks" koanf:"max_stall_checks"`         // H-2 fix: consecutive stall checks before restart (default: 3)
-	RestartUnhealthy   bool          `yaml:"restart_unhealthy" koanf:"restart_unhealthy"`       // Auto-restart failed streams
+	Enabled            bool          `yaml:"enabled" koanf:"enabled"`                             // Enable health monitoring
+	Interval           time.Duration `yaml:"interval" koanf:"interval"`                           // Health check / recovery interval
+	StallCheckInterval time.Duration `yaml:"stall_check_interval" koanf:"stall_check_interval"`   // H-2 fix: separate stall-check interval (default: 60s)
+	MaxStallChecks     int           `yaml:"max_stall_checks" koanf:"max_stall_checks"`           // H-2 fix: consecutive stall checks before restart (default: 3)
+	RestartUnhealthy   bool          `yaml:"restart_unhealthy" koanf:"restart_unhealthy"`         // Auto-restart failed streams
+	HealthAddr         string        `yaml:"health_addr" koanf:"health_addr"`                     // GAP-8: health endpoint address (default: "127.0.0.1:9998")
+	DiskLowThresholdMB int64         `yaml:"disk_low_threshold_mb" koanf:"disk_low_threshold_mb"` // GAP-1d: warn when free disk < this value in MB (0 = disabled)
 }
 
 // LoadConfig reads and parses the configuration file.
@@ -256,6 +260,7 @@ func (c *Config) GetDeviceConfig(deviceName string) DeviceConfig {
 //   - channels must be between 1 and 32
 //   - bitrate cannot be empty
 //   - codec must be "opus" or "aac"
+//   - segment_format must be "wav", "flac", or "ogg" (if set)
 func (c *Config) Validate() error {
 	// Validate default config
 	if err := c.Default.Validate(); err != nil {
@@ -269,6 +274,30 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// Validate stream config (GAP-1b)
+	if err := c.Stream.Validate(); err != nil {
+		return fmt.Errorf("stream config: %w", err)
+	}
+
+	return nil
+}
+
+// Validate checks stream configuration for invalid values.
+//
+// GAP-1b: SegmentFormat must be one of "wav", "flac", "ogg" when LocalRecordDir is set.
+// An invalid format causes silent FFmpeg failure on every stream start.
+func (s *StreamConfig) Validate() error {
+	if s.SegmentFormat != "" {
+		switch s.SegmentFormat {
+		case "wav", "flac", "ogg":
+			// valid
+		default:
+			return fmt.Errorf("segment_format must be one of wav, flac, ogg (got %q)", s.SegmentFormat)
+		}
+	}
+	if s.SegmentMaxTotalBytes < 0 {
+		return fmt.Errorf("segment_max_total_bytes must not be negative")
+	}
 	return nil
 }
 
@@ -347,10 +376,15 @@ func DefaultConfig() *Config {
 			MaxRestartDelay:       300 * time.Second,
 			MaxRestartAttempts:    50,
 			USBStabilizationDelay: 5 * time.Second,
-			StopTimeout:           5 * time.Second, // H-1 fix: 5s default (was hardcoded 2s)
-			SegmentDuration:       3600,            // C-1: 1-hour segments by default
-			SegmentFormat:         "wav",           // C-1: lossless WAV by default
+			StopTimeout:           5 * time.Second,    // H-1 fix: 5s default (was hardcoded 2s)
+			SegmentDuration:       3600,               // C-1: 1-hour segments by default
+			SegmentFormat:         "wav",              // C-1: lossless WAV by default
+			SegmentMaxAge:         7 * 24 * time.Hour, // GAP-1c: retain segments for 7 days
+			SegmentMaxTotalBytes:  0,                  // GAP-1c: no total-size limit by default
 			// LocalRecordDir: empty by default (local recording disabled)
+			// IMPORTANT: Set local_record_dir to enable redundant local recording.
+			// Without it, a MediaMTX crash at 3 AM will lose audio with no recovery.
+			// Example: local_record_dir: /var/lib/lyrebird/recordings
 		},
 		MediaMTX: MediaMTXConfig{
 			APIURL:     "http://localhost:9997",
@@ -363,6 +397,8 @@ func DefaultConfig() *Config {
 			StallCheckInterval: 60 * time.Second, // H-2 fix: check for stalls every 60s (was 5 min)
 			MaxStallChecks:     3,                // H-2 fix: 3 consecutive checks = 3 min detection
 			RestartUnhealthy:   true,
+			HealthAddr:         "127.0.0.1:9998", // GAP-8: default health endpoint address
+			DiskLowThresholdMB: 1024,             // GAP-1d: warn when free disk < 1 GB
 		},
 	}
 }
