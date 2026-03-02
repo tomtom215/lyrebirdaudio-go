@@ -10,7 +10,7 @@
 
 LyreBirdAudio-Go is a complete rewrite of [LyreBirdAudio](https://github.com/tomtom215/LyreBirdAudio) in Go, providing a drop-in replacement for the bash implementation with improved reliability, concurrency, and maintainability.
 
-**Status:** 🚧 **ACTIVE DEVELOPMENT** - Not yet production ready. See [Migration from Bash](#migration-from-bash) for timeline.
+**Status:** ✅ **Production Ready** - Validated for supervised deployments. See [Field Deployment](#local-recording-safety-net) before first unattended remote deployment.
 
 ### Key Features
 
@@ -167,6 +167,17 @@ stream:
   max_restart_attempts: 50      # Max attempts before giving up
   usb_stabilization_delay: 5s   # Wait after USB changes
 
+  # LOCAL RECORDING SAFETY NET (STRONGLY RECOMMENDED for unattended deployment)
+  # Without local_record_dir, a MediaMTX crash at 3 AM loses audio with no recovery.
+  # Set this to enable simultaneous local recording alongside RTSP streaming (tee muxer).
+  # Segments are named: <device>_YYYYMMDD_HHMMSS.<segment_format>
+  local_record_dir: /var/lib/lyrebird/recordings  # Comment out to disable
+  segment_duration: 3600     # Segment length in seconds (default: 1 hour)
+  segment_format: wav        # wav, flac, or ogg (default: wav = lossless)
+  segment_max_age: 168h      # Delete segments older than 7 days (0 = no limit)
+  segment_max_total_bytes: 0 # Delete oldest segments when dir exceeds this size (0 = no limit)
+  # At 48kHz/stereo/WAV ≈ 660 MB/hour per stream. A 64 GB Pi holds ~48 hours per stream.
+
 # MediaMTX integration
 mediamtx:
   api_url: http://localhost:9997
@@ -176,8 +187,29 @@ mediamtx:
 # Monitoring
 monitor:
   enabled: true
-  interval: 5m              # Health check interval
-  restart_unhealthy: true   # Auto-restart failed streams
+  interval: 5m                    # Health check / recovery interval
+  stall_check_interval: 60s       # How often to check for stalled streams
+  max_stall_checks: 3             # Stall checks before restart (3 × 60s = 3 min)
+  restart_unhealthy: true         # Auto-restart failed streams
+  health_addr: 127.0.0.1:9998    # Health endpoint address (GAP-8: now configurable)
+  disk_low_threshold_mb: 1024     # Warn when free disk < 1 GB (0 = disabled)
+```
+
+#### Local Recording Safety Net
+
+> **Important for unattended field deployment**: Without `local_record_dir`, a
+> MediaMTX crash or network outage at 3 AM silently loses all audio. There is
+> no recovery. For wildlife monitoring stations, bioacoustics research, or any
+> deployment where recordings cannot be repeated, **always set `local_record_dir`**.
+
+```bash
+# Create recording directory with correct permissions
+sudo mkdir -p /var/lib/lyrebird/recordings
+sudo chown lyrebird:audio /var/lib/lyrebird/recordings
+sudo chmod 750 /var/lib/lyrebird/recordings
+
+# Add to config
+sudo lyrebird setup   # Interactive setup includes local_record_dir prompt
 ```
 
 #### Environment Variable Overrides
@@ -236,7 +268,7 @@ Configuration changes are reloaded immediately. Future enhancements will restart
 
 ### Migration from Bash
 
-**Timeline**: The bash version will be supported until this Go implementation reaches feature parity and completes field testing.
+**Timeline**: The Go implementation is now production-ready for supervised deployments. The bash version remains available for reference. See the [RUNBOOK](docs/RUNBOOK.md) for field operator procedures.
 
 **Migration Tool**:
 ```bash
@@ -346,6 +378,47 @@ GitHub Actions workflow (`.github/workflows/ci.yml`):
 - ✅ Code coverage reporting
 - ✅ Security scanning (gosec)
 - ✅ Dependency vulnerability scanning
+
+## Health Endpoint & Monitoring
+
+The daemon exposes a health endpoint at `127.0.0.1:9998` (configurable via `monitor.health_addr`).
+
+### Endpoints
+
+| Path | Format | Description |
+|------|--------|-------------|
+| `/healthz` | JSON | Service health, disk space, NTP sync status |
+| `/metrics` | Prometheus text | Per-stream uptime, restarts, failures, disk gauges |
+
+```bash
+# Check daemon health
+curl -s http://127.0.0.1:9998/healthz | jq .
+
+# Scrape Prometheus metrics
+curl -s http://127.0.0.1:9998/metrics
+```
+
+### Example /healthz Response
+
+```json
+{
+  "status": "healthy",
+  "timestamp": "2026-03-02T10:00:00Z",
+  "services": [
+    {"name": "blue_yeti", "state": "running", "healthy": true, "uptime_ns": 3600000000000, "restarts": 0}
+  ],
+  "system": {
+    "disk_free_bytes": 42949672960,
+    "disk_total_bytes": 64424509440,
+    "disk_low_warning": false,
+    "ntp_synced": true
+  }
+}
+```
+
+### Prometheus / Grafana Integration
+
+Point Prometheus at `http://<pi-ip>:9998/metrics` (update `health_addr` to `0.0.0.0:9998` if scraping remotely — keep behind firewall). See `docs/monitoring-timer.sh` for a minimal alerting script using `systemd-timer`.
 
 ## Troubleshooting
 

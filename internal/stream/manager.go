@@ -528,6 +528,16 @@ func (m *Manager) releaseLock() {
 //   - nil: if FFmpeg exited cleanly
 //   - error: if FFmpeg failed or context cancelled
 func (m *Manager) startFFmpeg(ctx context.Context) error {
+	// GAP-1a: Auto-create LocalRecordDir before FFmpeg launch.
+	// buildFFmpegCommand passes the path directly to FFmpeg via the segment
+	// pattern; if the directory doesn't exist FFmpeg exits immediately.
+	if m.cfg.LocalRecordDir != "" {
+		// #nosec G301 - recording directory needs group read for monitoring
+		if err := os.MkdirAll(m.cfg.LocalRecordDir, 0750); err != nil {
+			return fmt.Errorf("failed to create recording directory %q: %w", m.cfg.LocalRecordDir, err)
+		}
+	}
+
 	// Build command with context for automatic cancellation
 	cmd := buildFFmpegCommand(ctx, m.cfg)
 

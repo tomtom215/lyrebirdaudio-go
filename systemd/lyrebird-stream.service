@@ -64,8 +64,14 @@ TimeoutStopSec=30
 # Restart policy
 Restart=always
 RestartSec=10
-# WatchdogSec is intentionally absent: the daemon does not call sd_notify(WATCHDOG=1),
-# so enabling watchdog supervision would cause spurious service restarts (M-2).
+
+# GAP-2 / A-5: systemd watchdog integration.
+# The daemon calls sd_notify("WATCHDOG=1") every ~45s via the NOTIFY_SOCKET.
+# If the Go runtime deadlocks (goroutine holding a mutex, channel with no receiver,
+# etc.), the heartbeat stops and systemd restarts the unit after WatchdogSec.
+# NotifyAccess=main is required for Type=simple to receive notifications.
+WatchdogSec=90s
+NotifyAccess=main
 
 # Security hardening
 NoNewPrivileges=true
@@ -89,7 +95,7 @@ DeviceAllow=/dev/snd/* rw
 DevicePolicy=closed
 
 # Allow access to required paths
-ReadWritePaths=/var/run/lyrebird
+ReadWritePaths=/var/run/lyrebird /var/lib/lyrebird
 ReadOnlyPaths=/etc/lyrebird /proc/asound
 
 # Resource limits

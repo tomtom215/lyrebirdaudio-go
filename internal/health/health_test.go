@@ -355,3 +355,234 @@ func TestListenAndServeReadyNilReady(t *testing.T) {
 		t.Fatal("did not return after cancel")
 	}
 }
+
+// --- Tests for SystemInfo / WithSystemInfo (GAP-7, GAP-1d, B-2, B-3) ---
+
+// mockSysInfoProvider implements SystemInfoProvider for testing.
+type mockSysInfoProvider struct {
+	info SystemInfo
+}
+
+func (m *mockSysInfoProvider) SystemInfo() SystemInfo {
+	return m.info
+}
+
+func TestWithSystemInfoHealthy(t *testing.T) {
+	provider := &mockProvider{
+		services: []ServiceInfo{
+			{Name: "blue_yeti", State: "running", Healthy: true},
+		},
+	}
+	sysProvider := &mockSysInfoProvider{
+		info: SystemInfo{
+			DiskFreeBytes:  10 * 1024 * 1024 * 1024,
+			DiskTotalBytes: 64 * 1024 * 1024 * 1024,
+			DiskLowWarning: false,
+			NTPSynced:      true,
+		},
+	}
+
+	h := NewHandler(provider).WithSystemInfo(sysProvider)
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+
+	var resp Response
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Status != "healthy" {
+		t.Errorf("status = %q, want healthy", resp.Status)
+	}
+	if resp.System == nil {
+		t.Fatal("system field should be present when sysProvider is set")
+	}
+	if resp.System.DiskLowWarning {
+		t.Error("DiskLowWarning should be false")
+	}
+	if !resp.System.NTPSynced {
+		t.Error("NTPSynced should be true")
+	}
+}
+
+func TestWithSystemInfoDiskLowWarning(t *testing.T) {
+	provider := &mockProvider{
+		services: []ServiceInfo{
+			{Name: "blue_yeti", State: "running", Healthy: true},
+		},
+	}
+	sysProvider := &mockSysInfoProvider{
+		info: SystemInfo{
+			DiskFreeBytes:  100 * 1024 * 1024, // 100 MB — below threshold
+			DiskTotalBytes: 64 * 1024 * 1024 * 1024,
+			DiskLowWarning: true,
+			NTPSynced:      true,
+		},
+	}
+
+	h := NewHandler(provider).WithSystemInfo(sysProvider)
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503 when disk is low", rec.Code)
+	}
+
+	var resp Response
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Status != "degraded" {
+		t.Errorf("status = %q, want degraded", resp.Status)
+	}
+}
+
+func TestWithSystemInfoNTPDesynced(t *testing.T) {
+	provider := &mockProvider{
+		services: []ServiceInfo{
+			{Name: "blue_yeti", State: "running", Healthy: true},
+		},
+	}
+	sysProvider := &mockSysInfoProvider{
+		info: SystemInfo{
+			DiskFreeBytes:  10 * 1024 * 1024 * 1024,
+			DiskTotalBytes: 64 * 1024 * 1024 * 1024,
+			DiskLowWarning: false,
+			NTPSynced:      false,
+			NTPMessage:     "NTP not synchronized",
+		},
+	}
+
+	h := NewHandler(provider).WithSystemInfo(sysProvider)
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	var resp Response
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	// NTP desync downgrades to degraded
+	if resp.Status != "degraded" {
+		t.Errorf("status = %q, want degraded when NTP not synced", resp.Status)
+	}
+	if resp.System.NTPSynced {
+		t.Error("NTPSynced should be false")
+	}
+}
+
+// --- Tests for Prometheus /metrics endpoint (GAP-6 / C-1) ---
+
+func TestMetricsEndpoint(t *testing.T) {
+	provider := &mockProvider{
+		services: []ServiceInfo{
+			{Name: "blue_yeti", State: "running", Healthy: true, Uptime: 3600 * time.Second, Restarts: 2, Failures: 5},
+			{Name: "usb_mic", State: "failed", Healthy: false, Uptime: 0, Restarts: 10, Failures: 20},
+		},
+	}
+	sysProvider := &mockSysInfoProvider{
+		info: SystemInfo{
+			DiskFreeBytes:  42 * 1024 * 1024 * 1024,
+			DiskTotalBytes: 64 * 1024 * 1024 * 1024,
+			DiskLowWarning: false,
+			NTPSynced:      true,
+		},
+	}
+
+	h := NewHandler(provider).WithSystemInfo(sysProvider)
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("metrics status = %d, want 200", rec.Code)
+	}
+
+	body := rec.Body.String()
+
+	wantContains := []string{
+		"lyrebird_stream_healthy",
+		`lyrebird_stream_healthy{stream="blue_yeti"} 1`,
+		`lyrebird_stream_healthy{stream="usb_mic"} 0`,
+		"lyrebird_stream_uptime_seconds",
+		"lyrebird_stream_restarts_total",
+		`lyrebird_stream_restarts_total{stream="blue_yeti"} 2`,
+		`lyrebird_stream_restarts_total{stream="usb_mic"} 10`,
+		"lyrebird_stream_failures_total",
+		`lyrebird_stream_failures_total{stream="blue_yeti"} 5`,
+		"lyrebird_disk_free_bytes",
+		"lyrebird_disk_total_bytes",
+		"lyrebird_disk_low_warning",
+		"lyrebird_ntp_synced",
+	}
+
+	for _, want := range wantContains {
+		if !containsStr(body, want) {
+			t.Errorf("metrics body missing %q", want)
+		}
+	}
+}
+
+func TestMetricsEndpointNoProvider(t *testing.T) {
+	h := NewHandler(nil)
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+}
+
+func TestMetricsEndpointMethodNotAllowed(t *testing.T) {
+	h := NewHandler(nil)
+	req := httptest.NewRequest(http.MethodPost, "/metrics", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want 405", rec.Code)
+	}
+}
+
+// containsStr is a helper that checks if s contains substr.
+func containsStr(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
+		func() bool {
+			for i := 0; i <= len(s)-len(substr); i++ {
+				if s[i:i+len(substr)] == substr {
+					return true
+				}
+			}
+			return false
+		}())
+}
+
+// TestServiceInfoRestarts verifies Restarts field is included in JSON response.
+func TestServiceInfoRestarts(t *testing.T) {
+	provider := &mockProvider{
+		services: []ServiceInfo{
+			{Name: "blue_yeti", State: "running", Healthy: true, Restarts: 3, Failures: 7},
+		},
+	}
+	h := NewHandler(provider)
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	var resp Response
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(resp.Services) != 1 {
+		t.Fatalf("expected 1 service, got %d", len(resp.Services))
+	}
+	if resp.Services[0].Restarts != 3 {
+		t.Errorf("Restarts = %d, want 3", resp.Services[0].Restarts)
+	}
+}

@@ -3,6 +3,8 @@
 package main
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -1067,8 +1069,14 @@ TimeoutStopSec=30
 # Restart policy
 Restart=always
 RestartSec=10
-# WatchdogSec is intentionally absent: the daemon does not call sd_notify(WATCHDOG=1),
-# so enabling watchdog supervision would cause spurious service restarts (M-2).
+
+# GAP-2 / A-5: systemd watchdog integration.
+# The daemon calls sd_notify("WATCHDOG=1") every ~45s via the NOTIFY_SOCKET.
+# If the Go runtime deadlocks (goroutine holding a mutex, channel with no receiver,
+# etc.), the heartbeat stops and systemd restarts the unit after WatchdogSec.
+# NotifyAccess=main is required for Type=simple to receive notifications.
+WatchdogSec=90s
+NotifyAccess=main
 
 # Security hardening
 NoNewPrivileges=true
@@ -1092,7 +1100,7 @@ DeviceAllow=/dev/snd/* rw
 DevicePolicy=closed
 
 # Allow access to required paths
-ReadWritePaths=/var/run/lyrebird
+ReadWritePaths=/var/run/lyrebird /var/lib/lyrebird
 ReadOnlyPaths=/etc/lyrebird /proc/asound
 
 # Resource limits
@@ -1593,8 +1601,23 @@ func runTest(args []string) error {
 	return nil
 }
 
-// runDiagnose runs system diagnostics (stub for now).
+// runDiagnose runs system diagnostics and optionally creates a support bundle.
 func runDiagnose(args []string) error {
+	// Parse --bundle flag (B-5 / GAP-9)
+	bundlePath := ""
+	remaining := args[:0]
+	for i := 0; i < len(args); i++ {
+		if strings.HasPrefix(args[i], "--bundle=") {
+			bundlePath = strings.TrimPrefix(args[i], "--bundle=")
+		} else if args[i] == "--bundle" && i+1 < len(args) {
+			i++
+			bundlePath = args[i]
+		} else {
+			remaining = append(remaining, args[i])
+		}
+	}
+	_ = remaining
+
 	fmt.Println("LyreBird System Diagnostics")
 	fmt.Println("===========================")
 	fmt.Println()
@@ -1716,10 +1739,136 @@ func runDiagnose(args []string) error {
 	fmt.Println()
 	if issues > 0 {
 		fmt.Printf("Found %d issue(s) that may affect operation.\n", issues)
-		return nil
+	} else {
+		fmt.Println("All checks passed. System is ready for streaming.")
 	}
-	fmt.Println("All checks passed. System is ready for streaming.")
+
+	// B-5 / GAP-9: Create support bundle if --bundle was requested.
+	if bundlePath != "" {
+		return createDiagnosticBundle(bundlePath)
+	}
 	return nil
+}
+
+// createDiagnosticBundle collects diagnostic information into a tar.gz archive
+// suitable for remote support engineers (GAP-9 / B-5).
+func createDiagnosticBundle(outputPath string) error {
+	fmt.Printf("\nCreating diagnostic bundle: %s\n", outputPath)
+
+	// Collect data into a temporary directory.
+	tmpDir, err := os.MkdirTemp("", "lyrebird-bundle-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	writeFile := func(name, content string) {
+		if err := os.WriteFile(filepath.Join(tmpDir, name), []byte(content), 0600); err != nil {
+			fmt.Printf("  warning: failed to write %s: %v\n", name, err)
+		}
+	}
+
+	runCmd := func(name string, cmdArgs ...string) string {
+		// #nosec G204 -- cmdArgs are from hardcoded lists, not user input
+		out, err := exec.Command(cmdArgs[0], cmdArgs[1:]...).CombinedOutput()
+		if err != nil {
+			return fmt.Sprintf("command failed: %v\n%s", err, out)
+		}
+		return string(out)
+	}
+
+	// Collect system info.
+	writeFile("system_info.txt", runCmd("uname", "uname", "-a"))
+	writeFile("os_release.txt", func() string {
+		data, _ := os.ReadFile("/etc/os-release")
+		return string(data)
+	}())
+	writeFile("uptime.txt", runCmd("uptime", "uptime"))
+	writeFile("dmesg.txt", runCmd("dmesg", "dmesg", "--time-format=iso", "-T"))
+
+	// Collect lyrebird diagnostics.
+	writeFile("lyrebird_status.txt", runCmd("lyrebird status", "lyrebird", "status"))
+	writeFile("lyrebird_devices.txt", runCmd("lyrebird devices", "lyrebird", "devices"))
+
+	// Collect service logs (last 500 lines).
+	writeFile("journalctl.txt", runCmd("journalctl", "journalctl", "-u", "lyrebird-stream", "-n", "500", "--no-pager"))
+	writeFile("journalctl_mediamtx.txt", runCmd("journalctl mediamtx", "journalctl", "-u", "mediamtx", "-n", "100", "--no-pager"))
+
+	// Collect config (if exists).
+	if data, err := os.ReadFile(defaultConfigPath); err == nil {
+		writeFile("config.yaml", string(data))
+	}
+
+	// Collect health endpoint response.
+	client := &http.Client{Timeout: 5 * time.Second}
+	if resp, err := client.Get("http://127.0.0.1:9998/healthz"); err == nil { //#nosec G107 -- localhost only
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		writeFile("healthz.json", string(body))
+	}
+	if resp, err := client.Get("http://127.0.0.1:9998/metrics"); err == nil { //#nosec G107 -- localhost only
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		writeFile("metrics.txt", string(body))
+	}
+
+	// Create tar.gz archive.
+	outFile, err := os.Create(outputPath) //#nosec G304 -- outputPath is from CLI argument
+	if err != nil {
+		return fmt.Errorf("failed to create bundle file: %w", err)
+	}
+	defer outFile.Close()
+
+	if err := createTarGz(outFile, tmpDir); err != nil {
+		return fmt.Errorf("failed to create bundle archive: %w", err)
+	}
+
+	fmt.Printf("Bundle created: %s\n", outputPath)
+	fmt.Println("Send this file to support for remote analysis.")
+	return nil
+}
+
+// createTarGz creates a gzip-compressed tar archive of srcDir at outFile.
+func createTarGz(outFile *os.File, srcDir string) error {
+	gzWriter := gzip.NewWriter(outFile)
+	defer gzWriter.Close()
+
+	tarWriter := tar.NewWriter(gzWriter)
+	defer tarWriter.Close()
+
+	return filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+
+		relPath, err := filepath.Rel(srcDir, path)
+		if err != nil {
+			return err
+		}
+
+		hdr := &tar.Header{
+			Name:    relPath,
+			Mode:    0600,
+			Size:    info.Size(),
+			ModTime: info.ModTime(),
+		}
+		if err := tarWriter.WriteHeader(hdr); err != nil {
+			return err
+		}
+
+		// #nosec G304 -- path is from filepath.Walk on our own tmpDir
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+
+		_, err = io.Copy(tarWriter, f)
+		return err
+	})
 }
 
 // runCheckSystem checks system compatibility.
