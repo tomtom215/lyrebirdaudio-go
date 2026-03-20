@@ -342,6 +342,7 @@ func createDiagnosticBundle(outputPath string) error {
 	defer os.RemoveAll(tmpDir)
 
 	writeFile := func(name, content string) {
+		// #nosec G703 -- name is always a hardcoded filename literal; tmpDir is from os.MkdirTemp
 		if err := os.WriteFile(filepath.Join(tmpDir, filepath.Clean(name)), []byte(content), 0600); err != nil {
 			fmt.Printf("  warning: failed to write %s: %v\n", name, err)
 		}
