@@ -330,6 +330,8 @@ func runDiagnose(args []string) error {
 // createDiagnosticBundle collects diagnostic information into a tar.gz archive
 // suitable for remote support engineers (GAP-9 / B-5).
 func createDiagnosticBundle(outputPath string) error {
+	// Sanitize output path to prevent path traversal.
+	outputPath = filepath.Clean(outputPath)
 	fmt.Printf("\nCreating diagnostic bundle: %s\n", outputPath)
 
 	// Collect data into a temporary directory.
@@ -340,7 +342,7 @@ func createDiagnosticBundle(outputPath string) error {
 	defer os.RemoveAll(tmpDir)
 
 	writeFile := func(name, content string) {
-		if err := os.WriteFile(filepath.Join(tmpDir, name), []byte(content), 0600); err != nil {
+		if err := os.WriteFile(filepath.Join(tmpDir, filepath.Clean(name)), []byte(content), 0600); err != nil {
 			fmt.Printf("  warning: failed to write %s: %v\n", name, err)
 		}
 	}
@@ -436,7 +438,7 @@ func createTarGz(outFile *os.File, srcDir string) error {
 			return err
 		}
 
-		// #nosec G304 -- path is from filepath.Walk on our own tmpDir
+		// #nosec G304,G122 -- path is from filepath.Walk on our own tmpDir
 		f, err := os.Open(path)
 		if err != nil {
 			return err

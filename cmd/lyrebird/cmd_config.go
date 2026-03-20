@@ -59,6 +59,9 @@ func runMigrate(args []string) error {
 		return fmt.Errorf("migrated config is invalid: %w", err)
 	}
 
+	// Sanitize path to prevent path traversal.
+	toPath = filepath.Clean(toPath)
+
 	// Create directory if needed
 	if err := os.MkdirAll(filepath.Dir(toPath), 0750); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)

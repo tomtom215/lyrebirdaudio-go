@@ -56,6 +56,10 @@ type BackupInfo struct {
 //
 // Reference: lyrebird-mic-check.sh backup_config() lines 1050-1100
 func BackupConfig(configPath, backupDir string) (string, error) {
+	// Sanitize paths to prevent path traversal.
+	configPath = filepath.Clean(configPath)
+	backupDir = filepath.Clean(backupDir)
+
 	// Verify source exists
 	info, err := os.Stat(configPath)
 	if err != nil {
@@ -186,6 +190,11 @@ func ListBackups(backupDir, configName string) ([]BackupInfo, error) {
 //   - string: Path to backup of previous config (empty if none existed)
 //   - error: if restore fails
 func RestoreBackup(backupPath, configPath, backupDir string) (string, error) {
+	// Sanitize paths to prevent path traversal.
+	backupPath = filepath.Clean(backupPath)
+	configPath = filepath.Clean(configPath)
+	backupDir = filepath.Clean(backupDir)
+
 	// Verify backup exists
 	if _, err := os.Stat(backupPath); err != nil {
 		return "", fmt.Errorf("backup file not found: %w", err)
