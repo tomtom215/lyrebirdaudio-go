@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -240,24 +239,7 @@ func (r *Runner) checkNetworkPorts(ctx context.Context) CheckResult {
 	rtspOpen := isPortOpen(rtspAddr)
 	apiOpen := isPortOpen(apiAddr)
 
-	if rtspOpen && apiOpen {
-		result.Status = StatusOK
-		result.Message = fmt.Sprintf("RTSP (%d) and API (%d) ports accessible", DefaultRTSPPort, DefaultAPIPort)
-	} else if !rtspOpen && !apiOpen {
-		result.Status = StatusWarning
-		result.Message = "RTSP and API ports not accessible"
-		result.Suggestions = append(result.Suggestions, "Start MediaMTX service")
-	} else {
-		result.Status = StatusWarning
-		var ports []string
-		if !rtspOpen {
-			ports = append(ports, fmt.Sprintf("RTSP (%d)", DefaultRTSPPort))
-		}
-		if !apiOpen {
-			ports = append(ports, fmt.Sprintf("API (%d)", DefaultAPIPort))
-		}
-		result.Message = "Some ports not accessible: " + strings.Join(ports, ", ")
-	}
+	result.Status, result.Message, result.Suggestions = evaluateNetworkPorts(rtspOpen, apiOpen)
 
 	result.Duration = time.Since(start)
 	return result
@@ -284,17 +266,7 @@ func (r *Runner) checkDiskSpace(ctx context.Context) CheckResult {
 	total := stat.Blocks * uint64(stat.Bsize)
 	usedPercent := 100.0 - (float64(available)/float64(total))*100.0
 
-	if usedPercent > DiskUsageCriticalPercent {
-		result.Status = StatusCritical
-		result.Message = fmt.Sprintf("Disk usage critical: %.1f%%", usedPercent)
-		result.Suggestions = append(result.Suggestions, "Free up disk space")
-	} else if usedPercent > DiskUsageWarningPercent {
-		result.Status = StatusWarning
-		result.Message = fmt.Sprintf("Disk usage high: %.1f%%", usedPercent)
-	} else {
-		result.Status = StatusOK
-		result.Message = fmt.Sprintf("Disk usage: %.1f%% (%.1f GB available)", usedPercent, float64(available)/(1024*1024*1024))
-	}
+	result.Status, result.Message, result.Suggestions = evaluateDiskUsage(usedPercent, available)
 
 	result.Duration = time.Since(start)
 	return result
@@ -315,28 +287,7 @@ func (r *Runner) checkFileDescriptors(ctx context.Context) CheckResult {
 		return result
 	}
 
-	fields := strings.Fields(string(data))
-	if len(fields) < 3 {
-		result.Status = StatusError
-		result.Message = "Invalid file-nr format"
-		result.Duration = time.Since(start)
-		return result
-	}
-
-	used, _ := strconv.ParseInt(fields[0], 10, 64)
-	max, _ := strconv.ParseInt(fields[2], 10, 64)
-	usedPercent := float64(used) / float64(max) * 100
-
-	if usedPercent > FDUsageCriticalPercent {
-		result.Status = StatusCritical
-		result.Message = fmt.Sprintf("FD usage critical: %.1f%% (%d/%d)", usedPercent, used, max)
-	} else if usedPercent > FDUsageWarningPercent {
-		result.Status = StatusWarning
-		result.Message = fmt.Sprintf("FD usage elevated: %.1f%% (%d/%d)", usedPercent, used, max)
-	} else {
-		result.Status = StatusOK
-		result.Message = fmt.Sprintf("FD usage normal: %.1f%% (%d/%d)", usedPercent, used, max)
-	}
+	result.Status, result.Message = evaluateFDUsage(string(data))
 
 	result.Duration = time.Since(start)
 	return result
@@ -357,35 +308,7 @@ func (r *Runner) checkMemory(ctx context.Context) CheckResult {
 		return result
 	}
 
-	var total, available int64
-	for _, line := range strings.Split(string(data), "\n") {
-		if strings.HasPrefix(line, "MemTotal:") {
-			fields := strings.Fields(line)
-			if len(fields) >= 2 {
-				total, _ = strconv.ParseInt(fields[1], 10, 64)
-				total *= 1024
-			}
-		} else if strings.HasPrefix(line, "MemAvailable:") {
-			fields := strings.Fields(line)
-			if len(fields) >= 2 {
-				available, _ = strconv.ParseInt(fields[1], 10, 64)
-				available *= 1024
-			}
-		}
-	}
-
-	usedPercent := 100.0 - (float64(available)/float64(total))*100.0
-
-	if usedPercent > MemoryUsageCriticalPercent {
-		result.Status = StatusCritical
-		result.Message = fmt.Sprintf("Memory usage critical: %.1f%%", usedPercent)
-	} else if usedPercent > MemoryUsageWarningPercent {
-		result.Status = StatusWarning
-		result.Message = fmt.Sprintf("Memory usage elevated: %.1f%%", usedPercent)
-	} else {
-		result.Status = StatusOK
-		result.Message = fmt.Sprintf("Memory usage: %.1f%% (%s available)", usedPercent, formatBytes(available))
-	}
+	result.Status, result.Message = evaluateMemoryUsage(string(data))
 
 	result.Duration = time.Since(start)
 	return result
@@ -407,18 +330,7 @@ func (r *Runner) checkTCPResources(ctx context.Context) CheckResult {
 		return result
 	}
 
-	timeWaitCount := strings.Count(string(out), "\n") - 1
-	if timeWaitCount < 0 {
-		timeWaitCount = 0
-	}
-
-	if timeWaitCount > TimeWaitWarningThreshold {
-		result.Status = StatusWarning
-		result.Message = fmt.Sprintf("High TIME_WAIT connections: %d", timeWaitCount)
-	} else {
-		result.Status = StatusOK
-		result.Message = fmt.Sprintf("TIME_WAIT connections: %d", timeWaitCount)
-	}
+	result.Status, result.Message = evaluateTCPResources(string(out))
 
 	result.Duration = time.Since(start)
 	return result
