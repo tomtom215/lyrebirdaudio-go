@@ -1,0 +1,243 @@
+// SPDX-License-Identifier: MIT
+
+package stream
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+)
+
+// startFFmpeg starts the FFmpeg process and blocks until it exits.
+func (m *Manager) startFFmpeg(ctx context.Context) error {
+	if m.cfg.LocalRecordDir != "" {
+		if err := os.MkdirAll(m.cfg.LocalRecordDir, 0750); err != nil {
+			return fmt.Errorf("failed to create recording directory %q: %w", m.cfg.LocalRecordDir, err)
+		}
+	}
+
+	cmd := buildFFmpegCommand(ctx, m.cfg)
+
+	m.mu.Lock()
+	if m.logWriter != nil {
+		cmd.Stderr = m.logWriter
+	}
+	m.startTime = time.Now()
+	m.mu.Unlock()
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start ffmpeg: %w", err)
+	}
+
+	m.mu.Lock()
+	m.cmd = cmd
+	m.mu.Unlock()
+
+	m.setState(StateRunning)
+
+	if m.resourceMonitor != nil && cmd.Process != nil && m.cfg.MonitorInterval > 0 {
+		monitorCtx, cancel := context.WithCancel(ctx)
+		m.mu.Lock()
+		m.monitorCancel = cancel
+		m.mu.Unlock()
+
+		go m.resourceMonitor.MonitorProcess(
+			monitorCtx,
+			cmd.Process.Pid,
+			m.cfg.MonitorInterval,
+			m.cfg.AlertCallback,
+		)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+
+	select {
+	case <-ctx.Done():
+		m.stopMonitoring()
+		m.stop()
+		<-done
+		return context.Canceled
+
+	case err := <-done:
+		m.stopMonitoring()
+		m.mu.Lock()
+		m.cmd = nil
+		m.mu.Unlock()
+
+		if err != nil {
+			return fmt.Errorf("ffmpeg exited with error: %w", err)
+		}
+		return nil
+	}
+}
+
+// stop stops the FFmpeg process gracefully.
+func (m *Manager) stop() {
+	m.setState(StateStopping)
+
+	m.mu.Lock()
+	cmd := m.cmd
+	m.mu.Unlock()
+
+	if cmd != nil && cmd.Process != nil {
+		proc := cmd.Process
+		_ = proc.Signal(os.Interrupt)
+
+		stopTimeout := m.cfg.StopTimeout
+		if stopTimeout <= 0 {
+			stopTimeout = 5 * time.Second
+		}
+
+		killCtx, killCancel := context.WithTimeout(context.Background(), stopTimeout)
+		go func() {
+			defer killCancel()
+			<-killCtx.Done()
+			if killCtx.Err() == context.DeadlineExceeded {
+				_ = proc.Kill()
+			}
+		}()
+	}
+}
+
+// stopMonitoring stops the resource monitor goroutine.
+func (m *Manager) stopMonitoring() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.monitorCancel != nil {
+		m.monitorCancel()
+		m.monitorCancel = nil
+	}
+}
+
+// forceStop immediately kills the FFmpeg process (for testing).
+func (m *Manager) forceStop() error {
+	m.mu.Lock()
+	cmd := m.cmd
+	m.mu.Unlock()
+
+	if cmd != nil && cmd.Process != nil {
+		return cmd.Process.Kill()
+	}
+	return fmt.Errorf("no process to kill")
+}
+
+// buildFFmpegCommand constructs the FFmpeg command line.
+func buildFFmpegCommand(ctx context.Context, cfg *ManagerConfig) *exec.Cmd {
+	inputFormat := cfg.InputFormat
+	if inputFormat == "" {
+		inputFormat = "alsa"
+	}
+
+	args := []string{
+		"-f", inputFormat,
+		"-i", cfg.ALSADevice,
+		"-ar", fmt.Sprintf("%d", cfg.SampleRate),
+		"-ac", fmt.Sprintf("%d", cfg.Channels),
+	}
+
+	if cfg.ThreadQueue > 0 {
+		args = append(args, "-thread_queue_size", fmt.Sprintf("%d", cfg.ThreadQueue))
+	}
+
+	switch cfg.Codec {
+	case "opus":
+		args = append(args, "-c:a", "libopus")
+	case "aac":
+		args = append(args, "-c:a", "aac")
+	}
+
+	args = append(args, "-b:a", cfg.Bitrate)
+
+	outputFormat := cfg.OutputFormat
+	if outputFormat == "" {
+		if strings.HasPrefix(cfg.RTSPURL, "rtsp://") {
+			outputFormat = "rtsp"
+		} else if cfg.RTSPURL == "-" || cfg.RTSPURL == "/dev/null" || strings.HasPrefix(cfg.RTSPURL, "pipe:") {
+			outputFormat = "null"
+		} else if strings.Contains(cfg.RTSPURL, "/") {
+			outputFormat = ""
+		} else {
+			outputFormat = "rtsp"
+		}
+	}
+
+	if cfg.LocalRecordDir != "" && outputFormat == "rtsp" {
+		segDuration := cfg.SegmentDuration
+		if segDuration <= 0 {
+			segDuration = 3600
+		}
+		segFormat := cfg.SegmentFormat
+		if segFormat == "" {
+			segFormat = "wav"
+		}
+		segPattern := filepath.Join(cfg.LocalRecordDir, cfg.StreamName+"_%Y%m%d_%H%M%S."+segFormat)
+
+		teeOutput := fmt.Sprintf(
+			"[f=rtsp:reconnect=1:reconnect_streamed=1:reconnect_delay_max=30]%s|[f=segment:segment_time=%d:strftime=1]%s",
+			cfg.RTSPURL, segDuration, segPattern,
+		)
+		args = append(args, "-f", "tee", teeOutput)
+	} else if outputFormat == "rtsp" {
+		args = append(args,
+			"-reconnect", "1",
+			"-reconnect_streamed", "1",
+			"-reconnect_delay_max", "30",
+			"-f", outputFormat, cfg.RTSPURL,
+		)
+	} else if outputFormat != "" {
+		args = append(args, "-f", outputFormat, cfg.RTSPURL)
+	} else {
+		args = append(args, cfg.RTSPURL)
+	}
+
+	// #nosec G204 - FFmpegPath is from validated configuration, not user input
+	cmd := exec.CommandContext(ctx, cfg.FFmpegPath, args...)
+
+	return cmd
+}
+
+// validateConfig validates manager configuration.
+func validateConfig(cfg *ManagerConfig) error {
+	if cfg.DeviceName == "" {
+		return fmt.Errorf("device name cannot be empty")
+	}
+	if cfg.ALSADevice == "" {
+		return fmt.Errorf("ALSA device cannot be empty")
+	}
+	if cfg.StreamName == "" {
+		return fmt.Errorf("stream name cannot be empty")
+	}
+	if cfg.SampleRate <= 0 {
+		return fmt.Errorf("sample rate must be positive")
+	}
+	if cfg.Channels <= 0 || cfg.Channels > 32 {
+		return fmt.Errorf("channels must be between 1 and 32")
+	}
+	if cfg.Bitrate == "" {
+		return fmt.Errorf("bitrate cannot be empty")
+	}
+	if cfg.Codec != "opus" && cfg.Codec != "aac" {
+		return fmt.Errorf("codec must be opus or aac")
+	}
+	if cfg.RTSPURL == "" {
+		return fmt.Errorf("RTSP URL cannot be empty")
+	}
+	if cfg.LockDir == "" {
+		return fmt.Errorf("lock directory cannot be empty")
+	}
+	if cfg.FFmpegPath == "" {
+		return fmt.Errorf("FFmpeg path cannot be empty")
+	}
+	if cfg.Backoff == nil {
+		return fmt.Errorf("backoff policy cannot be nil")
+	}
+	return nil
+}
