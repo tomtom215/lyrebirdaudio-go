@@ -4,3 +4,4 @@ coverage-*.txt
 /lyrebird
 /lyrebird-stream
 /bin/
+.claude/
