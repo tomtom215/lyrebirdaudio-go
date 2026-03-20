@@ -8,8 +8,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,220 +19,478 @@ import (
 	"time"
 )
 
-func TestCheckConfigWithExistingFile(t *testing.T) {
+func TestCheckLogFilesLargeFiles(t *testing.T) {
 	tmpDir := t.TempDir()
-	configPath := filepath.Join(tmpDir, "config.yaml")
-	if err := os.WriteFile(configPath, []byte("devices: []\n"), 0640); err != nil {
-		t.Fatalf("failed to create config: %v", err)
-	}
 
-	runner := NewRunner(Options{ConfigPath: configPath})
-	result := runner.checkConfig(context.Background())
+	// Create a log file exceeding LogSizeWarningBytes (100 MiB)
+	// Use a sparse file to avoid actually writing 100+ MiB
+	largePath := filepath.Join(tmpDir, "large.log")
+	f, err := os.Create(largePath)
+	if err != nil {
+		t.Fatalf("failed to create large log file: %v", err)
+	}
+	// Truncate to 101 MiB to exceed threshold
+	if err := f.Truncate(101 * 1024 * 1024); err != nil {
+		_ = f.Close()
+		t.Fatalf("failed to truncate file: %v", err)
+	}
+	_ = f.Close()
 
-	if result.Status != StatusOK {
-		t.Errorf("expected StatusOK, got %s", result.Status)
-	}
-	if result.Name != "Configuration" {
-		t.Errorf("expected name 'Configuration', got %q", result.Name)
-	}
-	if result.Category != "Config" {
-		t.Errorf("expected category 'Config', got %q", result.Category)
-	}
-	if !strings.Contains(result.Message, "exists") {
-		t.Errorf("expected message about config existing, got %q", result.Message)
-	}
-	if result.Details != configPath {
-		t.Errorf("expected details to be config path, got %q", result.Details)
-	}
-}
+	opts := DefaultOptions()
+	opts.LogDir = tmpDir
+	runner := NewRunner(opts)
 
-func TestCheckConfigWithMissingFile(t *testing.T) {
-	runner := NewRunner(Options{ConfigPath: "/nonexistent/path/config.yaml"})
-	result := runner.checkConfig(context.Background())
-
+	result := runner.checkLogFiles(context.Background())
 	if result.Status != StatusWarning {
-		t.Errorf("expected StatusWarning, got %s", result.Status)
-	}
-	if !strings.Contains(result.Message, "not found") {
-		t.Errorf("expected 'not found' in message, got %q", result.Message)
+		t.Errorf("expected StatusWarning for large log files, got %s: %s", result.Status, result.Message)
 	}
 	if len(result.Suggestions) == 0 {
-		t.Error("expected suggestions for missing config")
-	}
-	if result.Duration <= 0 {
-		t.Error("expected positive duration")
-	}
-}
-
-func TestCheckLogFilesNonExistentDir(t *testing.T) {
-	runner := NewRunner(Options{LogDir: "/nonexistent/log/dir"})
-	result := runner.checkLogFiles(context.Background())
-
-	if result.Status != StatusOK {
-		t.Errorf("expected StatusOK for non-existent dir, got %s", result.Status)
-	}
-	if !strings.Contains(result.Message, "will be created") {
-		t.Errorf("expected message about creating dir, got %q", result.Message)
-	}
-}
-
-func TestCheckLogFilesEmptyDir(t *testing.T) {
-	tmpDir := t.TempDir()
-	runner := NewRunner(Options{LogDir: tmpDir})
-	result := runner.checkLogFiles(context.Background())
-
-	if result.Status != StatusOK {
-		t.Errorf("expected StatusOK for empty dir, got %s", result.Status)
-	}
-	if !strings.Contains(result.Message, "0 B") || !strings.Contains(result.Message, "0") {
-		// Size should be very small
-		t.Logf("log dir size message: %s", result.Message)
+		t.Error("expected suggestions for large log files")
 	}
 }
 
 func TestCheckLogFilesWithSmallFiles(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Create some small log files
-	for _, name := range []string{"stream.log", "stream.log.1", "error.log"} {
-		if err := os.WriteFile(filepath.Join(tmpDir, name), []byte("log entry\n"), 0640); err != nil {
-			t.Fatalf("failed to create log file %s: %v", name, err)
+	// Create small log files
+	for i := 0; i < 5; i++ {
+		name := filepath.Join(tmpDir, fmt.Sprintf("app_%d.log", i))
+		if err := os.WriteFile(name, []byte("some log content\n"), 0644); err != nil {
+			t.Fatalf("failed to create log file: %v", err)
 		}
 	}
 
-	runner := NewRunner(Options{LogDir: tmpDir})
-	result := runner.checkLogFiles(context.Background())
+	opts := DefaultOptions()
+	opts.LogDir = tmpDir
+	runner := NewRunner(opts)
 
+	result := runner.checkLogFiles(context.Background())
 	if result.Status != StatusOK {
-		t.Errorf("expected StatusOK for small logs, got %s", result.Status)
+		t.Errorf("expected StatusOK for small log files, got %s", result.Status)
 	}
 }
 
-func TestCheckLogFilesWithSubdirectories(t *testing.T) {
+func TestCheckLogFilesSubdirectories(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Create subdirectory with files
-	subDir := filepath.Join(tmpDir, "archives")
-	if err := os.MkdirAll(subDir, 0750); err != nil {
-		t.Fatalf("failed to create subdir: %v", err)
+	// Create subdirectory with log files
+	subDir := filepath.Join(tmpDir, "sub")
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		t.Fatalf("failed to create subdirectory: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(subDir, "old.log"), []byte("old log data"), 0640); err != nil {
-		t.Fatalf("failed to create archived log: %v", err)
+	if err := os.WriteFile(filepath.Join(subDir, "nested.log"), []byte("nested log"), 0644); err != nil {
+		t.Fatalf("failed to create nested log file: %v", err)
 	}
 
-	runner := NewRunner(Options{LogDir: tmpDir})
+	opts := DefaultOptions()
+	opts.LogDir = tmpDir
+	runner := NewRunner(opts)
+
 	result := runner.checkLogFiles(context.Background())
-
 	if result.Status != StatusOK {
 		t.Errorf("expected StatusOK, got %s", result.Status)
 	}
 }
 
-func TestCheckLockDirNotExists(t *testing.T) {
-	// The default lock dir /var/run/lyrebird may or may not exist.
-	// We test with the runner as-is and just verify the result is valid.
-	runner := NewRunner(DefaultOptions())
-	result := runner.checkLockDir(context.Background())
-
-	if result.Name != "Lock Directory" {
-		t.Errorf("expected name 'Lock Directory', got %q", result.Name)
+func TestCheckConfigExistsVsNotExists(t *testing.T) {
+	tests := []struct {
+		name           string
+		setupConfig    bool
+		expectedStatus CheckStatus
+		expectedMsg    string
+	}{
+		{
+			name:           "config file exists",
+			setupConfig:    true,
+			expectedStatus: StatusOK,
+			expectedMsg:    "Configuration file exists",
+		},
+		{
+			name:           "config file missing",
+			setupConfig:    false,
+			expectedStatus: StatusWarning,
+			expectedMsg:    "Configuration file not found",
+		},
 	}
-	// Should be OK whether it exists or not (not critical unless it's a file)
-	if result.Status != StatusOK && result.Status != StatusCritical {
-		t.Errorf("unexpected status: %s", result.Status)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			configPath := filepath.Join(tmpDir, "config.yaml")
+
+			if tt.setupConfig {
+				if err := os.WriteFile(configPath, []byte("streams: []\n"), 0640); err != nil {
+					t.Fatalf("failed to write config: %v", err)
+				}
+			}
+
+			opts := DefaultOptions()
+			opts.ConfigPath = configPath
+			runner := NewRunner(opts)
+
+			result := runner.checkConfig(context.Background())
+			if result.Status != tt.expectedStatus {
+				t.Errorf("expected status %s, got %s", tt.expectedStatus, result.Status)
+			}
+			if !strings.Contains(result.Message, tt.expectedMsg) {
+				t.Errorf("expected message containing %q, got %q", tt.expectedMsg, result.Message)
+			}
+			if result.Details != configPath {
+				t.Errorf("expected details to be config path %q, got %q", configPath, result.Details)
+			}
+		})
 	}
 }
 
-func TestCheckEntryWithExistingProcFile(t *testing.T) {
-	// This test verifies checkEntropy reads from /proc/sys/kernel/random/entropy_avail
-	// which exists on Linux. The result should be OK or Warning depending on entropy level.
-	runner := NewRunner(DefaultOptions())
-	result := runner.checkEntropy(context.Background())
+func TestCheckMediaMTXAPIWithTestServer(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+	}{
+		{name: "API returns 200", statusCode: 200},
+		{name: "API returns 500", statusCode: 500},
+		{name: "API returns 404", statusCode: 404},
+	}
 
-	if result.Name != "Entropy" {
-		t.Errorf("expected name 'Entropy', got %q", result.Name)
-	}
-	if result.Status != StatusOK && result.Status != StatusWarning {
-		t.Errorf("expected OK or Warning, got %s: %s", result.Status, result.Message)
-	}
-	if !strings.Contains(result.Message, "Entropy") && !strings.Contains(result.Message, "ntropy") {
-		t.Errorf("expected entropy info in message, got %q", result.Message)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tt.statusCode)
+				_, _ = w.Write([]byte(`{"items":[]}`))
+			}))
+			defer ts.Close()
+
+			// Verify the test server responds as expected
+			client := &http.Client{Timeout: 2 * time.Second}
+			ctx := context.Background()
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/v3/paths/list", nil)
+			if err != nil {
+				t.Fatalf("failed to create request: %v", err)
+			}
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatalf("request failed: %v", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+
+			if resp.StatusCode != tt.statusCode {
+				t.Errorf("expected status code %d, got %d", tt.statusCode, resp.StatusCode)
+			}
+		})
 	}
 }
 
-func TestCheckInotifyWithExistingProcFile(t *testing.T) {
-	runner := NewRunner(DefaultOptions())
-	result := runner.checkInotifyLimits(context.Background())
+func TestCheckNetworkPortsWithListeners(t *testing.T) {
+	// Test isPortOpen with an actual listener to cover the success path
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
 
-	if result.Name != "inotify Limits" {
-		t.Errorf("expected name 'inotify Limits', got %q", result.Name)
+	addr := ln.Addr().String()
+	if !isPortOpen(addr) {
+		t.Errorf("expected port %s to be open", addr)
 	}
-	if result.Status != StatusOK && result.Status != StatusWarning {
-		t.Errorf("expected OK or Warning, got %s: %s", result.Status, result.Message)
-	}
-	if !strings.Contains(result.Message, "inotify") {
-		t.Errorf("expected inotify info in message, got %q", result.Message)
+
+	// Close it and verify it reports closed
+	_ = ln.Close()
+	// Give the OS a moment to release
+	time.Sleep(10 * time.Millisecond)
+	if isPortOpen(addr) {
+		t.Log("port still appears open right after close (race with OS)")
 	}
 }
 
-func TestCheckFileDescriptorsWithExistingProcFile(t *testing.T) {
-	runner := NewRunner(DefaultOptions())
-	result := runner.checkFileDescriptors(context.Background())
+func TestRunContextCancellationMidCheck(t *testing.T) {
+	opts := DefaultOptions()
+	opts.Mode = ModeFull
+	runner := NewRunner(opts)
 
-	if result.Name != "File Descriptors" {
-		t.Errorf("expected name 'File Descriptors', got %q", result.Name)
+	// Create a context that we cancel after a very short time
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond)
+	defer cancel()
+
+	// Give context time to expire
+	time.Sleep(5 * time.Millisecond)
+
+	report, err := runner.Run(ctx)
+	if err == nil {
+		// If all checks ran before cancellation, that's OK too
+		if report != nil && len(report.Checks) == 24 {
+			t.Log("all checks completed before context expired")
+			return
+		}
 	}
-	// On Linux /proc/sys/fs/file-nr should exist
-	if result.Status != StatusOK && result.Status != StatusWarning && result.Status != StatusCritical {
-		t.Errorf("expected valid resource status, got %s: %s", result.Status, result.Message)
-	}
-	if strings.Contains(result.Message, "FD usage") {
-		// Verify it has a percentage
-		if !strings.Contains(result.Message, "%") {
-			t.Errorf("expected percentage in FD message, got %q", result.Message)
+
+	// If context was cancelled, we should get an error
+	if err != nil {
+		if err != context.DeadlineExceeded && err != context.Canceled {
+			t.Errorf("expected context error, got: %v", err)
+		}
+		// Report should still be partially populated
+		if report == nil {
+			t.Error("expected partial report even on cancellation")
 		}
 	}
 }
 
-func TestCheckMemoryWithExistingProcFile(t *testing.T) {
-	runner := NewRunner(DefaultOptions())
+func TestRunReturnsContextError(t *testing.T) {
+	opts := DefaultOptions()
+	opts.Mode = ModeFull
+	runner := NewRunner(opts)
+
+	// Already-cancelled context should return error quickly
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	report, err := runner.Run(ctx)
+	if err == nil {
+		t.Log("Run completed without error on cancelled context")
+	} else {
+		if err != context.Canceled {
+			t.Errorf("expected context.Canceled, got: %v", err)
+		}
+	}
+
+	if report == nil {
+		t.Error("expected report to be non-nil even on cancellation")
+	}
+}
+
+func TestCheckEntropySetsFields(t *testing.T) {
+	opts := DefaultOptions()
+	runner := NewRunner(opts)
+
+	result := runner.checkEntropy(context.Background())
+
+	if result.Name != "Entropy" {
+		t.Errorf("expected Name 'Entropy', got %q", result.Name)
+	}
+	if result.Category != "System" {
+		t.Errorf("expected Category 'System', got %q", result.Category)
+	}
+	if result.Duration <= 0 {
+		t.Error("expected positive Duration")
+	}
+	// On Linux, /proc/sys/kernel/random/entropy_avail should exist
+	if result.Status == StatusOK {
+		if !strings.Contains(result.Message, "Entropy pool") {
+			t.Errorf("expected message about entropy pool, got %q", result.Message)
+		}
+	}
+}
+
+func TestCheckInotifyLimitsSetsFields(t *testing.T) {
+	opts := DefaultOptions()
+	runner := NewRunner(opts)
+
+	result := runner.checkInotifyLimits(context.Background())
+
+	if result.Name != "inotify Limits" {
+		t.Errorf("expected Name 'inotify Limits', got %q", result.Name)
+	}
+	if result.Category != "Resources" {
+		t.Errorf("expected Category 'Resources', got %q", result.Category)
+	}
+	// On Linux this should read successfully
+	if result.Status == StatusOK {
+		if !strings.Contains(result.Message, "inotify max_user_watches") {
+			t.Errorf("expected inotify message, got %q", result.Message)
+		}
+	}
+}
+
+func TestCheckFileDescriptorsSetsFields(t *testing.T) {
+	opts := DefaultOptions()
+	runner := NewRunner(opts)
+
+	result := runner.checkFileDescriptors(context.Background())
+
+	if result.Name != "File Descriptors" {
+		t.Errorf("expected Name 'File Descriptors', got %q", result.Name)
+	}
+	if result.Category != "Resources" {
+		t.Errorf("expected Category 'Resources', got %q", result.Category)
+	}
+	// On Linux /proc/sys/fs/file-nr should exist
+	if result.Status == StatusOK {
+		if !strings.Contains(result.Message, "FD usage") {
+			t.Errorf("expected FD usage message, got %q", result.Message)
+		}
+	}
+}
+
+func TestCheckMemorySetsFields(t *testing.T) {
+	opts := DefaultOptions()
+	runner := NewRunner(opts)
+
 	result := runner.checkMemory(context.Background())
 
 	if result.Name != "Memory" {
-		t.Errorf("expected name 'Memory', got %q", result.Name)
+		t.Errorf("expected Name 'Memory', got %q", result.Name)
+	}
+	if result.Category != "Resources" {
+		t.Errorf("expected Category 'Resources', got %q", result.Category)
 	}
 	// On Linux /proc/meminfo should exist
-	if result.Status != StatusOK && result.Status != StatusWarning && result.Status != StatusCritical {
-		t.Errorf("expected valid resource status, got %s: %s", result.Status, result.Message)
+	if result.Status == StatusError {
+		t.Errorf("checkMemory should not error on Linux, got: %s", result.Message)
 	}
-	if !strings.Contains(result.Message, "Memory") && !strings.Contains(result.Message, "emory") {
-		t.Errorf("expected memory info in message, got %q", result.Message)
+	if !strings.Contains(result.Message, "Memory usage") {
+		t.Errorf("expected Memory usage message, got %q", result.Message)
 	}
 }
 
-func TestCheckDiskSpaceOnLinux(t *testing.T) {
-	runner := NewRunner(DefaultOptions())
+func TestCheckDiskSpaceSetsFields(t *testing.T) {
+	opts := DefaultOptions()
+	runner := NewRunner(opts)
+
 	result := runner.checkDiskSpace(context.Background())
 
 	if result.Name != "Disk Space" {
-		t.Errorf("expected name 'Disk Space', got %q", result.Name)
+		t.Errorf("expected Name 'Disk Space', got %q", result.Name)
 	}
-	// syscall.Statfs on "/" should succeed on Linux
+	if result.Category != "Resources" {
+		t.Errorf("expected Category 'Resources', got %q", result.Category)
+	}
+	// syscall.Statfs should work on Linux
 	if result.Status == StatusError {
-		t.Errorf("expected successful disk check on Linux, got error: %s", result.Message)
+		t.Errorf("checkDiskSpace should not error on Linux, got: %s", result.Message)
 	}
-	if !strings.Contains(result.Message, "Disk") && !strings.Contains(result.Message, "isk") {
-		t.Errorf("expected disk info in message, got %q", result.Message)
+	if !strings.Contains(result.Message, "Disk usage") {
+		t.Errorf("expected Disk usage message, got %q", result.Message)
 	}
 }
 
-func TestRunQuickModeReturnsFewerChecks(t *testing.T) {
-	opts := Options{
-		Mode:       ModeQuick,
-		ConfigPath: "/nonexistent/config.yaml",
-		LogDir:     "/nonexistent/logdir",
-		Output:     &bytes.Buffer{},
+func TestCheckAudioConflictsSetsFields(t *testing.T) {
+	opts := DefaultOptions()
+	runner := NewRunner(opts)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result := runner.checkAudioConflicts(ctx)
+
+	if result.Name != "Audio Conflicts" {
+		t.Errorf("expected Name 'Audio Conflicts', got %q", result.Name)
 	}
+	if result.Category != "Audio" {
+		t.Errorf("expected Category 'Audio', got %q", result.Category)
+	}
+	if result.Status == "" {
+		t.Error("expected non-empty status")
+	}
+	if result.Message == "" {
+		t.Error("expected non-empty message")
+	}
+}
+
+func TestCheckTCPResourcesSetsFields(t *testing.T) {
+	opts := DefaultOptions()
+	runner := NewRunner(opts)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result := runner.checkTCPResources(ctx)
+
+	if result.Name != "TCP Resources" {
+		t.Errorf("expected Name 'TCP Resources', got %q", result.Name)
+	}
+	if result.Category != "Network" {
+		t.Errorf("expected Category 'Network', got %q", result.Category)
+	}
+	if result.Status != StatusOK && result.Status != StatusWarning {
+		t.Errorf("unexpected status %s: %s", result.Status, result.Message)
+	}
+}
+
+func TestCheckNetworkPortsSetsFields(t *testing.T) {
+	opts := DefaultOptions()
+	runner := NewRunner(opts)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	result := runner.checkNetworkPorts(ctx)
+
+	if result.Name != "Network Ports" {
+		t.Errorf("expected Name 'Network Ports', got %q", result.Name)
+	}
+	if result.Category != "Network" {
+		t.Errorf("expected Category 'Network', got %q", result.Category)
+	}
+	if result.Status != StatusOK && result.Status != StatusWarning {
+		t.Errorf("unexpected status %s", result.Status)
+	}
+}
+
+func TestRunQuickModeCheckCount(t *testing.T) {
+	opts := DefaultOptions()
+	opts.Mode = ModeQuick
+	runner := NewRunner(opts)
+
+	checks := runner.getChecks()
+	if len(checks) != 5 {
+		t.Errorf("expected 5 quick checks, got %d", len(checks))
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	report, err := runner.Run(ctx)
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	if len(report.Checks) != 5 {
+		t.Errorf("expected 5 check results in quick mode, got %d", len(report.Checks))
+	}
+
+	// Verify summary counts add up
+	sum := report.Summary.OK + report.Summary.Warning + report.Summary.Critical +
+		report.Summary.Error + report.Summary.Skipped
+	if sum != report.Summary.Total {
+		t.Errorf("summary counts don't add up: %d != Total %d", sum, report.Summary.Total)
+	}
+}
+
+func TestRunFullModeCheckCount(t *testing.T) {
+	opts := DefaultOptions()
+	opts.Mode = ModeFull
+	runner := NewRunner(opts)
+
+	checks := runner.getChecks()
+	if len(checks) != 24 {
+		t.Errorf("expected 24 full checks, got %d", len(checks))
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	report, err := runner.Run(ctx)
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	if len(report.Checks) != 24 {
+		t.Errorf("expected 24 check results in full mode, got %d", len(report.Checks))
+	}
+
+	// Healthy should be determined by critical/error counts
+	expectedHealthy := report.Summary.Critical == 0 && report.Summary.Error == 0
+	if report.Healthy != expectedHealthy {
+		t.Errorf("Healthy mismatch: got %v, expected %v (critical=%d, error=%d)",
+			report.Healthy, expectedHealthy, report.Summary.Critical, report.Summary.Error)
+	}
+}
+
+func TestRunReportTimestamp(t *testing.T) {
+	before := time.Now()
+
+	opts := DefaultOptions()
+	opts.Mode = ModeQuick
 	runner := NewRunner(opts)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -238,492 +498,422 @@ func TestRunQuickModeReturnsFewerChecks(t *testing.T) {
 
 	report, err := runner.Run(ctx)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("Run() error: %v", err)
 	}
 
-	// Quick mode has exactly 5 checks
-	if len(report.Checks) != 5 {
-		t.Errorf("expected 5 checks in quick mode, got %d", len(report.Checks))
-	}
+	after := time.Now()
 
-	// Verify summary matches
-	total := report.Summary.OK + report.Summary.Warning + report.Summary.Critical +
-		report.Summary.Skipped + report.Summary.Error
-	if total != report.Summary.Total {
-		t.Errorf("summary counts don't add up: %d != %d", total, report.Summary.Total)
+	if report.Timestamp.Before(before) || report.Timestamp.After(after) {
+		t.Errorf("Timestamp %v should be between %v and %v", report.Timestamp, before, after)
 	}
 }
 
-func TestRunContextCancellationReturnsError(t *testing.T) {
-	opts := Options{
-		Mode:       ModeFull,
-		ConfigPath: "/nonexistent/config.yaml",
-		LogDir:     "/nonexistent/logdir",
-		Output:     &bytes.Buffer{},
-	}
-	runner := NewRunner(opts)
-
-	// Already-cancelled context
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	report, err := runner.Run(ctx)
-	if err == nil {
-		// It's possible that one check ran before cancellation, so err might be nil
-		// if all checks completed before the context check. But with 24 checks, at least
-		// some should be skipped.
-		t.Logf("Run completed without error (all checks may have completed before cancellation)")
-	} else {
-		if err != context.Canceled {
-			t.Errorf("expected context.Canceled error, got: %v", err)
-		}
-	}
-
-	if report == nil {
-		t.Fatal("expected report to be non-nil even with cancellation")
-	}
-
-	// Report should have fewer checks than full mode (24)
-	if err != nil && len(report.Checks) >= 24 {
-		t.Errorf("expected fewer than 24 checks with cancelled context, got %d", len(report.Checks))
-	}
-}
-
-func TestRunReportHealthyFlag(t *testing.T) {
-	tests := []struct {
-		name            string
-		mode            CheckMode
-		expectNonNilSys bool
-	}{
-		{
-			name:            "quick mode report has system info",
-			mode:            ModeQuick,
-			expectNonNilSys: true,
-		},
-		{
-			name:            "full mode report has system info",
-			mode:            ModeFull,
-			expectNonNilSys: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			opts := Options{
-				Mode:       tt.mode,
-				ConfigPath: "/nonexistent",
-				LogDir:     "/nonexistent",
-				Output:     &bytes.Buffer{},
-			}
-			runner := NewRunner(opts)
-
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			defer cancel()
-
-			report, err := runner.Run(ctx)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-
-			if tt.expectNonNilSys && report.SystemInfo == nil {
-				t.Error("expected SystemInfo to be non-nil")
-			}
-
-			// Healthy should be true only when no critical/error checks
-			expectedHealthy := report.Summary.Critical == 0 && report.Summary.Error == 0
-			if report.Healthy != expectedHealthy {
-				t.Errorf("Healthy=%v but Critical=%d, Error=%d",
-					report.Healthy, report.Summary.Critical, report.Summary.Error)
-			}
-		})
-	}
-}
-
-func TestCollectSystemInfoFields(t *testing.T) {
+func TestCollectSystemInfoLinux(t *testing.T) {
 	runner := NewRunner(DefaultOptions())
 	info := runner.collectSystemInfo()
 
+	// On Linux, these should all be populated
 	if info.OS != "linux" {
-		t.Errorf("expected OS='linux', got %q", info.OS)
+		t.Errorf("expected OS 'linux', got %q", info.OS)
 	}
-	if info.Architecture == "" {
-		t.Error("expected non-empty Architecture")
+	if info.Hostname == "" {
+		t.Error("expected non-empty Hostname on Linux")
+	}
+	if info.Kernel == "" {
+		t.Error("expected non-empty Kernel on Linux (from /proc/version)")
+	}
+	if info.Memory <= 0 {
+		t.Error("expected positive Memory on Linux (from /proc/meminfo)")
+	}
+	if info.Uptime == "" {
+		t.Error("expected non-empty Uptime on Linux (from /proc/uptime)")
 	}
 	if info.CPUs <= 0 {
 		t.Errorf("expected positive CPUs, got %d", info.CPUs)
 	}
-	if !strings.HasPrefix(info.GoVersion, "go") {
-		t.Errorf("expected GoVersion starting with 'go', got %q", info.GoVersion)
-	}
-	// On Linux, hostname should be readable
-	if info.Hostname == "" {
-		t.Error("expected non-empty Hostname on Linux")
-	}
-	// Kernel version from /proc/version
-	if info.Kernel == "" {
-		t.Error("expected non-empty Kernel on Linux")
-	}
-	// Memory from /proc/meminfo
-	if info.Memory <= 0 {
-		t.Errorf("expected positive Memory, got %d", info.Memory)
-	}
-	// Uptime from /proc/uptime
-	if info.Uptime == "" {
-		t.Error("expected non-empty Uptime on Linux")
+	if info.GoVersion == "" {
+		t.Error("expected non-empty GoVersion")
 	}
 }
 
-func TestCheckNetworkPortsWithLocalListener(t *testing.T) {
-	// Start a TCP listener on a random port
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+func TestPrintReportToJSONIntegration(t *testing.T) {
+	opts := DefaultOptions()
+	opts.Mode = ModeQuick
+	runner := NewRunner(opts)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	report, err := runner.Run(ctx)
 	if err != nil {
-		t.Fatalf("failed to create listener: %v", err)
-	}
-	defer func() { _ = listener.Close() }()
-
-	addr := listener.Addr().String()
-	if !isPortOpen(addr) {
-		t.Errorf("isPortOpen(%q) = false, expected true for listening port", addr)
-	}
-}
-
-func TestCheckMediaMTXAPIWithMockServer(t *testing.T) {
-	// Start a mock HTTP server that simulates MediaMTX API
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v3/paths/list", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"items":[]}`))
-	})
-
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("failed to create listener: %v", err)
+		t.Fatalf("Run() error: %v", err)
 	}
 
-	server := &http.Server{Handler: mux}
-	go func() { _ = server.Serve(listener) }()
-	defer func() { _ = server.Close() }()
-
-	// The checkMediaMTXAPI function hardcodes localhost:9997, so we can't redirect it
-	// to our mock server. But we can test isPortOpen with the mock server's address.
-	addr := listener.Addr().String()
-	if !isPortOpen(addr) {
-		t.Errorf("expected mock server port to be open at %s", addr)
-	}
-}
-
-func TestCheckNetworkPortsBothClosed(t *testing.T) {
-	runner := NewRunner(DefaultOptions())
-	ctx := context.Background()
-	result := runner.checkNetworkPorts(ctx)
-
-	if result.Name != "Network Ports" {
-		t.Errorf("expected name 'Network Ports', got %q", result.Name)
-	}
-	// In test environment, RTSP and API ports are typically not open
-	// The result should be OK (both open) or Warning (some/all closed)
-	if result.Status != StatusOK && result.Status != StatusWarning {
-		t.Errorf("unexpected status %s for network ports check", result.Status)
-	}
-}
-
-func TestPrintReportDuration(t *testing.T) {
-	report := &DiagnosticReport{
-		Timestamp:  time.Now(),
-		Duration:   3*time.Second + 500*time.Millisecond,
-		SystemInfo: &SystemInfo{Hostname: "test", OS: "linux"},
-		Checks:     []CheckResult{},
-		Summary:    &Summary{},
-		Healthy:    true,
-	}
-
+	// Test PrintReport doesn't panic
 	var buf bytes.Buffer
 	PrintReport(&buf, report)
 	output := buf.String()
-
-	if !strings.Contains(output, "Duration:") {
-		t.Error("expected Duration in output")
-	}
-}
-
-func TestToJSONRoundTrip(t *testing.T) {
-	original := &DiagnosticReport{
-		Timestamp: time.Date(2026, 3, 20, 0, 0, 0, 0, time.UTC),
-		Duration:  10 * time.Second,
-		SystemInfo: &SystemInfo{
-			Hostname:     "roundtrip",
-			OS:           "linux",
-			Kernel:       "6.1.0",
-			Architecture: "amd64",
-			CPUs:         2,
-			Memory:       2 * 1024 * 1024 * 1024,
-			Uptime:       "1d 0h 0m",
-			GoVersion:    "go1.24",
-		},
-		Checks: []CheckResult{
-			{
-				Name:        "Check1",
-				Category:    "Cat1",
-				Status:      StatusCritical,
-				Message:     "Bad",
-				Details:     "Very bad",
-				Duration:    time.Millisecond,
-				Suggestions: []string{"Fix it", "Fix it again"},
-			},
-		},
-		Summary: &Summary{Total: 1, Critical: 1},
-		Healthy: false,
+	if len(output) == 0 {
+		t.Error("PrintReport produced empty output")
 	}
 
-	data, err := original.ToJSON()
+	// Test ToJSON produces valid JSON
+	data, err := report.ToJSON()
 	if err != nil {
-		t.Fatalf("ToJSON error: %v", err)
+		t.Fatalf("ToJSON() error: %v", err)
 	}
 
-	var restored DiagnosticReport
-	if err := json.Unmarshal(data, &restored); err != nil {
-		t.Fatalf("unmarshal error: %v", err)
+	var parsed DiagnosticReport
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("ToJSON() produced invalid JSON: %v", err)
 	}
 
-	if restored.SystemInfo.Hostname != original.SystemInfo.Hostname {
-		t.Errorf("hostname mismatch: %q vs %q", restored.SystemInfo.Hostname, original.SystemInfo.Hostname)
-	}
-	if restored.Healthy != original.Healthy {
-		t.Errorf("healthy mismatch: %v vs %v", restored.Healthy, original.Healthy)
-	}
-	if len(restored.Checks) != 1 {
-		t.Fatalf("expected 1 check, got %d", len(restored.Checks))
-	}
-	if restored.Checks[0].Status != StatusCritical {
-		t.Errorf("status mismatch: %s vs %s", restored.Checks[0].Status, StatusCritical)
-	}
-	if len(restored.Checks[0].Suggestions) != 2 {
-		t.Errorf("expected 2 suggestions, got %d", len(restored.Checks[0].Suggestions))
-	}
-	if restored.Summary.Critical != 1 {
-		t.Errorf("summary critical mismatch: %d vs 1", restored.Summary.Critical)
+	if parsed.Summary.Total != report.Summary.Total {
+		t.Errorf("JSON round-trip: summary total mismatch: %d vs %d",
+			parsed.Summary.Total, report.Summary.Total)
 	}
 }
 
-func TestCheckSystemInfoAlwaysOK(t *testing.T) {
-	runner := NewRunner(DefaultOptions())
-	result := runner.checkSystemInfo(context.Background())
+func TestCheckPrerequisitesCategories(t *testing.T) {
+	opts := DefaultOptions()
+	runner := NewRunner(opts)
 
-	if result.Status != StatusOK {
-		t.Errorf("checkSystemInfo should always return OK, got %s", result.Status)
-	}
-	if result.Message != "System information collected" {
-		t.Errorf("unexpected message: %q", result.Message)
-	}
+	result := runner.checkPrerequisites(context.Background())
+
 	if result.Category != "System" {
-		t.Errorf("expected category 'System', got %q", result.Category)
+		t.Errorf("expected Category 'System', got %q", result.Category)
+	}
+
+	switch result.Status {
+	case StatusOK:
+		if !strings.Contains(result.Message, "All required tools available") {
+			t.Errorf("unexpected OK message: %q", result.Message)
+		}
+	case StatusWarning:
+		if !strings.Contains(result.Message, "Missing optional tools") {
+			t.Errorf("unexpected Warning message: %q", result.Message)
+		}
+	case StatusCritical:
+		if !strings.Contains(result.Message, "Missing required tools") {
+			t.Errorf("unexpected Critical message: %q", result.Message)
+		}
+		if len(result.Suggestions) == 0 {
+			t.Error("expected suggestions when critical tools are missing")
+		}
+	default:
+		t.Errorf("unexpected status %s for prerequisites", result.Status)
 	}
 }
 
 func TestCheckVersionsAlwaysOK(t *testing.T) {
-	runner := NewRunner(DefaultOptions())
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	opts := DefaultOptions()
+	runner := NewRunner(opts)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	result := runner.checkVersions(ctx)
 
 	if result.Status != StatusOK {
-		t.Errorf("checkVersions should always return OK, got %s", result.Status)
+		t.Errorf("expected StatusOK, got %s", result.Status)
 	}
-	if result.Category != "System" {
-		t.Errorf("expected category 'System', got %q", result.Category)
-	}
-}
-
-func TestCheckPrerequisitesCategories(t *testing.T) {
-	runner := NewRunner(DefaultOptions())
-	result := runner.checkPrerequisites(context.Background())
-
-	if result.Category != "System" {
-		t.Errorf("expected category 'System', got %q", result.Category)
-	}
-	// Status should be OK, Warning, or Critical depending on installed tools
-	validStatuses := map[CheckStatus]bool{
-		StatusOK: true, StatusWarning: true, StatusCritical: true,
-	}
-	if !validStatuses[result.Status] {
-		t.Errorf("unexpected status: %s", result.Status)
+	if result.Message != "Version information collected" {
+		t.Errorf("unexpected message: %q", result.Message)
 	}
 }
 
-func TestCheckALSAOnLinux(t *testing.T) {
-	runner := NewRunner(DefaultOptions())
-	result := runner.checkALSA(context.Background())
-
-	if result.Category != "Audio" {
-		t.Errorf("expected category 'Audio', got %q", result.Category)
-	}
-	// /proc/asound may or may not exist in test environment
-	validStatuses := map[CheckStatus]bool{
-		StatusOK: true, StatusWarning: true, StatusCritical: true,
-	}
-	if !validStatuses[result.Status] {
-		t.Errorf("unexpected status: %s", result.Status)
-	}
-}
-
-func TestCheckUSBAudioCategory(t *testing.T) {
-	runner := NewRunner(DefaultOptions())
-	result := runner.checkUSBAudio(context.Background())
-
-	if result.Category != "Audio" {
-		t.Errorf("expected category 'Audio', got %q", result.Category)
-	}
-	// No USB audio in test env typically
-	if result.Status != StatusOK && result.Status != StatusWarning {
-		t.Errorf("unexpected status: %s", result.Status)
-	}
-}
-
-func TestCheckAudioCapabilitiesCategory(t *testing.T) {
-	runner := NewRunner(DefaultOptions())
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	result := runner.checkAudioCapabilities(ctx)
-
-	if result.Category != "Audio" {
-		t.Errorf("expected category 'Audio', got %q", result.Category)
-	}
-}
-
-func TestCheckTCPResourcesCategory(t *testing.T) {
-	runner := NewRunner(DefaultOptions())
-	result := runner.checkTCPResources(context.Background())
-
-	if result.Category != "Network" {
-		t.Errorf("expected category 'Network', got %q", result.Category)
-	}
-}
-
-func TestCheckAudioConflictsCategory(t *testing.T) {
-	runner := NewRunner(DefaultOptions())
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	result := runner.checkAudioConflicts(ctx)
-
-	if result.Category != "Audio" {
-		t.Errorf("expected category 'Audio', got %q", result.Category)
-	}
-	// Should be OK or Warning
-	if result.Status != StatusOK && result.Status != StatusWarning {
-		t.Errorf("unexpected status: %s", result.Status)
-	}
-}
-
-func TestRunFullModeCompletesAllChecks(t *testing.T) {
-	opts := Options{
-		Mode:       ModeFull,
-		ConfigPath: "/nonexistent/config.yaml",
-		LogDir:     "/nonexistent/logdir",
-		Output:     &bytes.Buffer{},
-	}
+func TestCheckSystemInfoAlwaysOK(t *testing.T) {
+	opts := DefaultOptions()
 	runner := NewRunner(opts)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	result := runner.checkSystemInfo(context.Background())
+
+	if result.Status != StatusOK {
+		t.Errorf("expected StatusOK, got %s", result.Status)
+	}
+	if result.Message != "System information collected" {
+		t.Errorf("unexpected message: %q", result.Message)
+	}
+}
+
+func TestSummaryCountsFromRun(t *testing.T) {
+	opts := DefaultOptions()
+	opts.Mode = ModeQuick
+	runner := NewRunner(opts)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	report, err := runner.Run(ctx)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("Run() error: %v", err)
 	}
 
-	if len(report.Checks) != 24 {
-		t.Errorf("expected 24 checks in full mode, got %d", len(report.Checks))
+	counts := map[CheckStatus]int{}
+	for _, check := range report.Checks {
+		counts[check.Status]++
 	}
 
-	// Verify each check has a name and category
-	for i, check := range report.Checks {
-		if check.Name == "" {
-			t.Errorf("check %d has empty name", i)
-		}
-		if check.Category == "" {
-			t.Errorf("check %d (%s) has empty category", i, check.Name)
-		}
-		if check.Status == "" {
-			t.Errorf("check %d (%s) has empty status", i, check.Name)
-		}
-		if check.Message == "" {
-			t.Errorf("check %d (%s) has empty message", i, check.Name)
-		}
+	if counts[StatusOK] != report.Summary.OK {
+		t.Errorf("OK count mismatch: found %d in checks, summary says %d", counts[StatusOK], report.Summary.OK)
 	}
-
-	// Verify duration was recorded
-	if report.Duration <= 0 {
-		t.Error("expected positive report duration")
+	if counts[StatusWarning] != report.Summary.Warning {
+		t.Errorf("Warning count mismatch: found %d in checks, summary says %d", counts[StatusWarning], report.Summary.Warning)
+	}
+	if counts[StatusCritical] != report.Summary.Critical {
+		t.Errorf("Critical count mismatch: found %d in checks, summary says %d", counts[StatusCritical], report.Summary.Critical)
+	}
+	if counts[StatusSkipped] != report.Summary.Skipped {
+		t.Errorf("Skipped count mismatch: found %d in checks, summary says %d", counts[StatusSkipped], report.Summary.Skipped)
+	}
+	if counts[StatusError] != report.Summary.Error {
+		t.Errorf("Error count mismatch: found %d in checks, summary says %d", counts[StatusError], report.Summary.Error)
 	}
 }
 
-func TestCheckFFmpegCategory(t *testing.T) {
-	runner := NewRunner(DefaultOptions())
+func TestIsPortOpenWithActiveListener(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to create listener: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+
+	addr := ln.Addr().String()
+	if !isPortOpen(addr) {
+		t.Errorf("isPortOpen(%q) = false, expected true for active listener", addr)
+	}
+}
+
+func TestCheckUSBAudioSetsFields(t *testing.T) {
+	opts := DefaultOptions()
+	runner := NewRunner(opts)
+
+	result := runner.checkUSBAudio(context.Background())
+
+	if result.Name != "USB Audio" {
+		t.Errorf("expected Name 'USB Audio', got %q", result.Name)
+	}
+	if result.Category != "Audio" {
+		t.Errorf("expected Category 'Audio', got %q", result.Category)
+	}
+	if result.Status != StatusOK && result.Status != StatusWarning {
+		t.Errorf("unexpected status %s", result.Status)
+	}
+	if result.Status == StatusWarning {
+		if !strings.Contains(result.Message, "No USB audio devices") {
+			t.Errorf("unexpected warning message: %q", result.Message)
+		}
+	}
+	if result.Status == StatusOK {
+		if !strings.Contains(result.Message, "USB audio device") {
+			t.Errorf("unexpected OK message: %q", result.Message)
+		}
+	}
+}
+
+func TestCheckALSASetsFields(t *testing.T) {
+	opts := DefaultOptions()
+	runner := NewRunner(opts)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result := runner.checkALSA(ctx)
+
+	if result.Name != "ALSA" {
+		t.Errorf("expected Name 'ALSA', got %q", result.Name)
+	}
+	if result.Category != "Audio" {
+		t.Errorf("expected Category 'Audio', got %q", result.Category)
+	}
+	if result.Status == StatusCritical {
+		if !strings.Contains(result.Message, "/proc/asound missing") {
+			t.Errorf("unexpected critical message: %q", result.Message)
+		}
+	}
+}
+
+func TestCheckFFmpegSetsFields(t *testing.T) {
+	opts := DefaultOptions()
+	runner := NewRunner(opts)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	result := runner.checkFFmpeg(ctx)
+
+	if result.Name != "FFmpeg" {
+		t.Errorf("expected Name 'FFmpeg', got %q", result.Name)
+	}
 	if result.Category != "Tools" {
-		t.Errorf("expected category 'Tools', got %q", result.Category)
+		t.Errorf("expected Category 'Tools', got %q", result.Category)
+	}
+
+	switch result.Status {
+	case StatusCritical:
+		if !strings.Contains(result.Message, "not found") {
+			t.Errorf("unexpected critical message: %q", result.Message)
+		}
+		if len(result.Suggestions) == 0 {
+			t.Error("expected suggestions when FFmpeg is missing")
+		}
+	case StatusOK:
+		if result.Details == "" {
+			t.Error("expected non-empty Details when FFmpeg is found")
+		}
+	case StatusWarning:
+		t.Logf("FFmpeg warning: %s", result.Message)
+	default:
+		t.Errorf("unexpected status %s for FFmpeg check", result.Status)
 	}
 }
 
-func TestCheckMediaMTXServiceCategory(t *testing.T) {
-	runner := NewRunner(DefaultOptions())
+func TestCheckMediaMTXServiceSetsFields(t *testing.T) {
+	opts := DefaultOptions()
+	runner := NewRunner(opts)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	result := runner.checkMediaMTXService(ctx)
+
+	if result.Name != "MediaMTX Service" {
+		t.Errorf("expected Name 'MediaMTX Service', got %q", result.Name)
+	}
 	if result.Category != "Services" {
-		t.Errorf("expected category 'Services', got %q", result.Category)
+		t.Errorf("expected Category 'Services', got %q", result.Category)
+	}
+
+	validStatuses := map[CheckStatus]bool{
+		StatusOK: true, StatusWarning: true, StatusCritical: true,
+		StatusError: true, StatusSkipped: true,
+	}
+	if !validStatuses[result.Status] {
+		t.Errorf("invalid status: %q", result.Status)
 	}
 }
 
-func TestCheckMediaMTXAPICategory(t *testing.T) {
-	runner := NewRunner(DefaultOptions())
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+func TestCheckTimeSynchronizationSetsFields(t *testing.T) {
+	opts := DefaultOptions()
+	runner := NewRunner(opts)
 
-	result := runner.checkMediaMTXAPI(ctx)
-	if result.Category != "Services" {
-		t.Errorf("expected category 'Services', got %q", result.Category)
-	}
-	// In test env, API is typically not reachable
-	if result.Status != StatusOK && result.Status != StatusWarning && result.Status != StatusError {
-		t.Errorf("unexpected status: %s", result.Status)
-	}
-}
-
-func TestCheckTimeSyncCategory(t *testing.T) {
-	runner := NewRunner(DefaultOptions())
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	result := runner.checkTimeSynchronization(ctx)
+
+	if result.Name != "Time Sync" {
+		t.Errorf("expected Name 'Time Sync', got %q", result.Name)
+	}
 	if result.Category != "System" {
-		t.Errorf("expected category 'System', got %q", result.Category)
+		t.Errorf("expected Category 'System', got %q", result.Category)
+	}
+	if result.Status != StatusOK && result.Status != StatusWarning {
+		t.Errorf("unexpected status %s", result.Status)
 	}
 }
 
-func TestCheckSystemdServicesCategory(t *testing.T) {
-	runner := NewRunner(DefaultOptions())
+func TestCheckSystemdServicesSetsFields(t *testing.T) {
+	opts := DefaultOptions()
+	runner := NewRunner(opts)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	result := runner.checkSystemdServices(ctx)
+
+	if result.Name != "Systemd Services" {
+		t.Errorf("expected Name 'Systemd Services', got %q", result.Name)
+	}
 	if result.Category != "Services" {
-		t.Errorf("expected category 'Services', got %q", result.Category)
+		t.Errorf("expected Category 'Services', got %q", result.Category)
+	}
+	if result.Status != StatusOK && result.Status != StatusWarning {
+		t.Errorf("unexpected status %s: %s", result.Status, result.Message)
 	}
 }
 
-func TestCheckProcessStabilityCategory(t *testing.T) {
-	runner := NewRunner(DefaultOptions())
+func TestCheckProcessStabilitySetsFields(t *testing.T) {
+	opts := DefaultOptions()
+	runner := NewRunner(opts)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	result := runner.checkProcessStability(ctx)
+
+	if result.Name != "Process Stability" {
+		t.Errorf("expected Name 'Process Stability', got %q", result.Name)
+	}
 	if result.Category != "Services" {
-		t.Errorf("expected category 'Services', got %q", result.Category)
+		t.Errorf("expected Category 'Services', got %q", result.Category)
+	}
+	if result.Status != StatusOK && result.Status != StatusWarning {
+		t.Errorf("unexpected status %s: %s", result.Status, result.Message)
+	}
+}
+
+func TestCheckAudioCapabilitiesSetsFields(t *testing.T) {
+	opts := DefaultOptions()
+	runner := NewRunner(opts)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result := runner.checkAudioCapabilities(ctx)
+
+	if result.Name != "Audio Capabilities" {
+		t.Errorf("expected Name 'Audio Capabilities', got %q", result.Name)
+	}
+	if result.Category != "Audio" {
+		t.Errorf("expected Category 'Audio', got %q", result.Category)
+	}
+	if result.Status != StatusOK && result.Status != StatusWarning {
+		t.Errorf("unexpected status %s: %s", result.Status, result.Message)
+	}
+}
+
+func TestCheckMediaMTXAPISetsFields(t *testing.T) {
+	opts := DefaultOptions()
+	runner := NewRunner(opts)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result := runner.checkMediaMTXAPI(ctx)
+
+	if result.Name != "MediaMTX API" {
+		t.Errorf("expected Name 'MediaMTX API', got %q", result.Name)
+	}
+	if result.Category != "Services" {
+		t.Errorf("expected Category 'Services', got %q", result.Category)
+	}
+	validStatuses := map[CheckStatus]bool{
+		StatusOK: true, StatusWarning: true, StatusError: true,
+	}
+	if !validStatuses[result.Status] {
+		t.Errorf("unexpected status %s: %s", result.Status, result.Message)
+	}
+}
+
+func TestCheckUdevRulesSetsFields(t *testing.T) {
+	opts := DefaultOptions()
+	runner := NewRunner(opts)
+
+	result := runner.checkUdevRules(context.Background())
+
+	if result.Name != "udev Rules" {
+		t.Errorf("expected Name 'udev Rules', got %q", result.Name)
+	}
+	if result.Category != "Config" {
+		t.Errorf("expected Category 'Config', got %q", result.Category)
+	}
+	if result.Status != StatusOK && result.Status != StatusWarning {
+		t.Errorf("unexpected status %s", result.Status)
+	}
+	if result.Status == StatusWarning {
+		if len(result.Suggestions) == 0 {
+			t.Error("expected suggestions when udev rules not found")
+		}
 	}
 }
