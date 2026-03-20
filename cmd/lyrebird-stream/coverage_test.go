@@ -593,3 +593,222 @@ func TestRunDaemonLogDirCreationFailure(t *testing.T) {
 	// code 1 is expected (ffmpeg not found or other startup issue)
 	_ = code
 }
+
+// TestRunSegmentRetention verifies the retention goroutine runs cleanup and
+// responds to context cancellation.
+func TestRunSegmentRetention(t *testing.T) {
+	dir := t.TempDir()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	// Create an old file
+	oldFile := filepath.Join(dir, "old.wav")
+	if err := os.WriteFile(oldFile, []byte("data"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	mtime := time.Now().Add(-30 * 24 * time.Hour)
+	if err := os.Chtimes(oldFile, mtime, mtime); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.StreamConfig{
+		LocalRecordDir: dir,
+		SegmentMaxAge:  7 * 24 * time.Hour,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		runSegmentRetention(ctx, logger, cfg)
+		close(done)
+	}()
+
+	// Let initial cleanup pass run
+	time.Sleep(100 * time.Millisecond)
+
+	// Old file should be deleted by the initial cleanup pass
+	if _, err := os.Stat(oldFile); !os.IsNotExist(err) {
+		t.Error("old file should be deleted by initial retention pass")
+	}
+
+	cancel()
+
+	// Wait for goroutine to exit
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runSegmentRetention did not exit after context cancellation")
+	}
+}
+
+// TestRunDiskSpaceMonitor verifies the disk monitor goroutine runs and
+// responds to context cancellation.
+func TestRunDiskSpaceMonitor(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	cfg := &config.Config{
+		Stream: config.StreamConfig{
+			LocalRecordDir: t.TempDir(),
+		},
+		Monitor: config.MonitorConfig{
+			DiskLowThresholdMB: 1, // 1MB - very low threshold, unlikely to trigger
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		runDiskSpaceMonitor(ctx, logger, cfg)
+		close(done)
+	}()
+
+	// Let initial check run
+	time.Sleep(100 * time.Millisecond)
+
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runDiskSpaceMonitor did not exit after context cancellation")
+	}
+}
+
+// TestRunDiskSpaceMonitorHighThreshold verifies warning is logged when disk
+// space is below threshold.
+func TestRunDiskSpaceMonitorHighThreshold(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	cfg := &config.Config{
+		Stream: config.StreamConfig{
+			LocalRecordDir: t.TempDir(),
+		},
+		Monitor: config.MonitorConfig{
+			// Impossibly high threshold to trigger warning
+			DiskLowThresholdMB: 1 << 30, // ~1 PB
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		runDiskSpaceMonitor(ctx, logger, cfg)
+		close(done)
+	}()
+
+	// Let initial check run
+	time.Sleep(100 * time.Millisecond)
+
+	cancel()
+	<-done
+
+	// Should have logged a warning
+	if !bytes.Contains(logBuf.Bytes(), []byte("LOW DISK SPACE WARNING")) {
+		t.Error("expected low disk space warning in log output")
+	}
+}
+
+// TestRunDiskSpaceMonitorEmptyRecordDir verifies fallback to "/" when
+// LocalRecordDir is empty.
+func TestRunDiskSpaceMonitorEmptyRecordDir(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	cfg := &config.Config{
+		Stream: config.StreamConfig{
+			LocalRecordDir: "", // Should fall back to "/"
+		},
+		Monitor: config.MonitorConfig{
+			DiskLowThresholdMB: 1,
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		runDiskSpaceMonitor(ctx, logger, cfg)
+		close(done)
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runDiskSpaceMonitor did not exit after context cancellation")
+	}
+}
+
+// TestRunDaemonWithConfigAndLogDir exercises runDaemon with valid lock dir and
+// log dir but no ffmpeg (expected to fail at ffmpeg check).
+func TestRunDaemonWithConfigAndLogDir(t *testing.T) {
+	if _, err := findFFmpegPath(); err == nil {
+		t.Skip("ffmpeg is installed; this test requires ffmpeg to be absent")
+	}
+
+	tmpDir := t.TempDir()
+	logDir := filepath.Join(tmpDir, "logs")
+
+	flags := daemonFlags{
+		ConfigPath: filepath.Join(tmpDir, "config.yaml"),
+		LockDir:    tmpDir,
+		LogLevel:   "debug",
+		LogDir:     logDir,
+	}
+
+	code := runDaemon(flags)
+	if code != 1 {
+		t.Errorf("runDaemon() returned %d, want 1 (ffmpeg not found)", code)
+	}
+
+	// Log dir should have been created
+	if _, err := os.Stat(logDir); os.IsNotExist(err) {
+		t.Error("log directory should have been created")
+	}
+}
+
+// TestRunDaemonWithInvalidConfig exercises runDaemon when config file exists
+// but is invalid YAML.
+func TestRunDaemonWithInvalidConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte("{{invalid yaml"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	flags := daemonFlags{
+		ConfigPath: cfgPath,
+		LockDir:    tmpDir,
+		LogLevel:   "error",
+	}
+
+	code := runDaemon(flags)
+	if code != 1 {
+		t.Errorf("runDaemon() with invalid config returned %d, want 1", code)
+	}
+}
+
+// TestFindFFmpegPathPresent verifies findFFmpegPath when ffmpeg is in PATH.
+func TestFindFFmpegPathPresent(t *testing.T) {
+	path, err := findFFmpegPath()
+	if err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+
+	if path == "" {
+		t.Error("findFFmpegPath returned empty path without error")
+	}
+
+	// Verify the returned path is executable
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Errorf("stat returned path: %v", err)
+	}
+	if info.Mode().Perm()&0111 == 0 {
+		t.Error("returned ffmpeg path is not executable")
+	}
+}
