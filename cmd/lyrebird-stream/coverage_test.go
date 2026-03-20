@@ -578,6 +578,10 @@ func TestDaemonSystemInfoProviderEmptyRecordDir(t *testing.T) {
 // TestRunDaemonLogDirCreationFailure verifies behavior when log dir cannot be
 // created (falls back to no logging).
 func TestRunDaemonLogDirCreationFailure(t *testing.T) {
+	// Ensure ffmpeg is not found so runDaemon exits early after the log dir
+	// warning instead of starting the supervisor and blocking forever.
+	t.Setenv("PATH", t.TempDir())
+
 	tmpDir := t.TempDir()
 	flags := daemonFlags{
 		ConfigPath: filepath.Join(tmpDir, "nonexistent.yaml"),
@@ -586,12 +590,11 @@ func TestRunDaemonLogDirCreationFailure(t *testing.T) {
 		LogDir:     "/\x00invalid/log/dir",
 	}
 
-	// The daemon should continue (log dir failure is not fatal)
-	// but will fail later at ffmpeg lookup (if ffmpeg not installed)
-	// or succeed and run. Either way, it shouldn't crash.
+	// The daemon warns about the bad log dir, then fails at ffmpeg lookup.
 	code := runDaemon(flags)
-	// code 1 is expected (ffmpeg not found or other startup issue)
-	_ = code
+	if code != 1 {
+		t.Errorf("expected exit code 1 (ffmpeg not found), got %d", code)
+	}
 }
 
 // TestRunSegmentRetention verifies the retention goroutine runs cleanup and
