@@ -348,17 +348,7 @@ func (r *Runner) checkAudioConflicts(ctx context.Context) CheckResult {
 	out, _ := exec.CommandContext(ctx, "pgrep", "pulseaudio").Output()
 	pulseActive := len(out) > 0
 
-	if pulseActive {
-		result.Status = StatusWarning
-		result.Message = "PulseAudio running (may conflict with ALSA)"
-		result.Suggestions = append(result.Suggestions, "Consider stopping PulseAudio for dedicated audio streaming")
-	} else if pulseRunning == nil {
-		result.Status = StatusOK
-		result.Message = "PulseAudio installed but not running"
-	} else {
-		result.Status = StatusOK
-		result.Message = "No audio conflicts detected"
-	}
+	result.Status, result.Message, result.Suggestions = evaluateAudioConflicts(pulseRunning == nil, pulseActive)
 
 	result.Duration = time.Since(start)
 	return result

@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -320,16 +319,7 @@ func (r *Runner) checkEntropy(ctx context.Context) CheckResult {
 		return result
 	}
 
-	entropy, _ := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
-
-	if entropy < MinEntropyBytes {
-		result.Status = StatusWarning
-		result.Message = fmt.Sprintf("Entropy pool low: %d", entropy)
-		result.Suggestions = append(result.Suggestions, "Install haveged or rng-tools")
-	} else {
-		result.Status = StatusOK
-		result.Message = fmt.Sprintf("Entropy pool: %d", entropy)
-	}
+	result.Status, result.Message, result.Suggestions = evaluateEntropy(string(data))
 
 	result.Duration = time.Since(start)
 	return result
@@ -350,16 +340,7 @@ func (r *Runner) checkInotifyLimits(ctx context.Context) CheckResult {
 		return result
 	}
 
-	maxWatches, _ := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
-
-	if maxWatches < MinInotifyWatches {
-		result.Status = StatusWarning
-		result.Message = fmt.Sprintf("inotify max_user_watches low: %d", maxWatches)
-		result.Suggestions = append(result.Suggestions, "Increase with: sysctl fs.inotify.max_user_watches=65536")
-	} else {
-		result.Status = StatusOK
-		result.Message = fmt.Sprintf("inotify max_user_watches: %d", maxWatches)
-	}
+	result.Status, result.Message, result.Suggestions = evaluateInotifyLimits(string(data))
 
 	result.Duration = time.Since(start)
 	return result

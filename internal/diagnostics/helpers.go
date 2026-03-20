@@ -123,6 +123,17 @@ func evaluateNetworkPorts(rtspOpen, apiOpen bool) (CheckStatus, string, []string
 	return StatusWarning, "Some ports not accessible: " + strings.Join(ports, ", "), nil
 }
 
+// evaluateAudioConflicts determines the status of audio conflicts based on PulseAudio state.
+func evaluateAudioConflicts(pulseInstalled, pulseActive bool) (CheckStatus, string, []string) {
+	if pulseActive {
+		return StatusWarning, "PulseAudio running (may conflict with ALSA)",
+			[]string{"Consider stopping PulseAudio for dedicated audio streaming"}
+	} else if pulseInstalled {
+		return StatusOK, "PulseAudio installed but not running", nil
+	}
+	return StatusOK, "No audio conflicts detected", nil
+}
+
 // evaluateTCPResources determines the status of TCP TIME_WAIT connections.
 func evaluateTCPResources(ssOutput string) (CheckStatus, string) {
 	timeWaitCount := strings.Count(ssOutput, "\n") - 1
