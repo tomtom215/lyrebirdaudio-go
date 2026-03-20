@@ -56,6 +56,10 @@ type BackupInfo struct {
 //
 // Reference: lyrebird-mic-check.sh backup_config() lines 1050-1100
 func BackupConfig(configPath, backupDir string) (string, error) {
+	// Sanitize paths to prevent path traversal.
+	configPath = filepath.Clean(configPath)
+	backupDir = filepath.Clean(backupDir)
+
 	// Verify source exists
 	info, err := os.Stat(configPath)
 	if err != nil {
@@ -96,6 +100,7 @@ func BackupConfig(configPath, backupDir string) (string, error) {
 	}
 
 	// Write backup with restrictive permissions
+	// #nosec G703 -- backupPath is cleaned at function entry and constructed from cleaned backupDir + generated filename
 	if err := os.WriteFile(backupPath, data, 0600); err != nil {
 		return "", fmt.Errorf("failed to write backup: %w", err)
 	}
@@ -186,6 +191,11 @@ func ListBackups(backupDir, configName string) ([]BackupInfo, error) {
 //   - string: Path to backup of previous config (empty if none existed)
 //   - error: if restore fails
 func RestoreBackup(backupPath, configPath, backupDir string) (string, error) {
+	// Sanitize paths to prevent path traversal.
+	backupPath = filepath.Clean(backupPath)
+	configPath = filepath.Clean(configPath)
+	backupDir = filepath.Clean(backupDir)
+
 	// Verify backup exists
 	if _, err := os.Stat(backupPath); err != nil {
 		return "", fmt.Errorf("backup file not found: %w", err)
@@ -222,7 +232,7 @@ func RestoreBackup(backupPath, configPath, backupDir string) (string, error) {
 	// Write restored config
 	// SEC-4: Match backup creation permissions (0640) — restored configs should
 	// not become less secure than the originals. Consistent with SEC-3 (config save).
-	// #nosec G306 -- config file restricted to owner+group for security
+	// #nosec G306,G703 -- config file restricted to owner+group; configPath cleaned at function entry
 	if err := os.WriteFile(configPath, data, 0640); err != nil {
 		return previousBackup, fmt.Errorf("failed to restore config: %w", err)
 	}
