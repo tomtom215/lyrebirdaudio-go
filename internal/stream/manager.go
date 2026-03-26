@@ -38,38 +38,6 @@ import (
 	"github.com/tomtom215/lyrebirdaudio-go/internal/lock"
 )
 
-// State represents the stream manager's current state.
-type State int
-
-const (
-	StateIdle     State = iota // Not started
-	StateStarting              // Acquiring lock and starting FFmpeg
-	StateRunning               // FFmpeg process running
-	StateStopping              // Gracefully stopping FFmpeg
-	StateFailed                // FFmpeg failed, waiting for backoff
-	StateStopped               // Stopped (terminal state)
-)
-
-// String returns the string representation of State.
-func (s State) String() string {
-	switch s {
-	case StateIdle:
-		return "idle"
-	case StateStarting:
-		return "starting"
-	case StateRunning:
-		return "running"
-	case StateStopping:
-		return "stopping"
-	case StateFailed:
-		return "failed"
-	case StateStopped:
-		return "stopped"
-	default:
-		return fmt.Sprintf("unknown(%d)", s)
-	}
-}
-
 // ManagerConfig contains configuration for a stream manager.
 type ManagerConfig struct {
 	DeviceName      string                // Sanitized device name (e.g., "blue_yeti")
@@ -98,13 +66,6 @@ type ManagerConfig struct {
 
 // Manager manages a single audio stream's lifecycle.
 //
-// This is the core component that orchestrates:
-//   - FFmpeg process management
-//   - State machine transitions
-//   - Failure recovery with exponential backoff
-//   - File-based locking (one manager per device)
-//   - Graceful shutdown
-//
 // State Machine:
 //
 //	idle → starting → running ⟲
@@ -112,15 +73,6 @@ type ManagerConfig struct {
 //	                  failed → (backoff) → starting
 //	                    ↓
 //	                  stopped (terminal)
-//
-// Example:
-//
-//	cfg := &ManagerConfig{...}
-//	mgr, _ := NewManager(cfg)
-//	ctx := context.Background()
-//	if err := mgr.Run(ctx); err != nil {
-//	    log.Fatal(err)
-//	}
 type Manager struct {
 	cfg *ManagerConfig
 
@@ -144,41 +96,7 @@ type Manager struct {
 	failures  atomic.Int32
 }
 
-// Metrics contains stream manager metrics.
-type Metrics struct {
-	DeviceName string
-	StreamName string
-	State      State
-	StartTime  time.Time
-	Uptime     time.Duration
-	Attempts   int
-	Failures   int
-}
-
 // NewManager creates a new stream manager.
-//
-// Parameters:
-//   - cfg: Manager configuration
-//
-// Returns:
-//   - *Manager: Initialized manager in StateIdle
-//   - error: if configuration is invalid
-//
-// Example:
-//
-//	cfg := &ManagerConfig{
-//	    DeviceName: "blue_yeti",
-//	    ALSADevice: "hw:0,0",
-//	    SampleRate: 48000,
-//	    Channels: 2,
-//	    Bitrate: "192k",
-//	    Codec: "opus",
-//	    RTSPURL: "rtsp://localhost:8554/blue_yeti",
-//	    LockDir: "/var/run/lyrebird",
-//	    FFmpegPath: "/usr/bin/ffmpeg",
-//	    Backoff: NewBackoff(10*time.Second, 300*time.Second, 50),
-//	}
-//	mgr, err := NewManager(cfg)
 func NewManager(cfg *ManagerConfig) (*Manager, error) {
 	if err := validateConfig(cfg); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
@@ -250,27 +168,6 @@ func (m *Manager) logStructuredEvent(event string, attrs ...interface{}) {
 // The function blocks until:
 //   - Context is cancelled (graceful shutdown)
 //   - Max restart attempts exceeded (failure)
-//
-// Parameters:
-//   - ctx: Context for cancellation
-//
-// Returns:
-//   - error: if startup fails or max attempts exceeded
-//
-// Example:
-//
-//	ctx, cancel := context.WithCancel(context.Background())
-//	defer cancel()
-//
-//	errCh := make(chan error)
-//	go func() {
-//	    errCh <- mgr.Run(ctx)
-//	}()
-//
-//	// ... do other work ...
-//
-//	cancel() // Trigger graceful shutdown
-//	<-errCh  // Wait for completion
 func (m *Manager) Run(ctx context.Context) error {
 	// Acquire lock (context-aware for graceful shutdown)
 	if err := m.acquireLock(ctx); err != nil {
@@ -314,13 +211,8 @@ func (m *Manager) Run(ctx context.Context) error {
 				return err
 			}
 
-			// FFmpeg failed — wait with the CURRENT delay, then record the failure
-			// (which doubles the delay for the next iteration).  This ensures the
-			// first restart waits initialDelay, not 2×initialDelay (ME-1 fix).
 			m.failures.Add(1)
 			m.setState(StateFailed)
-			// H-4 fix: Emit structured failure event with machine-parseable fields
-			// for post-hoc analysis from journald or log aggregation systems.
 			m.logStructuredEvent("stream_failure",
 				"error", err.Error(),
 				"attempt", m.attempts.Load(),
@@ -330,26 +222,19 @@ func (m *Manager) Run(ctx context.Context) error {
 			)
 			m.logError("FFmpeg failed: %v (failures=%d, next-backoff=%v)", err, m.failures.Load(), m.backoff.CurrentDelay())
 
-			// Wait before recording failure so the first restart uses initialDelay.
 			if waitErr := m.backoff.WaitContext(ctx); waitErr != nil {
 				m.setState(StateStopped)
-				return waitErr // Context cancelled during backoff
+				return waitErr
 			}
 			m.backoff.RecordFailure()
-
-			// Continue to retry
 			continue
 		}
 
 		// FFmpeg exited cleanly - check if it was a "successful" run
 		successThreshold := m.backoff.SuccessThreshold()
 		if runTime < successThreshold {
-			// Short run - treat as failure (use RecordFailure, not RecordSuccess,
-			// to avoid double-counting attempts since RecordSuccess also increments).
-			// Same swap as above: wait first, then record.
 			m.failures.Add(1)
 			m.setState(StateFailed)
-			// H-4 fix: structured event for short-run failure
 			m.logStructuredEvent("stream_short_run_failure",
 				"run_duration", runTime.String(),
 				"threshold", successThreshold.String(),
@@ -358,20 +243,15 @@ func (m *Manager) Run(ctx context.Context) error {
 			)
 			m.logError("FFmpeg ran for %v (< %v threshold), treating as failure", runTime, successThreshold)
 
-			// Wait before recording failure.
 			if waitErr := m.backoff.WaitContext(ctx); waitErr != nil {
 				m.setState(StateStopped)
 				return waitErr
 			}
 			m.backoff.RecordFailure()
-
-			// Continue to retry
 			continue
 		}
 
 		m.logf("FFmpeg ran successfully for %v", runTime)
-
-		// H-4 fix: structured recovery event
 		m.logStructuredEvent("stream_recovery",
 			"run_duration", runTime.String(),
 			"attempt", m.attempts.Load(),
@@ -381,85 +261,17 @@ func (m *Manager) Run(ctx context.Context) error {
 		// Long successful run - reset backoff
 		m.backoff.RecordSuccess(runTime)
 
-		// If we get here, FFmpeg exited after a long run
-		// Check if context was cancelled
 		select {
 		case <-ctx.Done():
 			m.setState(StateStopped)
 			return ctx.Err()
 		default:
-			// Restart immediately (no backoff)
 			continue
 		}
 	}
 }
 
-// State returns the current manager state.
-//
-// Returns StateIdle if the manager was not properly initialized
-// (e.g., created via &Manager{} instead of NewManager()).
-// This provides safe, defensive behavior for edge cases.
-func (m *Manager) State() State {
-	if m == nil {
-		return StateIdle
-	}
-	v := m.state.Load()
-	if v == nil {
-		return StateIdle
-	}
-	return v.(State)
-}
-
-// Attempts returns the total number of start attempts.
-func (m *Manager) Attempts() int {
-	return int(m.attempts.Load())
-}
-
-// Failures returns the total number of failures.
-func (m *Manager) Failures() int {
-	return int(m.failures.Load())
-}
-
-// Metrics returns current manager metrics.
-//
-// Returns zero-value Metrics if manager is nil.
-func (m *Manager) Metrics() Metrics {
-	if m == nil {
-		return Metrics{State: StateIdle}
-	}
-
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	var uptime time.Duration
-	if !m.startTime.IsZero() {
-		uptime = time.Since(m.startTime)
-	}
-
-	var deviceName, streamName string
-	if m.cfg != nil {
-		deviceName = m.cfg.DeviceName
-		streamName = m.cfg.StreamName
-	}
-
-	return Metrics{
-		DeviceName: deviceName,
-		StreamName: streamName,
-		State:      m.State(),
-		StartTime:  m.startTime,
-		Uptime:     uptime,
-		Attempts:   m.Attempts(),
-		Failures:   m.Failures(),
-	}
-}
-
 // Close releases resources held by the manager.
-//
-// This should be called after Run() returns to clean up resources such as
-// the rotating log writer. It is safe to call multiple times.
-//
-// Returns:
-//   - error: if closing the log writer fails
 func (m *Manager) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -474,13 +286,7 @@ func (m *Manager) Close() error {
 	return nil
 }
 
-// setState atomically updates the manager state.
-func (m *Manager) setState(s State) {
-	m.state.Store(s)
-}
-
 // acquireLock acquires the file lock for this device.
-// Respects context cancellation for graceful shutdown.
 func (m *Manager) acquireLock(ctx context.Context) error {
 	lockPath := filepath.Join(m.cfg.LockDir, m.cfg.DeviceName+".lock")
 	fl, err := lock.NewFileLock(lockPath)
@@ -488,7 +294,6 @@ func (m *Manager) acquireLock(ctx context.Context) error {
 		return fmt.Errorf("failed to create lock: %w", err)
 	}
 
-	// Try to acquire lock with timeout (context-aware for graceful shutdown)
 	if err := fl.AcquireContext(ctx, 30*time.Second); err != nil {
 		return fmt.Errorf("failed to acquire lock: %w", err)
 	}
