@@ -262,6 +262,18 @@ func (r *Runner) getChecks() []func(context.Context) CheckResult {
 		r.checkTCPResources,
 		// 24. Entropy
 		r.checkEntropy,
+		// 25. Kernel Modules
+		r.checkKernelModules,
+		// 26. Device Permissions
+		r.checkDevicePermissions,
+		// 27. FFmpeg Codecs
+		r.checkFFmpegCodecs,
+		// 28. USB Stability
+		r.checkUSBStability,
+		// 29. Lock File Permissions
+		r.checkLockFilePermissions,
+		// 30. Resource Limits
+		r.checkUlimits,
 	}
 }
 

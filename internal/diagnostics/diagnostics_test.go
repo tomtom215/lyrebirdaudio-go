@@ -595,8 +595,8 @@ func TestGetChecks(t *testing.T) {
 	runnerFull := NewRunner(optsFull)
 	fullChecks := runnerFull.getChecks()
 
-	if len(fullChecks) != 24 {
-		t.Errorf("expected 24 full checks, got %d", len(fullChecks))
+	if len(fullChecks) != 30 {
+		t.Errorf("expected 30 full checks, got %d", len(fullChecks))
 	}
 
 	// Test debug mode (same as full)
@@ -605,8 +605,8 @@ func TestGetChecks(t *testing.T) {
 	runnerDebug := NewRunner(optsDebug)
 	debugChecks := runnerDebug.getChecks()
 
-	if len(debugChecks) != 24 {
-		t.Errorf("expected 24 debug checks, got %d", len(debugChecks))
+	if len(debugChecks) != 30 {
+		t.Errorf("expected 30 full checks, got %d", len(debugChecks))
 	}
 }
 
