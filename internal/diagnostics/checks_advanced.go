@@ -23,7 +23,7 @@ func (r *Runner) checkKernelModules(ctx context.Context) CheckResult {
 		Category: "System",
 	}
 
-	data, err := os.ReadFile("/proc/modules")
+	data, err := os.ReadFile(r.opts.ProcFS + "/modules")
 	if err != nil {
 		result.Status = StatusError
 		result.Message = fmt.Sprintf("failed to read /proc/modules: %v", err)
@@ -51,7 +51,7 @@ func (r *Runner) checkDevicePermissions(ctx context.Context) CheckResult {
 		Category: "Audio",
 	}
 
-	matches, err := filepath.Glob("/dev/snd/*")
+	matches, err := filepath.Glob(r.opts.DevSndDir + "/*")
 	if err != nil || len(matches) == 0 {
 		result.Status = StatusWarning
 		result.Message = "No /dev/snd devices found"
@@ -119,7 +119,6 @@ func (r *Runner) checkFFmpegCodecs(ctx context.Context) CheckResult {
 		result.Duration = time.Since(start)
 		return result
 	}
-	encoderOutput := string(output)
 
 	// #nosec G204 -- ffmpegPath from exec.LookPath
 	cmd2 := exec.CommandContext(ctx, ffmpegPath, "-hide_banner", "-decoders")
@@ -130,35 +129,13 @@ func (r *Runner) checkFFmpegCodecs(ctx context.Context) CheckResult {
 		result.Duration = time.Since(start)
 		return result
 	}
-	decoderOutput := string(output2)
 
-	var missing []string
-	var details []string
-
-	for codec, desc := range requiredEncoders {
-		if strings.Contains(encoderOutput, codec) {
-			details = append(details, fmt.Sprintf("encoder %s: OK", codec))
-		} else {
-			missing = append(missing, fmt.Sprintf("%s (%s)", codec, desc))
-		}
-	}
-	for codec, desc := range requiredDecoders {
-		if strings.Contains(decoderOutput, codec) {
-			details = append(details, fmt.Sprintf("decoder %s: OK", codec))
-		} else {
-			missing = append(missing, fmt.Sprintf("%s (%s)", codec, desc))
-		}
-	}
-
-	if len(missing) > 0 {
-		result.Status = StatusCritical
-		result.Message = fmt.Sprintf("Missing codecs: %s", strings.Join(missing, "; "))
+	result.Status, result.Message, result.Details = evaluateCodecsOutput(
+		string(output), string(output2), requiredEncoders, requiredDecoders,
+	)
+	if result.Status == StatusCritical {
 		result.Suggestions = append(result.Suggestions,
 			"Reinstall FFmpeg with full codec support: apt-get install ffmpeg")
-	} else {
-		result.Status = StatusOK
-		result.Message = "All required codecs available"
-		result.Details = strings.Join(details, "; ")
 	}
 
 	result.Duration = time.Since(start)
@@ -202,7 +179,7 @@ func (r *Runner) checkLockFilePermissions(ctx context.Context) CheckResult {
 		Category: "System",
 	}
 
-	lockDir := "/var/run/lyrebird"
+	lockDir := r.opts.LockDir
 	info, err := os.Stat(lockDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -280,7 +257,7 @@ func (r *Runner) checkUlimits(ctx context.Context) CheckResult {
 		Category: "System",
 	}
 
-	softData, err := os.ReadFile("/proc/self/limits")
+	softData, err := os.ReadFile(r.opts.ProcFS + "/self/limits")
 	if err != nil {
 		result.Status = StatusError
 		result.Message = fmt.Sprintf("failed to read /proc/self/limits: %v", err)

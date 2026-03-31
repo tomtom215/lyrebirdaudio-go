@@ -198,6 +198,278 @@ func TestEvaluateResourceLimits(t *testing.T) {
 	}
 }
 
+func TestEvaluateCodecsOutput(t *testing.T) {
+	encoders := map[string]string{
+		"libopus": "Opus encoder",
+		"aac":     "AAC encoder",
+	}
+	decoders := map[string]string{
+		"pcm_s16le": "PCM S16 decoder",
+	}
+
+	tests := []struct {
+		name       string
+		encOut     string
+		decOut     string
+		wantStatus CheckStatus
+		wantSubstr string
+	}{
+		{
+			name:       "all codecs present",
+			encOut:     " libopus  ...\n aac    ...\n",
+			decOut:     " pcm_s16le ...\n",
+			wantStatus: StatusOK,
+			wantSubstr: "All required codecs",
+		},
+		{
+			name:       "missing opus encoder",
+			encOut:     " aac ...\n",
+			decOut:     " pcm_s16le ...\n",
+			wantStatus: StatusCritical,
+			wantSubstr: "Missing codecs",
+		},
+		{
+			name:       "missing decoder",
+			encOut:     " libopus ...\n aac ...\n",
+			decOut:     "",
+			wantStatus: StatusCritical,
+			wantSubstr: "Missing codecs",
+		},
+		{
+			name:       "all missing",
+			encOut:     "",
+			decOut:     "",
+			wantStatus: StatusCritical,
+			wantSubstr: "Missing codecs",
+		},
+		{
+			name:       "empty required maps",
+			encOut:     "",
+			decOut:     "",
+			wantStatus: StatusOK,
+			wantSubstr: "All required codecs",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			enc := encoders
+			dec := decoders
+			if tt.name == "empty required maps" {
+				enc = map[string]string{}
+				dec = map[string]string{}
+			}
+			status, msg, _ := evaluateCodecsOutput(tt.encOut, tt.decOut, enc, dec)
+			if status != tt.wantStatus {
+				t.Errorf("status = %v, want %v (msg: %s)", status, tt.wantStatus, msg)
+			}
+			if tt.wantSubstr != "" && !contains(msg, tt.wantSubstr) {
+				t.Errorf("message %q does not contain %q", msg, tt.wantSubstr)
+			}
+		})
+	}
+}
+
+func TestEvaluateFFmpegOutput(t *testing.T) {
+	tests := []struct {
+		name       string
+		verOut     string
+		codecOut   string
+		wantStatus CheckStatus
+		wantSubstr string
+	}{
+		{
+			name:       "opus present",
+			verOut:     "ffmpeg version 5.1.0\nbuilt with gcc",
+			codecOut:   " libopus encoder\n",
+			wantStatus: StatusOK,
+			wantSubstr: "available",
+		},
+		{
+			name:       "aac present but no opus",
+			verOut:     "ffmpeg version 5.1.0\n",
+			codecOut:   " aac encoder\n",
+			wantStatus: StatusOK,
+			wantSubstr: "available",
+		},
+		{
+			name:       "no recommended codecs",
+			verOut:     "ffmpeg version 5.1.0\n",
+			codecOut:   "some other codec\n",
+			wantStatus: StatusWarning,
+			wantSubstr: "missing recommended",
+		},
+		{
+			name:       "details from first line",
+			verOut:     "ffmpeg version 6.0 Copyright ...\nnext line",
+			codecOut:   " libopus\n",
+			wantStatus: StatusOK,
+			wantSubstr: "available",
+		},
+		{
+			name:       "empty version output",
+			verOut:     "",
+			codecOut:   " libopus\n",
+			wantStatus: StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			status, msg, _ := evaluateFFmpegOutput(tt.verOut, tt.codecOut)
+			if status != tt.wantStatus {
+				t.Errorf("status = %v, want %v (msg: %s)", status, tt.wantStatus, msg)
+			}
+			if tt.wantSubstr != "" && !contains(msg, tt.wantSubstr) {
+				t.Errorf("message %q does not contain %q", msg, tt.wantSubstr)
+			}
+		})
+	}
+}
+
+func TestEvaluateTimeSyncOutput(t *testing.T) {
+	tests := []struct {
+		name       string
+		output     string
+		wantStatus CheckStatus
+		wantSubstr string
+	}{
+		{
+			name:       "synchronized yes",
+			output:     "               Local time: Mon 2026-01-01 12:00:00 UTC\n         Universal time: Mon 2026-01-01 12:00:00 UTC\n               RTC time: Mon 2026-01-01 12:00:00\n              Time zone: UTC (UTC, +0000)\nSystem clock synchronized: yes\n              NTP service: active\n",
+			wantStatus: StatusOK,
+			wantSubstr: "synchronized",
+		},
+		{
+			name:       "timedatectl classic synchronized yes",
+			output:     "      synchronized: yes\n",
+			wantStatus: StatusOK,
+			wantSubstr: "synchronized",
+		},
+		{
+			name:       "not synchronized",
+			output:     "      synchronized: no\n",
+			wantStatus: StatusWarning,
+			wantSubstr: "may not be synchronized",
+		},
+		{
+			name:       "empty output",
+			output:     "",
+			wantStatus: StatusWarning,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			status, msg := evaluateTimeSyncOutput(tt.output)
+			if status != tt.wantStatus {
+				t.Errorf("status = %v, want %v (msg: %s)", status, tt.wantStatus, msg)
+			}
+			if tt.wantSubstr != "" && !contains(msg, tt.wantSubstr) {
+				t.Errorf("message %q does not contain %q", msg, tt.wantSubstr)
+			}
+		})
+	}
+}
+
+func TestEvaluateSystemdServicesOutput(t *testing.T) {
+	services := []string{"mediamtx", "lyrebird-stream"}
+
+	tests := []struct {
+		name       string
+		statuses   map[string]string
+		wantStatus CheckStatus
+		wantSubstr string
+	}{
+		{
+			name:       "all running",
+			statuses:   map[string]string{"mediamtx": "active", "lyrebird-stream": "active"},
+			wantStatus: StatusOK,
+			wantSubstr: "All services running",
+		},
+		{
+			name:       "one stopped",
+			statuses:   map[string]string{"mediamtx": "active", "lyrebird-stream": "inactive"},
+			wantStatus: StatusWarning,
+			wantSubstr: "lyrebird-stream",
+		},
+		{
+			name:       "both stopped",
+			statuses:   map[string]string{"mediamtx": "inactive", "lyrebird-stream": "inactive"},
+			wantStatus: StatusWarning,
+			wantSubstr: "No LyreBird",
+		},
+		{
+			name:       "empty statuses",
+			statuses:   map[string]string{},
+			wantStatus: StatusWarning,
+			wantSubstr: "No LyreBird",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			status, msg := evaluateSystemdServicesOutput(services, tt.statuses)
+			if status != tt.wantStatus {
+				t.Errorf("status = %v, want %v (msg: %s)", status, tt.wantStatus, msg)
+			}
+			if tt.wantSubstr != "" && !contains(msg, tt.wantSubstr) {
+				t.Errorf("message %q does not contain %q", msg, tt.wantSubstr)
+			}
+		})
+	}
+}
+
+func TestEvaluateProcessRestarts(t *testing.T) {
+	tests := []struct {
+		name       string
+		output     string
+		wantStatus CheckStatus
+		wantSubstr string
+	}{
+		{
+			name:       "no restarts",
+			output:     "Jan 01 10:00:00 host mediamtx[1234]: Listening on :8554\n",
+			wantStatus: StatusOK,
+			wantSubstr: "stable",
+		},
+		{
+			name:       "few restarts",
+			output:     "Started mediamtx\nStarted mediamtx\nStarted mediamtx\n",
+			wantStatus: StatusOK,
+			wantSubstr: "stable",
+		},
+		{
+			name:       "too many restarts",
+			output:     "Started mediamtx\nStarted mediamtx\nStarted mediamtx\nStarted mediamtx\n",
+			wantStatus: StatusWarning,
+			wantSubstr: "restarted",
+		},
+		{
+			name:       "empty output",
+			output:     "",
+			wantStatus: StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			status, msg := evaluateProcessRestarts(tt.output)
+			if status != tt.wantStatus {
+				t.Errorf("status = %v, want %v (msg: %s)", status, tt.wantStatus, msg)
+			}
+			if tt.wantSubstr != "" && !contains(msg, tt.wantSubstr) {
+				t.Errorf("message %q does not contain %q", msg, tt.wantSubstr)
+			}
+		})
+	}
+}
+
 // contains is a simple substring check helper for tests.
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||

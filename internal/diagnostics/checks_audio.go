@@ -23,8 +23,8 @@ func (r *Runner) checkUSBAudio(ctx context.Context) CheckResult {
 		Category: "Audio",
 	}
 
-	// Check for USB audio devices in /proc/asound
-	pattern := "/proc/asound/card*/usbid"
+	// Check for USB audio devices in procFS/asound
+	pattern := r.opts.ProcFS + "/asound/card*/usbid"
 	matches, err := filepath.Glob(pattern)
 	if err != nil || len(matches) == 0 {
 		result.Status = StatusWarning
@@ -100,24 +100,14 @@ func (r *Runner) checkFFmpeg(ctx context.Context) CheckResult {
 		return result
 	}
 
-	// Check for opus codec
 	// #nosec G204 -- path is from exec.LookPath, not user input
 	codecOut, _ := exec.CommandContext(ctx, path, "-encoders").Output()
-	hasOpus := strings.Contains(string(codecOut), "libopus")
-	hasAAC := strings.Contains(string(codecOut), "aac")
 
-	if !hasOpus && !hasAAC {
-		result.Status = StatusWarning
-		result.Message = "FFmpeg missing recommended audio codecs"
+	result.Status, result.Message, result.Details = evaluateFFmpegOutput(
+		string(out), string(codecOut),
+	)
+	if result.Status == StatusWarning {
 		result.Suggestions = append(result.Suggestions, "Install ffmpeg with opus support")
-	} else {
-		result.Status = StatusOK
-		result.Message = "FFmpeg available with audio codecs"
-	}
-
-	lines := strings.Split(string(out), "\n")
-	if len(lines) > 0 {
-		result.Details = lines[0]
 	}
 
 	result.Duration = time.Since(start)
@@ -131,8 +121,8 @@ func (r *Runner) checkALSA(ctx context.Context) CheckResult {
 		Category: "Audio",
 	}
 
-	// Check /proc/asound exists
-	if _, err := os.Stat("/proc/asound"); os.IsNotExist(err) {
+	// Check procFS/asound exists
+	if _, err := os.Stat(r.opts.ProcFS + "/asound"); os.IsNotExist(err) {
 		result.Status = StatusCritical
 		result.Message = "ALSA not available (/proc/asound missing)"
 		result.Suggestions = append(result.Suggestions, "Load ALSA kernel modules")
@@ -141,7 +131,7 @@ func (r *Runner) checkALSA(ctx context.Context) CheckResult {
 	}
 
 	// Check for audio cards
-	cards, _ := filepath.Glob("/proc/asound/card*")
+	cards, _ := filepath.Glob(r.opts.ProcFS + "/asound/card*")
 	if len(cards) == 0 {
 		result.Status = StatusWarning
 		result.Message = "No ALSA audio cards found"
@@ -279,7 +269,7 @@ func (r *Runner) checkFileDescriptors(ctx context.Context) CheckResult {
 		Category: "Resources",
 	}
 
-	data, err := os.ReadFile("/proc/sys/fs/file-nr")
+	data, err := os.ReadFile(r.opts.ProcFS + "/sys/fs/file-nr")
 	if err != nil {
 		result.Status = StatusError
 		result.Message = "Failed to read file descriptor info"
@@ -300,7 +290,7 @@ func (r *Runner) checkMemory(ctx context.Context) CheckResult {
 		Category: "Resources",
 	}
 
-	data, err := os.ReadFile("/proc/meminfo")
+	data, err := os.ReadFile(r.opts.ProcFS + "/meminfo")
 	if err != nil {
 		result.Status = StatusError
 		result.Message = "Failed to read memory info"

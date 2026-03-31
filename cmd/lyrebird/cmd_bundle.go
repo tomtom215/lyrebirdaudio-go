@@ -5,6 +5,8 @@ package main
 import (
 	"archive/tar"
 	"compress/gzip"
+	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +14,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"time"
+
+	"github.com/tomtom215/lyrebirdaudio-go/internal/diagnostics"
 )
 
 // createDiagnosticBundle collects diagnostic information into a tar.gz archive
@@ -42,6 +46,16 @@ func createDiagnosticBundle(outputPath string) error {
 			return fmt.Sprintf("command failed: %v\n%s", err, out)
 		}
 		return string(out)
+	}
+
+	// --- Structured diagnostic report (all 30 checks) ---
+	diagOpts := diagnostics.DefaultOptions()
+	diagOpts.ConfigPath = defaultConfigPath
+	runner := diagnostics.NewRunner(diagOpts)
+	if report, diagErr := runner.Run(context.Background()); diagErr == nil {
+		if data, jsonErr := json.MarshalIndent(report, "", "  "); jsonErr == nil {
+			writeFile("diagnostics.json", string(data))
+		}
 	}
 
 	// Collect system info.

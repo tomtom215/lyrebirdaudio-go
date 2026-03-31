@@ -125,7 +125,7 @@ func (r *Runner) checkUdevRules(ctx context.Context) CheckResult {
 		Category: "Config",
 	}
 
-	rulesPath := "/etc/udev/rules.d/99-usb-soundcards.rules"
+	rulesPath := filepath.Join(r.opts.UdevRulesDir, "99-usb-soundcards.rules")
 	if _, err := os.Stat(rulesPath); os.IsNotExist(err) {
 		result.Status = StatusWarning
 		result.Message = "udev rules not configured"
@@ -146,7 +146,7 @@ func (r *Runner) checkLockDir(ctx context.Context) CheckResult {
 		Category: "System",
 	}
 
-	lockDir := "/var/run/lyrebird"
+	lockDir := r.opts.LockDir
 	if info, err := os.Stat(lockDir); os.IsNotExist(err) {
 		result.Status = StatusOK
 		result.Message = "Lock directory will be created on first run"
@@ -227,13 +227,7 @@ func (r *Runner) checkTimeSynchronization(ctx context.Context) CheckResult {
 		return result
 	}
 
-	if strings.Contains(string(out), "synchronized: yes") {
-		result.Status = StatusOK
-		result.Message = "System time synchronized"
-	} else {
-		result.Status = StatusWarning
-		result.Message = "System time may not be synchronized"
-	}
+	result.Status, result.Message = evaluateTimeSyncOutput(string(out))
 
 	result.Duration = time.Since(start)
 	return result
@@ -247,29 +241,13 @@ func (r *Runner) checkSystemdServices(ctx context.Context) CheckResult {
 	}
 
 	services := []string{"mediamtx", "lyrebird-stream"}
-	var running, stopped []string
-
+	statuses := make(map[string]string, len(services))
 	for _, svc := range services {
 		// #nosec G204 -- svc is from hardcoded list, not user input
 		out, _ := exec.CommandContext(ctx, "systemctl", "is-active", svc).Output()
-		status := strings.TrimSpace(string(out))
-		if status == "active" {
-			running = append(running, svc)
-		} else {
-			stopped = append(stopped, svc)
-		}
+		statuses[svc] = strings.TrimSpace(string(out))
 	}
-
-	if len(running) == len(services) {
-		result.Status = StatusOK
-		result.Message = "All services running"
-	} else if len(running) > 0 {
-		result.Status = StatusWarning
-		result.Message = fmt.Sprintf("Some services stopped: %s", strings.Join(stopped, ", "))
-	} else {
-		result.Status = StatusWarning
-		result.Message = "No LyreBird services running"
-	}
+	result.Status, result.Message = evaluateSystemdServicesOutput(services, statuses)
 
 	result.Duration = time.Since(start)
 	return result
@@ -291,14 +269,7 @@ func (r *Runner) checkProcessStability(ctx context.Context) CheckResult {
 		return result
 	}
 
-	restarts := strings.Count(string(out), "Started")
-	if restarts > 3 {
-		result.Status = StatusWarning
-		result.Message = fmt.Sprintf("MediaMTX restarted %d times in last hour", restarts)
-	} else {
-		result.Status = StatusOK
-		result.Message = "Services stable"
-	}
+	result.Status, result.Message = evaluateProcessRestarts(string(out))
 
 	result.Duration = time.Since(start)
 	return result
@@ -311,7 +282,7 @@ func (r *Runner) checkEntropy(ctx context.Context) CheckResult {
 		Category: "System",
 	}
 
-	data, err := os.ReadFile("/proc/sys/kernel/random/entropy_avail")
+	data, err := os.ReadFile(r.opts.ProcFS + "/sys/kernel/random/entropy_avail")
 	if err != nil {
 		result.Status = StatusOK
 		result.Message = "Entropy check skipped"
@@ -332,7 +303,7 @@ func (r *Runner) checkInotifyLimits(ctx context.Context) CheckResult {
 		Category: "Resources",
 	}
 
-	data, err := os.ReadFile("/proc/sys/fs/inotify/max_user_watches")
+	data, err := os.ReadFile(r.opts.ProcFS + "/sys/fs/inotify/max_user_watches")
 	if err != nil {
 		result.Status = StatusOK
 		result.Message = "inotify check skipped"
