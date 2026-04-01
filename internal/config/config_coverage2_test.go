@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // TestKoanfTransformDevicesUnknownField covers koanf.go:208-209 —
@@ -230,5 +231,87 @@ func TestCleanOldBackupsRemoveFails(t *testing.T) {
 	// No files could be deleted due to EACCES.
 	if deleted != 0 {
 		t.Errorf("CleanOldBackups() deleted=%d, want 0 (all removes failed)", deleted)
+	}
+}
+
+// TestRestoreBackupWriteFileError covers backup.go:228-230 —
+// the `failed to restore config` error path in RestoreBackup.
+// The config parent directory is made non-writable after MkdirAll succeeds,
+// so os.WriteFile fails with EACCES.
+func TestRestoreBackupWriteFileError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("cannot test non-writable directory as root")
+	}
+
+	tmpDir := t.TempDir()
+
+	// Create a valid backup file.
+	backupPath := filepath.Join(tmpDir, "config.yaml.2025-01-01T00-00-00.bak")
+	if err := os.WriteFile(backupPath, []byte("# valid yaml\n"), 0600); err != nil {
+		t.Fatalf("WriteFile backup: %v", err)
+	}
+
+	// Create the config parent directory, then make it non-writable.
+	configParent := filepath.Join(tmpDir, "cfgdir")
+	if err := os.Mkdir(configParent, 0750); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	if err := os.Chmod(configParent, 0555); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(configParent, 0750) })
+
+	configPath := filepath.Join(configParent, "config.yaml")
+	backupDir := tmpDir
+
+	_, err := RestoreBackup(backupPath, configPath, backupDir)
+	if err == nil {
+		t.Error("RestoreBackup() expected error for non-writable config dir, got nil")
+	}
+}
+
+// TestSaveWithCreateTempError covers config.go:195-197 —
+// the `failed to create temp config file` error path in saveWith.
+// A non-writable parent directory causes os.CreateTemp to fail.
+func TestSaveWithCreateTempError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("cannot test CreateTemp failure as root")
+	}
+
+	tmpDir := t.TempDir()
+	parentDir := filepath.Join(tmpDir, "cfgdir")
+	if err := os.Mkdir(parentDir, 0555); err != nil { // non-writable from the start
+		t.Fatalf("Mkdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(parentDir, 0750) })
+
+	configPath := filepath.Join(parentDir, "config.yaml")
+	cfg := DefaultConfig()
+	err := cfg.saveWith(configPath, defaultCreateTemp)
+	if err == nil {
+		t.Error("saveWith() expected CreateTemp error for non-writable parent dir, got nil")
+	}
+}
+
+// TestSaveWithMarshalError covers config.go:191-193 —
+// the `failed to marshal config` error path in saveWith. In practice, the
+// default Config type marshals without error; we call saveWith with a
+// valid config to exercise the surrounding code and confirm no panic.
+// (The marshal-error branch itself is unreachable for well-formed configs.)
+func TestSaveConfigRoundTrip(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "config.yaml")
+	cfg := DefaultConfig()
+	cfg.Stream.InitialRestartDelay = 5 * time.Second
+	if err := cfg.Save(cfgPath); err != nil {
+		t.Fatalf("Save() unexpected error: %v", err)
+	}
+	loaded, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig() after Save(): %v", err)
+	}
+	if loaded.Stream.InitialRestartDelay != cfg.Stream.InitialRestartDelay {
+		t.Errorf("round-trip: InitialRestartDelay = %v, want %v",
+			loaded.Stream.InitialRestartDelay, cfg.Stream.InitialRestartDelay)
 	}
 }
