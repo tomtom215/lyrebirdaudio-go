@@ -130,9 +130,10 @@ type Options struct {
 	LockDir    string // directory holding daemon lock files (default /var/run/lyrebird)
 
 	// Path overrides for testability. Defaults use the real system paths.
-	ProcFS       string // /proc mount point (default "/proc")
-	DevSndDir    string // sound device directory (default "/dev/snd")
-	UdevRulesDir string // udev rules directory (default "/etc/udev/rules.d")
+	ProcFS          string // /proc mount point (default "/proc")
+	DevSndDir       string // sound device directory (default "/dev/snd")
+	UdevRulesDir    string // udev rules directory (default "/etc/udev/rules.d")
+	MediaMTXAPIAddr string // MediaMTX API host:port (default "localhost:9997")
 
 	Output  io.Writer
 	Verbose bool
@@ -141,15 +142,16 @@ type Options struct {
 // DefaultOptions returns default diagnostic options.
 func DefaultOptions() Options {
 	return Options{
-		Mode:         ModeFull,
-		ConfigPath:   "/etc/lyrebird/config.yaml",
-		LogDir:       "/var/log/lyrebird",
-		LockDir:      "/var/run/lyrebird",
-		ProcFS:       "/proc",
-		DevSndDir:    "/dev/snd",
-		UdevRulesDir: "/etc/udev/rules.d",
-		Output:       os.Stdout,
-		Verbose:      false,
+		Mode:            ModeFull,
+		ConfigPath:      "/etc/lyrebird/config.yaml",
+		LogDir:          "/var/log/lyrebird",
+		LockDir:         "/var/run/lyrebird",
+		ProcFS:          "/proc",
+		DevSndDir:       "/dev/snd",
+		UdevRulesDir:    "/etc/udev/rules.d",
+		MediaMTXAPIAddr: "localhost:9997",
+		Output:          os.Stdout,
+		Verbose:         false,
 	}
 }
 

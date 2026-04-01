@@ -186,8 +186,12 @@ func (r *Runner) checkMediaMTXAPI(ctx context.Context) CheckResult {
 	}
 
 	// Try to connect to API
+	apiAddr := r.opts.MediaMTXAPIAddr
+	if apiAddr == "" {
+		apiAddr = "localhost:9997"
+	}
 	client := &http.Client{Timeout: 2 * time.Second}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://localhost:9997/v3/paths/list", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+apiAddr+"/v3/paths/list", nil)
 	if err != nil {
 		result.Status = StatusError
 		result.Message = "Failed to create request"
