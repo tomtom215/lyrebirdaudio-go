@@ -13,7 +13,7 @@ import (
 func TestSystemInfoEmptyRecordDirFallback(t *testing.T) {
 	p := &daemonSystemInfoProvider{
 		recordDir:        "", // triggers the `dir = "/"` fallback branch
-		diskLowThreshold: 0, // disabled
+		diskLowThreshold: 0,  // disabled
 	}
 
 	si := p.SystemInfo()
