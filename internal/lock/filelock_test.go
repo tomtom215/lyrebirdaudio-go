@@ -1072,6 +1072,82 @@ func TestFileLockFilePermissionsContext(t *testing.T) {
 	}
 }
 
+// TestNewFileLockMkdirAllFailure verifies NewFileLock returns an error when the
+// lock directory cannot be created (e.g. a file exists at the parent path).
+func TestNewFileLockMkdirAllFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	// Create a regular file where the lock parent directory would need to be.
+	parentAsFile := filepath.Join(tmpDir, "not-a-dir")
+	if err := os.WriteFile(parentAsFile, []byte("blocker"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	// Try to create a lock whose parent directory is the file above.
+	lockPath := filepath.Join(parentAsFile, "subdir", "test.lock")
+	_, err := NewFileLock(lockPath)
+	if err == nil {
+		t.Error("expected error when parent path is a file, got nil")
+	}
+}
+
+// TestAcquireContextOpenFileFailure verifies AcquireContext returns an error when
+// the lock file cannot be opened due to directory permission denial.
+func TestAcquireContextOpenFileFailure(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("permission test not meaningful as root")
+	}
+	tmpDir := t.TempDir()
+	lockDir := filepath.Join(tmpDir, "locks")
+	if err := os.MkdirAll(lockDir, 0750); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := NewFileLock(filepath.Join(lockDir, "test.lock"))
+	if err != nil {
+		t.Fatalf("NewFileLock: %v", err)
+	}
+	// Remove write permission from the lock directory — OpenFile will fail.
+	if err := os.Chmod(lockDir, 0550); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(lockDir, 0750) }() // restore for cleanup
+
+	err = lock.AcquireContext(context.Background(), 100*time.Millisecond)
+	if err == nil {
+		t.Error("expected error acquiring lock in non-writable directory")
+		// Clean up in case it somehow succeeded.
+		_ = lock.Release()
+	}
+}
+
+// TestIsLockStaleStatError verifies isLockStale returns false (safe) when os.Stat
+// returns a non-NotExist error (e.g. permission denied on parent directory).
+func TestIsLockStaleStatPermissionError(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("permission test not meaningful as root")
+	}
+	tmpDir := t.TempDir()
+	lockedDir := filepath.Join(tmpDir, "locked")
+	if err := os.MkdirAll(lockedDir, 0750); err != nil {
+		t.Fatal(err)
+	}
+	// Write a lock file inside the locked dir.
+	lockPath := filepath.Join(lockedDir, "test.lock")
+	if err := os.WriteFile(lockPath, []byte("12345"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	// Remove all permissions on the parent → Stat will return permission denied.
+	if err := os.Chmod(lockedDir, 0000); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(lockedDir, 0750) }()
+
+	stale, err := isLockStale(lockPath, DefaultStaleThreshold)
+	// Stat failure → assume not stale (safe default).
+	if stale {
+		t.Error("expected isLockStale to return false on stat error")
+	}
+	_ = err // err may or may not be non-nil depending on OS; stale=false is the key check
+}
+
 // BenchmarkFileLockAcquireContextRelease measures context-aware lock acquisition performance.
 func BenchmarkFileLockAcquireContextRelease(b *testing.B) {
 	lockPath := filepath.Join(b.TempDir(), "bench.lock")

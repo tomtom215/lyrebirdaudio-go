@@ -10,7 +10,7 @@
 
 LyreBirdAudio-Go is a complete rewrite of [LyreBirdAudio](https://github.com/tomtom215/LyreBirdAudio) in Go, providing a drop-in replacement for the bash implementation with improved reliability, concurrency, and maintainability.
 
-**Status:** ✅ **Production Ready** - Validated for supervised deployments. See [Field Deployment](#local-recording-safety-net) before first unattended remote deployment.
+**Status:** 🚧 **Active Development** - Field testing in progress. See [Field Deployment](#local-recording-safety-net) before unattended remote deployment.
 
 ### Key Features
 
@@ -268,7 +268,7 @@ Configuration changes are reloaded immediately. Future enhancements will restart
 
 ### Migration from Bash
 
-**Timeline**: The Go implementation is now production-ready for supervised deployments. The bash version remains available for reference. See the [RUNBOOK](docs/RUNBOOK.md) for field operator procedures.
+**Timeline**: The Go implementation is under active development. The bash version remains available for reference. See the [RUNBOOK](docs/RUNBOOK.md) for field operator procedures.
 
 **Migration Tool**:
 ```bash
@@ -555,4 +555,4 @@ MIT License - see [LICENSE](LICENSE) file for details.
 
 ---
 
-**Project Status**: Active Development | **Production Ready**: No | **Field Testing**: Pending
+**Project Status**: Active Development | **Field Testing**: Pending

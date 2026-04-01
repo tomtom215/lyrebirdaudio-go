@@ -139,22 +139,22 @@ systemd/               → lyrebird-stream.service (18 security hardening direct
 
 | Package | Coverage | Status |
 |---------|----------|--------|
+| internal/util | 100.0% | ✅ Excellent |
+| internal/supervisor | 99.2% | ✅ Excellent |
+| internal/diagnostics | 97.8% | ✅ Excellent |
 | internal/audio | 97.6% | ✅ Excellent |
-| internal/supervisor | 96.4% | ✅ Excellent |
-| internal/health | 94.1% | ✅ Excellent |
-| internal/util | 94.1% | ✅ Excellent |
-| internal/udev | 92.9% | ✅ Excellent |
-| internal/mediamtx | 92.4% | ✅ Excellent |
-| internal/config | 92.0% | ✅ Excellent |
-| internal/updater | 89.5% | ✅ Good |
-| internal/stream | 87.1% | ✅ Good |
-| internal/lock | 77.3% | ⬜ Acceptable |
-| internal/diagnostics | 65.2% | ⬜ Acceptable |
+| internal/config | 97.3% | ✅ Excellent |
+| internal/health | 97.1% | ✅ Excellent |
+| internal/mediamtx | 97.1% | ✅ Excellent |
+| internal/udev | 96.9% | ✅ Excellent |
+| internal/stream | 96.0% | ✅ Excellent |
+| internal/updater | 95.9% | ✅ Excellent |
+| internal/lock | 85.2% | ✅ Good |
 | internal/menu | 61.5% | ⬜ Acceptable (requires terminal) |
-| cmd/lyrebird | 48.5% | ⬜ CLI (root/interactive) |
-| cmd/lyrebird-stream | 32.7% | ⬜ Daemon (runtime env) |
-| **Internal avg** | **~87%** | **Target: 90%+** |
-| **Overall** | **~74%** | **CI min: 65%** |
+| cmd/lyrebird-stream | 78.7% | ⬜ Daemon (runtime env) |
+| cmd/lyrebird | 68.6% | ⬜ CLI (root/interactive) |
+| **Internal avg** | **~93.5%** | **Target: 90%+ ✅** |
+| **Overall** | **~90.6%** | **CI min: 65% ✅** |
 
 ---
 

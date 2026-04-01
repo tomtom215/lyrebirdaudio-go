@@ -6,6 +6,7 @@ package diagnostics
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -112,4 +113,97 @@ func parseLimitLine(line string) int64 {
 		}
 	}
 	return 0
+}
+
+// evaluateCodecsOutput determines FFmpeg codec availability from encoder/decoder output.
+// encoderOutput is from `ffmpeg -encoders`, decoderOutput is from `ffmpeg -decoders`.
+func evaluateCodecsOutput(
+	encoderOutput, decoderOutput string,
+	requiredEncoders, requiredDecoders map[string]string,
+) (status CheckStatus, message, details string) {
+	var missing []string
+	var found []string
+
+	for codec, desc := range requiredEncoders {
+		if strings.Contains(encoderOutput, codec) {
+			found = append(found, "encoder "+codec+": OK")
+		} else {
+			missing = append(missing, codec+" ("+desc+")")
+		}
+	}
+	for codec, desc := range requiredDecoders {
+		if strings.Contains(decoderOutput, codec) {
+			found = append(found, "decoder "+codec+": OK")
+		} else {
+			missing = append(missing, codec+" ("+desc+")")
+		}
+	}
+
+	// Sort for deterministic output in tests.
+	sort.Strings(found)
+	sort.Strings(missing)
+
+	if len(missing) > 0 {
+		return StatusCritical,
+			fmt.Sprintf("Missing codecs: %s", strings.Join(missing, "; ")),
+			""
+	}
+	return StatusOK, "All required codecs available", strings.Join(found, "; ")
+}
+
+// evaluateFFmpegOutput determines FFmpeg status from version and codec output.
+// Returns status, message, and details (first line of version output).
+func evaluateFFmpegOutput(versionOut, codecOut string) (CheckStatus, string, string) {
+	lines := strings.SplitN(versionOut, "\n", 2)
+	details := ""
+	if len(lines) > 0 {
+		details = strings.TrimSpace(lines[0])
+	}
+
+	hasOpus := strings.Contains(codecOut, "libopus")
+	hasAAC := strings.Contains(codecOut, "aac")
+	if !hasOpus && !hasAAC {
+		return StatusWarning, "FFmpeg missing recommended audio codecs", details
+	}
+	return StatusOK, "FFmpeg available with audio codecs", details
+}
+
+// evaluateTimeSyncOutput parses `timedatectl status` output to determine sync status.
+func evaluateTimeSyncOutput(output string) (CheckStatus, string) {
+	if strings.Contains(output, "synchronized: yes") || strings.Contains(output, "System clock synchronized: yes") {
+		return StatusOK, "System time synchronized"
+	}
+	return StatusWarning, "System time may not be synchronized"
+}
+
+// evaluateSystemdServicesOutput evaluates a map of service → is-active status strings.
+// services is the ordered list of service names for stable messaging.
+func evaluateSystemdServicesOutput(services []string, statuses map[string]string) (CheckStatus, string) {
+	var running, stopped []string
+	for _, svc := range services {
+		if statuses[svc] == "active" {
+			running = append(running, svc)
+		} else {
+			stopped = append(stopped, svc)
+		}
+	}
+
+	switch {
+	case len(running) == len(services):
+		return StatusOK, "All services running"
+	case len(running) > 0:
+		return StatusWarning, fmt.Sprintf("Some services stopped: %s", strings.Join(stopped, ", "))
+	default:
+		return StatusWarning, "No LyreBird services running"
+	}
+}
+
+// evaluateProcessRestarts counts "Started" occurrences in journalctl output
+// and returns a stability verdict.
+func evaluateProcessRestarts(journalOutput string) (CheckStatus, string) {
+	restarts := strings.Count(journalOutput, "Started")
+	if restarts > 3 {
+		return StatusWarning, fmt.Sprintf("MediaMTX restarted %d times in last hour", restarts)
+	}
+	return StatusOK, "Services stable"
 }

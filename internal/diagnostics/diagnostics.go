@@ -127,18 +127,31 @@ type Options struct {
 	Mode       CheckMode
 	ConfigPath string
 	LogDir     string
-	Output     io.Writer
-	Verbose    bool
+	LockDir    string // directory holding daemon lock files (default /var/run/lyrebird)
+
+	// Path overrides for testability. Defaults use the real system paths.
+	ProcFS          string // /proc mount point (default "/proc")
+	DevSndDir       string // sound device directory (default "/dev/snd")
+	UdevRulesDir    string // udev rules directory (default "/etc/udev/rules.d")
+	MediaMTXAPIAddr string // MediaMTX API host:port (default "localhost:9997")
+
+	Output  io.Writer
+	Verbose bool
 }
 
 // DefaultOptions returns default diagnostic options.
 func DefaultOptions() Options {
 	return Options{
-		Mode:       ModeFull,
-		ConfigPath: "/etc/lyrebird/config.yaml",
-		LogDir:     "/var/log/lyrebird",
-		Output:     os.Stdout,
-		Verbose:    false,
+		Mode:            ModeFull,
+		ConfigPath:      "/etc/lyrebird/config.yaml",
+		LogDir:          "/var/log/lyrebird",
+		LockDir:         "/var/run/lyrebird",
+		ProcFS:          "/proc",
+		DevSndDir:       "/dev/snd",
+		UdevRulesDir:    "/etc/udev/rules.d",
+		MediaMTXAPIAddr: "localhost:9997",
+		Output:          os.Stdout,
+		Verbose:         false,
 	}
 }
 
@@ -292,7 +305,7 @@ func (r *Runner) collectSystemInfo() *SystemInfo {
 	}
 
 	// Kernel version
-	if data, err := os.ReadFile("/proc/version"); err == nil {
+	if data, err := os.ReadFile(r.opts.ProcFS + "/version"); err == nil {
 		parts := strings.Fields(string(data))
 		if len(parts) >= 3 {
 			info.Kernel = parts[2]
@@ -300,7 +313,7 @@ func (r *Runner) collectSystemInfo() *SystemInfo {
 	}
 
 	// Memory
-	if data, err := os.ReadFile("/proc/meminfo"); err == nil {
+	if data, err := os.ReadFile(r.opts.ProcFS + "/meminfo"); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
 			if strings.HasPrefix(line, "MemTotal:") {
 				fields := strings.Fields(line)
@@ -315,7 +328,7 @@ func (r *Runner) collectSystemInfo() *SystemInfo {
 	}
 
 	// Uptime
-	if data, err := os.ReadFile("/proc/uptime"); err == nil {
+	if data, err := os.ReadFile(r.opts.ProcFS + "/uptime"); err == nil {
 		fields := strings.Fields(string(data))
 		if len(fields) >= 1 {
 			if secs, err := strconv.ParseFloat(fields[0], 64); err == nil {
