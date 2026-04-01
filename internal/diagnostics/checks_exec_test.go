@@ -373,7 +373,7 @@ func TestCheckMediaMTXServiceInactive(t *testing.T) {
 		t.Fatalf("write fake mediamtx: %v", err)
 	}
 	// Fake systemctl: exits 1 (service not running) so cmd.Output() returns error.
-	systemctlScript := "#!/bin/sh\necho 'inactive'\nexit 3\n" // systemctl exit 3 = inactive
+	systemctlScript := "#!/bin/sh\necho 'inactive'\nexit 3\n"                                               // systemctl exit 3 = inactive
 	if err := os.WriteFile(filepath.Join(tmpBin, "systemctl"), []byte(systemctlScript), 0750); err != nil { //#nosec G306 -- test helper executable
 		t.Fatalf("write fake systemctl: %v", err)
 	}
