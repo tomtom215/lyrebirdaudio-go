@@ -245,6 +245,8 @@ func (r *Runner) getChecks() []func(context.Context) CheckResult {
 		r.checkMediaMTXService,
 		// 9. MediaMTX API
 		r.checkMediaMTXAPI,
+		// 9b. MediaMTX Config Sanity
+		r.checkMediaMTXConfig,
 		// 10. Configuration
 		r.checkConfig,
 		// 11. udev Rules

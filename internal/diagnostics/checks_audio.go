@@ -14,6 +14,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/tomtom215/lyrebirdaudio-go/internal/mediamtx"
 )
 
 func (r *Runner) checkUSBAudio(ctx context.Context) CheckResult {
@@ -214,6 +216,94 @@ func (r *Runner) checkMediaMTXAPI(ctx context.Context) CheckResult {
 	} else {
 		result.Status = StatusWarning
 		result.Message = fmt.Sprintf("MediaMTX API returned status %d", resp.StatusCode)
+	}
+
+	result.Duration = time.Since(start)
+	return result
+}
+
+// checkMediaMTXConfig fetches the live MediaMTX global configuration and
+// sanity-checks the settings that matter for lyrebird. The check is
+// intentionally narrow:
+//
+//   - CRITICAL: the RTSP server is disabled (lyrebird cannot function at all)
+//   - WARNING:  the control API is disabled (this check should not have been
+//     reachable, but surface it anyway for operators inspecting a JSON dump)
+//   - WARNING:  the server is running in "debug" log level, which can fill
+//     the disk in long-running deployments
+//
+// Any sanity-check policy beyond these three is out of scope: a more
+// opinionated check risks producing false alarms for valid deployments.
+// The raw subset of interesting fields is copied into Details so operators
+// can compare against their expected configuration without re-running curl.
+func (r *Runner) checkMediaMTXConfig(ctx context.Context) CheckResult {
+	start := time.Now()
+	result := CheckResult{
+		Name:     "MediaMTX Config",
+		Category: "Services",
+	}
+
+	apiAddr := r.opts.MediaMTXAPIAddr
+	if apiAddr == "" {
+		apiAddr = "localhost:9997"
+	}
+	// NewClient expects a full base URL including scheme; MediaMTXAPIAddr
+	// historically stores host:port only (see checkMediaMTXAPI above), so
+	// we build the URL the same way here for consistency.
+	baseURL := "http://" + apiAddr
+
+	// Bound the request so a wedged API does not stall the diagnose run.
+	checkCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	client := mediamtx.NewClient(baseURL, mediamtx.WithTimeout(3*time.Second))
+	cfg, err := client.GetGlobalConfig(checkCtx)
+	if err != nil {
+		// Treat this as SKIPPED, not an error: checkMediaMTXAPI already
+		// reports reachability. Reporting the same failure twice would
+		// inflate the summary noise.
+		result.Status = StatusSkipped
+		result.Message = "MediaMTX API not reachable (already reported)"
+		result.Duration = time.Since(start)
+		return result
+	}
+
+	// Accumulate findings so we can distinguish "all good" from "one issue"
+	// from "multiple issues" in the summary line.
+	var warnings, criticals []string
+
+	if !cfg.RTSP {
+		criticals = append(criticals, "RTSP server is disabled")
+		result.Suggestions = append(result.Suggestions,
+			"Set rtsp: yes in /etc/mediamtx/mediamtx.yml and restart mediamtx")
+	}
+	if !cfg.API {
+		warnings = append(warnings, "control API is disabled")
+		result.Suggestions = append(result.Suggestions,
+			"Set api: yes in /etc/mediamtx/mediamtx.yml (required for lyrebird monitoring)")
+	}
+	if cfg.LogLevel == "debug" {
+		warnings = append(warnings, "logLevel is debug")
+		result.Suggestions = append(result.Suggestions,
+			"Set logLevel: info in /etc/mediamtx/mediamtx.yml for production deployments")
+	}
+
+	// Details payload: the fields lyrebird cares about, as a single line.
+	result.Details = fmt.Sprintf(
+		"logLevel=%s rtsp=%v rtspAddress=%s rtspEncryption=%s rtspTransports=%v api=%v apiAddress=%s authMethod=%s",
+		cfg.LogLevel, cfg.RTSP, cfg.RTSPAddress, cfg.RTSPEncryption,
+		cfg.RTSPTransports, cfg.API, cfg.APIAddress, cfg.AuthMethod)
+
+	switch {
+	case len(criticals) > 0:
+		result.Status = StatusCritical
+		result.Message = "MediaMTX config issue: " + strings.Join(append(criticals, warnings...), "; ")
+	case len(warnings) > 0:
+		result.Status = StatusWarning
+		result.Message = "MediaMTX config warning: " + strings.Join(warnings, "; ")
+	default:
+		result.Status = StatusOK
+		result.Message = "MediaMTX config OK"
 	}
 
 	result.Duration = time.Since(start)
