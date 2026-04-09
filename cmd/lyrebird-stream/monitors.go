@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -12,6 +13,62 @@ import (
 	"github.com/tomtom215/lyrebirdaudio-go/internal/mediamtx"
 	"github.com/tomtom215/lyrebirdaudio-go/internal/supervisor"
 )
+
+// kickRecoveryTimeout caps how long the stall detector will spend kicking
+// reader sessions before giving up and proceeding to the hard restart. A
+// hung MediaMTX API must not be allowed to stall recovery itself.
+const kickRecoveryTimeout = 3 * time.Second
+
+// kickStalledPathReaders tries to force-disconnect every RTSP reader session
+// attached to the given path name. It is called as a soft cleanup step right
+// before the supervisor hard-removes a stalled publisher.
+//
+// The function is deliberately best-effort:
+//
+//   - It uses its own short-timeout context (kickRecoveryTimeout) so a wedged
+//     MediaMTX API can never stall the stall detector itself.
+//   - It filters sessions to state=="read" so the publisher (the "publish"
+//     session) is never accidentally kicked — the caller already handles that.
+//   - ErrSessionNotFound is swallowed silently: the session raced us and is
+//     already gone, which is exactly what we wanted.
+//   - Any other per-session error is logged at debug level and iteration
+//     continues; one bad session does not prevent kicking the rest.
+//   - An overall list-sessions failure is logged and the function returns
+//     without kicking anything; the caller proceeds to the hard restart.
+func kickStalledPathReaders(ctx context.Context, logger *slog.Logger, client *mediamtx.Client, pathName string) {
+	kickCtx, cancel := context.WithTimeout(ctx, kickRecoveryTimeout)
+	defer cancel()
+
+	sessions, err := client.ListRTSPSessions(kickCtx)
+	if err != nil {
+		logger.Debug("stall recovery: list sessions failed", "stream", pathName, "error", err)
+		return
+	}
+
+	var kicked, failed int
+	for _, s := range sessions {
+		if s.Path != pathName || s.State != "read" {
+			continue
+		}
+		if err := client.KickRTSPSession(kickCtx, s.ID); err != nil {
+			if errors.Is(err, mediamtx.ErrSessionNotFound) {
+				// Session disappeared between list and kick — fine.
+				continue
+			}
+			failed++
+			logger.Debug("stall recovery: kick session failed",
+				"stream", pathName, "session_id", s.ID, "remote", s.RemoteAddr, "error", err)
+			continue
+		}
+		kicked++
+		logger.Info("stall recovery: kicked reader session",
+			"stream", pathName, "session_id", s.ID, "remote", s.RemoteAddr)
+	}
+	if kicked > 0 || failed > 0 {
+		logger.Info("stall recovery: session cleanup complete",
+			"stream", pathName, "kicked", kicked, "failed", failed)
+	}
+}
 
 // startDevicePoller starts the device polling goroutine that periodically scans
 // for newly plugged-in USB devices and registers them with the supervisor.
@@ -244,6 +301,17 @@ func startStallDetector(
 
 				if cfg.Monitor.RestartUnhealthy && stallCount[name] >= maxStallChecks {
 					logger.Warn("restarting stalled stream", "stream", name, "stall_count", stallCount[name])
+					// Belt-and-suspenders cleanup: kick any lingering RTSP
+					// reader sessions attached to this stalled path before
+					// removing the publisher. In most cases MediaMTX will
+					// tear down readers itself when the publisher exits,
+					// but kicking first ensures a clean server-side state
+					// machine when the publisher reconnects — this matters
+					// in the "stuck reader back-pressuring the publisher"
+					// case. Failures here are non-fatal: we still proceed
+					// to the hard restart below.
+					kickStalledPathReaders(ctx, logger, mtxClient, name)
+
 					if removeErr := sup.Remove(name); removeErr != nil {
 						logger.Warn("failed to remove stalled service", "stream", name, "error", removeErr)
 						continue

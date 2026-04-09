@@ -102,8 +102,8 @@ func TestRunFullModeCheckCount(t *testing.T) {
 	runner := NewRunner(opts)
 
 	checks := runner.getChecks()
-	if len(checks) != 30 {
-		t.Errorf("expected 30 full checks, got %d", len(checks))
+	if len(checks) != 31 {
+		t.Errorf("expected 31 full checks, got %d", len(checks))
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -114,8 +114,8 @@ func TestRunFullModeCheckCount(t *testing.T) {
 		t.Fatalf("Run() error: %v", err)
 	}
 
-	if len(report.Checks) != 30 {
-		t.Errorf("expected 30 check results in full mode, got %d", len(report.Checks))
+	if len(report.Checks) != 31 {
+		t.Errorf("expected 31 check results in full mode, got %d", len(report.Checks))
 	}
 
 	// Healthy should be determined by critical/error counts

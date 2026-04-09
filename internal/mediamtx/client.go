@@ -32,15 +32,69 @@ type Client struct {
 }
 
 // Path represents a stream path in MediaMTX.
+//
+// As of MediaMTX v1.17.x, several fields were renamed. The API still emits the
+// old fields for backward compatibility, so both sets are decoded here. Prefer
+// the helper methods (IsAvailable, TotalInboundBytes, TotalOutboundBytes,
+// AvailableAtTime) which return the new field when populated and fall back to
+// the deprecated one, keeping the client compatible with older servers.
 type Path struct {
-	Name          string   `json:"name"`
-	Source        *Source  `json:"source,omitempty"`
-	Ready         bool     `json:"ready"`
-	ReadyTime     string   `json:"readyTime,omitempty"`
-	Tracks        []Track  `json:"tracks,omitempty"`
-	BytesReceived int64    `json:"bytesReceived"`
-	BytesSent     int64    `json:"bytesSent"`
-	Readers       []Reader `json:"readers,omitempty"`
+	Name     string      `json:"name"`
+	ConfName string      `json:"confName,omitempty"`
+	Source   *Source     `json:"source,omitempty"`
+	Readers  []Reader    `json:"readers,omitempty"`
+	Tracks2  []PathTrack `json:"tracks2,omitempty"`
+
+	// v1.17+ fields.
+	Available            bool   `json:"available"`
+	AvailableTime        string `json:"availableTime,omitempty"`
+	Online               bool   `json:"online"`
+	OnlineTime           string `json:"onlineTime,omitempty"`
+	InboundBytes         int64  `json:"inboundBytes"`
+	OutboundBytes        int64  `json:"outboundBytes"`
+	InboundFramesInError int64  `json:"inboundFramesInError"`
+
+	// Deprecated fields kept for compatibility with pre-v1.17 servers.
+	// Prefer Available/AvailableTime/InboundBytes/OutboundBytes above.
+	Ready         bool    `json:"ready"`
+	ReadyTime     string  `json:"readyTime,omitempty"`
+	Tracks        []Track `json:"tracks,omitempty"`
+	BytesReceived int64   `json:"bytesReceived"`
+	BytesSent     int64   `json:"bytesSent"`
+}
+
+// IsAvailable reports whether the path is receiving data. It prefers the
+// v1.17+ "available" field and falls back to the deprecated "ready" field.
+func (p *Path) IsAvailable() bool {
+	return p.Available || p.Ready
+}
+
+// TotalInboundBytes returns the number of bytes received by the path. It
+// prefers the v1.17+ "inboundBytes" field and falls back to "bytesReceived".
+func (p *Path) TotalInboundBytes() int64 {
+	if p.InboundBytes != 0 {
+		return p.InboundBytes
+	}
+	return p.BytesReceived
+}
+
+// TotalOutboundBytes returns the number of bytes sent to readers. It prefers
+// the v1.17+ "outboundBytes" field and falls back to "bytesSent".
+func (p *Path) TotalOutboundBytes() int64 {
+	if p.OutboundBytes != 0 {
+		return p.OutboundBytes
+	}
+	return p.BytesSent
+}
+
+// AvailableAtTime returns the RFC3339 timestamp at which the path became
+// available, preferring the v1.17+ "availableTime" and falling back to the
+// deprecated "readyTime".
+func (p *Path) AvailableAtTime() string {
+	if p.AvailableTime != "" {
+		return p.AvailableTime
+	}
+	return p.ReadyTime
 }
 
 // Source describes the source of a stream.
@@ -60,6 +114,10 @@ const (
 )
 
 // Track represents a media track in a stream.
+//
+// Deprecated: MediaMTX v1.17+ exposes tracks through Path.Tracks2 using the
+// richer PathTrack type. The deprecated "tracks" field is still emitted by
+// current servers, so this type is retained for compatibility.
 type Track struct {
 	Type       string `json:"type"`       // "audio" or "video" (use TrackTypeAudio/TrackTypeVideo constants)
 	Codec      string `json:"codec"`      // e.g., "opus", "aac"
@@ -67,6 +125,45 @@ type Track struct {
 	Channels   int    `json:"channels"`   // Audio channels
 	BitDepth   int    `json:"bitDepth"`   // Audio bit depth
 	SampleRate int    `json:"sampleRate"` // Audio sample rate
+}
+
+// PathTrack represents an entry in a MediaMTX v1.17+ "tracks2" array.
+//
+// The Codec field is a human-readable codec name (e.g. "Opus", "H264").
+// CodecProps contains per-codec properties such as sampleRate, channelCount,
+// width and height. Only the audio-relevant subset is decoded here since
+// this project streams audio only.
+type PathTrack struct {
+	Codec      string          `json:"codec"`
+	CodecProps *PathCodecProps `json:"codecProps,omitempty"`
+}
+
+// PathCodecProps holds the union of codec-specific properties reported by
+// MediaMTX in PathTrack.CodecProps. Only the fields used by this project are
+// decoded; unknown fields are ignored.
+type PathCodecProps struct {
+	// Audio codec properties (Opus, MPEG-4 Audio, AC3, G711, LPCM).
+	SampleRate   int  `json:"sampleRate,omitempty"`
+	ChannelCount int  `json:"channelCount,omitempty"`
+	BitDepth     int  `json:"bitDepth,omitempty"`
+	MuLaw        bool `json:"muLaw,omitempty"`
+
+	// Video codec properties (AV1, VP9, H265, H264). Carried for completeness.
+	Width   int    `json:"width,omitempty"`
+	Height  int    `json:"height,omitempty"`
+	Profile string `json:"profile,omitempty"`
+	Level   string `json:"level,omitempty"`
+}
+
+// isAudioCodec reports whether a v1.17+ PathTrackCodec value names an audio
+// codec. The codec enum uses human-readable names like "Opus" or "MPEG-4 Audio".
+func isAudioCodec(codec string) bool {
+	switch codec {
+	case "Opus", "Vorbis", "MPEG-4 Audio", "MPEG-4 Audio LATM",
+		"MPEG-1/2 Audio", "AC3", "Speex", "G726", "G722", "G711", "LPCM":
+		return true
+	}
+	return false
 }
 
 // Reader represents a client reading from a stream.
@@ -240,8 +337,8 @@ func (c *Client) IsStreamHealthy(ctx context.Context, name string) (bool, error)
 		return false, err
 	}
 
-	// Check readiness and data flow
-	return path.Ready && path.BytesReceived > 0, nil
+	// Check readiness and data flow using v1.17+ fields with fallback.
+	return path.IsAvailable() && path.TotalInboundBytes() > 0, nil
 }
 
 // WaitForStream waits for a stream to become ready.
@@ -328,26 +425,42 @@ func (c *Client) GetStreamStats(ctx context.Context, name string) (*StreamStats,
 
 	stats := &StreamStats{
 		Name:          path.Name,
-		Ready:         path.Ready,
-		BytesReceived: path.BytesReceived,
-		BytesSent:     path.BytesSent,
+		Ready:         path.IsAvailable(),
+		BytesReceived: path.TotalInboundBytes(),
+		BytesSent:     path.TotalOutboundBytes(),
 		ReaderCount:   len(path.Readers),
 	}
 
-	// Parse ready time if available
-	if path.ReadyTime != "" {
-		if t, err := time.Parse(time.RFC3339, path.ReadyTime); err == nil {
+	// Parse available/ready time if present, preferring the v1.17+ field.
+	if ts := path.AvailableAtTime(); ts != "" {
+		if t, err := time.Parse(time.RFC3339, ts); err == nil {
 			stats.ReadyTime = t
 			stats.Uptime = time.Since(t)
 		}
 	}
 
-	// Extract track info
-	for _, track := range path.Tracks {
-		if track.Type == string(TrackTypeAudio) {
-			stats.AudioCodec = track.Codec
-			stats.SampleRate = track.SampleRate
-			stats.Channels = track.Channels
+	// Extract audio track info. Prefer the v1.17+ "tracks2" field which
+	// carries codec properties in CodecProps; fall back to the deprecated
+	// "tracks" array when the server only reports the legacy shape.
+	for _, track := range path.Tracks2 {
+		if !isAudioCodec(track.Codec) {
+			continue
+		}
+		stats.AudioCodec = track.Codec
+		if track.CodecProps != nil {
+			stats.SampleRate = track.CodecProps.SampleRate
+			stats.Channels = track.CodecProps.ChannelCount
+		}
+		break
+	}
+	if stats.AudioCodec == "" {
+		for _, track := range path.Tracks {
+			if track.Type == string(TrackTypeAudio) {
+				stats.AudioCodec = track.Codec
+				stats.SampleRate = track.SampleRate
+				stats.Channels = track.Channels
+				break
+			}
 		}
 	}
 
@@ -395,9 +508,10 @@ func (c *Client) HealthCheck(ctx context.Context) (*HealthStatus, error) {
 
 	status.TotalStreams = len(paths)
 
-	// Count healthy streams
-	for _, path := range paths {
-		if path.Ready && path.BytesReceived > 0 {
+	// Count healthy streams using v1.17+ fields with fallback.
+	for i := range paths {
+		p := &paths[i]
+		if p.IsAvailable() && p.TotalInboundBytes() > 0 {
 			status.HealthyStreams++
 		}
 	}

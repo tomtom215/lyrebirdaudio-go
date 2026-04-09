@@ -21,7 +21,7 @@ func runInstallMediaMTX(args []string) error {
 	}
 
 	// Parse flags
-	version := "v1.9.3" // Known stable version
+	version := "v1.17.1" // Known stable version
 	installService := true
 	for _, arg := range args {
 		switch {
@@ -35,7 +35,7 @@ func runInstallMediaMTX(args []string) error {
 	// SEC-5: Validate version format to prevent URL path injection.
 	// Only allow vX.Y.Z or X.Y.Z format (with optional pre-release suffix).
 	if !isValidMediaMTXVersion(version) {
-		return fmt.Errorf("invalid version format %q: must be vX.Y.Z (e.g., v1.9.3)", version)
+		return fmt.Errorf("invalid version format %q: must be vX.Y.Z (e.g., v1.17.1)", version)
 	}
 
 	fmt.Println("MediaMTX Installation")
