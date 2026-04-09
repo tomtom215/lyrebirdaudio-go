@@ -23,7 +23,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25.8'
+          go-version: '1.25.9'
           cache: true
 
       - name: Verify go.mod is tidy
@@ -62,7 +62,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25.8'
+          go-version: '1.25.9'
           cache: true
 
       - name: Install gosec
@@ -83,7 +83,7 @@ jobs:
     strategy:
       matrix:
         # Test minimum supported version (go.mod: go 1.24.2) and latest stable.
-        go-version: ['1.24.2', '1.25.8']
+        go-version: ['1.24.2', '1.25.9']
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -154,7 +154,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25.8'
+          go-version: '1.25.9'
           cache: true
 
       - name: Download dependencies
@@ -220,7 +220,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25.8'
+          go-version: '1.25.9'
           cache: true
 
       - name: Install ffmpeg
