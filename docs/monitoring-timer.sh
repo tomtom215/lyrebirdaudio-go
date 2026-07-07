@@ -63,10 +63,12 @@ if [[ -z "${response}" ]]; then
     STATUS="endpoint_unreachable"
     MESSAGE="LyreBird health endpoint at ${HEALTH_URL} is not responding on ${HOSTNAME_LABEL}"
 elif command -v jq &>/dev/null; then
-    STATUS="$(echo "${response}" | jq -r '.status // "unknown"')"
+    # Each jq capture is guarded: a non-empty but non-JSON body (e.g. a proxy
+    # error page) must not trip `set -e`/`pipefail` and abort before we alert.
+    STATUS="$(echo "${response}" | jq -r '.status // "unknown"' 2>/dev/null || echo 'invalid_response')"
     SERVICES="$(echo "${response}" | jq -r '[.services[]? | select(.healthy==false) | .name] | join(", ")' 2>/dev/null || echo '')"
-    DISK_WARN="$(echo "${response}" | jq -r '.system.disk_low_warning // false')"
-    NTP_SYNC="$(echo "${response}" | jq -r '.system.ntp_synced // true')"
+    DISK_WARN="$(echo "${response}" | jq -r '.system.disk_low_warning // false' 2>/dev/null || echo 'false')"
+    NTP_SYNC="$(echo "${response}" | jq -r '.system.ntp_synced // true' 2>/dev/null || echo 'true')"
 
     if [[ "${STATUS}" == "healthy" ]]; then
         echo "OK: lyrebird is healthy on ${HOSTNAME_LABEL}"

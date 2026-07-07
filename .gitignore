@@ -1,6 +1,7 @@
 coverage.out
 coverage-*.out
 coverage-*.txt
+coverage.html
 /lyrebird
 /lyrebird-stream
 /bin/

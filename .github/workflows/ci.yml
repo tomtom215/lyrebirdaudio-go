@@ -23,7 +23,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25.9'
+          go-version: '1.25.12'
           cache: true
 
       - name: Verify go.mod is tidy
@@ -46,10 +46,32 @@ jobs:
         run: go vet ./...
 
       - name: Install golangci-lint
-        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
+        # v2 line; pinned so CI matches the committed .golangci.yml (version: 2)
+        # and the Makefile. Note the /v2 module path.
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.5.0
 
       - name: Run golangci-lint
         run: $(go env GOPATH)/bin/golangci-lint run --timeout 5m ./...
+
+  # Shell-script linting (the project ships operational shell, e.g.
+  # docs/monitoring-timer.sh, that governs alerting).
+  shellcheck:
+    name: Shell Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Run shellcheck and bash -n
+        run: |
+          mapfile -t files < <(find . -name '*.sh' -not -path './.git/*')
+          if [ "${#files[@]}" -eq 0 ]; then echo "no shell scripts"; exit 0; fi
+          printf '%s\n' "${files[@]}"
+          shellcheck "${files[@]}"
+          for f in "${files[@]}"; do bash -n "$f"; done
 
   # Security scanning
   security:
@@ -62,7 +84,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25.9'
+          go-version: '1.25.12'
           cache: true
 
       - name: Install gosec
@@ -80,10 +102,15 @@ jobs:
   test:
     name: Unit Tests
     runs-on: ubuntu-latest
+    # GOTOOLCHAIN=local pins each matrix leg to its own Go version. Without it the
+    # `toolchain go1.25.12` directive in go.mod makes GOTOOLCHAIN=auto silently
+    # upgrade the floor leg, so it would never actually exercise the minimum version.
+    env:
+      GOTOOLCHAIN: local
     strategy:
       matrix:
-        # Test minimum supported version (go.mod: go 1.24.2) and latest stable.
-        go-version: ['1.24.2', '1.25.9']
+        # Minimum supported version (go.mod `go` directive) and latest stable patch.
+        go-version: ['1.25.0', '1.25.12']
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -120,7 +147,7 @@ jobs:
 
       - name: Check coverage threshold
         run: |
-          coverage=$(go tool cover -func=coverage.out | grep total | awk '{print substr($3, 1, length($3)-1)}')
+          coverage=$(go tool cover -func=coverage.out | grep '^total:' | awk '{print substr($3, 1, length($3)-1)}')
           echo "Total coverage: ${coverage}%"
           # Note: 65% threshold accounts for CLI commands requiring root/interactive input
           # Internal packages maintain ~87% coverage; CLI packages have lower coverage
@@ -154,7 +181,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25.9'
+          go-version: '1.25.12'
           cache: true
 
       - name: Download dependencies
@@ -220,7 +247,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25.9'
+          go-version: '1.25.12'
           cache: true
 
       - name: Install ffmpeg
