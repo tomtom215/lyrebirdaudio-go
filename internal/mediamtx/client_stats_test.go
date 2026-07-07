@@ -2,7 +2,6 @@ package mediamtx
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -10,20 +9,21 @@ import (
 
 func TestGetStreamStats(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resp := Path{
-			Name:          "test_stream",
-			Ready:         true,
-			ReadyTime:     "2025-12-14T10:00:00Z",
-			BytesReceived: 10000,
-			BytesSent:     5000,
-			Tracks: []Track{
-				{Type: "audio", Codec: "opus", SampleRate: 48000, Channels: 2},
-			},
-			Readers: []Reader{
-				{Type: "rtsp", ID: "reader1"},
-			},
-		}
-		_ = json.NewEncoder(w).Encode(resp)
+		// Real MediaMTX v1.19.2 wire format for an AAC stream (captured live):
+		// codec label + structured tracks2 carrying sampleRate/channelCount.
+		_, _ = w.Write([]byte(`{
+			"name": "test_stream",
+			"ready": true,
+			"available": true,
+			"availableTime": "2025-12-14T10:00:00Z",
+			"inboundBytes": 10000,
+			"outboundBytes": 5000,
+			"bytesReceived": 10000,
+			"bytesSent": 5000,
+			"tracks": ["MPEG-4 Audio"],
+			"tracks2": [{"codec": "MPEG-4 Audio", "codecProps": {"sampleRate": 44100, "channelCount": 1}}],
+			"readers": [{"type": "rtspSession", "id": "reader1"}]
+		}`))
 	}))
 	defer server.Close()
 
@@ -39,11 +39,14 @@ func TestGetStreamStats(t *testing.T) {
 	if stats.ReaderCount != 1 {
 		t.Errorf("stats.ReaderCount = %d, want 1", stats.ReaderCount)
 	}
-	if stats.AudioCodec != "opus" {
-		t.Errorf("stats.AudioCodec = %q, want %q", stats.AudioCodec, "opus")
+	if stats.AudioCodec != "MPEG-4 Audio" {
+		t.Errorf("stats.AudioCodec = %q, want %q", stats.AudioCodec, "MPEG-4 Audio")
 	}
-	if stats.SampleRate != 48000 {
-		t.Errorf("stats.SampleRate = %d, want 48000", stats.SampleRate)
+	if stats.SampleRate != 44100 {
+		t.Errorf("stats.SampleRate = %d, want 44100", stats.SampleRate)
+	}
+	if stats.Channels != 1 {
+		t.Errorf("stats.Channels = %d, want 1", stats.Channels)
 	}
 }
 
@@ -62,13 +65,15 @@ func TestGetStreamStatsError(t *testing.T) {
 
 func TestGetStreamStatsNoTracks(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resp := Path{
-			Name:          "test_stream",
-			Ready:         true,
-			BytesReceived: 1000,
-			Tracks:        []Track{}, // No tracks
-		}
-		_ = json.NewEncoder(w).Encode(resp)
+		_, _ = w.Write([]byte(`{
+			"name": "test_stream",
+			"ready": true,
+			"available": true,
+			"inboundBytes": 1000,
+			"bytesReceived": 1000,
+			"tracks": [],
+			"tracks2": []
+		}`))
 	}))
 	defer server.Close()
 

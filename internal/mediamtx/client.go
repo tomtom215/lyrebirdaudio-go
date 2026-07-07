@@ -56,11 +56,15 @@ type Path struct {
 
 	// Deprecated fields kept for compatibility with pre-v1.17 servers.
 	// Prefer Available/AvailableTime/InboundBytes/OutboundBytes above.
-	Ready         bool    `json:"ready"`
-	ReadyTime     string  `json:"readyTime,omitempty"`
-	Tracks        []Track `json:"tracks,omitempty"`
-	BytesReceived int64   `json:"bytesReceived"`
-	BytesSent     int64   `json:"bytesSent"`
+	Ready     bool   `json:"ready"`
+	ReadyTime string `json:"readyTime,omitempty"`
+	// Tracks is the deprecated "tracks" field. On the wire MediaMTX emits it
+	// as an array of codec-label strings (e.g. ["Opus"], ["audio/AAC"]), NOT
+	// an array of objects. Modeling it as a struct slice makes json.Decode
+	// fail on every path that has a track. Prefer Tracks2 (rich objects).
+	Tracks        []string `json:"tracks,omitempty"`
+	BytesReceived int64    `json:"bytesReceived"`
+	BytesSent     int64    `json:"bytesSent"`
 }
 
 // IsAvailable reports whether the path is receiving data. It prefers the
@@ -101,30 +105,6 @@ func (p *Path) AvailableAtTime() string {
 type Source struct {
 	Type string `json:"type"`
 	ID   string `json:"id,omitempty"`
-}
-
-// TrackType represents the type of media track.
-type TrackType string
-
-const (
-	// TrackTypeAudio represents an audio track.
-	TrackTypeAudio TrackType = "audio"
-	// TrackTypeVideo represents a video track.
-	TrackTypeVideo TrackType = "video"
-)
-
-// Track represents a media track in a stream.
-//
-// Deprecated: MediaMTX v1.17+ exposes tracks through Path.Tracks2 using the
-// richer PathTrack type. The deprecated "tracks" field is still emitted by
-// current servers, so this type is retained for compatibility.
-type Track struct {
-	Type       string `json:"type"`       // "audio" or "video" (use TrackTypeAudio/TrackTypeVideo constants)
-	Codec      string `json:"codec"`      // e.g., "opus", "aac"
-	ClockRate  int    `json:"clockRate"`  // e.g., 48000
-	Channels   int    `json:"channels"`   // Audio channels
-	BitDepth   int    `json:"bitDepth"`   // Audio bit depth
-	SampleRate int    `json:"sampleRate"` // Audio sample rate
 }
 
 // PathTrack represents an entry in a MediaMTX v1.17+ "tracks2" array.
@@ -453,12 +433,14 @@ func (c *Client) GetStreamStats(ctx context.Context, name string) (*StreamStats,
 		}
 		break
 	}
+	// Legacy fallback for servers that only populate the deprecated "tracks"
+	// array, which is a list of codec-label strings (e.g. ["Opus"]). Sample
+	// rate and channel count are not available in this shape — they come only
+	// from tracks2/CodecProps above.
 	if stats.AudioCodec == "" {
-		for _, track := range path.Tracks {
-			if track.Type == string(TrackTypeAudio) {
-				stats.AudioCodec = track.Codec
-				stats.SampleRate = track.SampleRate
-				stats.Channels = track.Channels
+		for _, codec := range path.Tracks {
+			if isAudioCodec(codec) {
+				stats.AudioCodec = codec
 				break
 			}
 		}
