@@ -58,8 +58,14 @@ func TestInstallLyreBirdServiceToPathWritesFile(t *testing.T) {
 		"ProtectSystem=strict",
 		"PrivateTmp=true",
 		"ProtectHome=true",
-		"StartLimitIntervalSec=300",
+		"StartLimitIntervalSec=0",
 		"ExecReload=/bin/kill -HUP $MAINPID",
+		// char-alsa (not the invalid /dev/snd/* glob) is required for audio
+		// capture under DevicePolicy=closed.
+		"DeviceAllow=char-alsa rw",
+		// RuntimeDirectory/StateDirectory make the unit survive a reboot.
+		"RuntimeDirectory=lyrebird",
+		"StateDirectory=lyrebird",
 	} {
 		if !strings.Contains(string(data), directive) {
 			t.Errorf("service file missing security directive: %s", directive)

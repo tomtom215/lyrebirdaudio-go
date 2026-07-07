@@ -33,8 +33,11 @@ Description=LyreBirdAudio Stream Manager
 Documentation=https://github.com/tomtom215/lyrebirdaudio-go
 After=network.target sound.target mediamtx.service
 Wants=mediamtx.service
-StartLimitIntervalSec=300
-StartLimitBurst=5
+# StartLimitIntervalSec=0 disables the start-rate limiter. For an unattended
+# 24/7 device, permanently entering "failed" after a burst of watchdog/crash
+# restarts is worse than continuing to retry; per-stream exponential backoff
+# and RestartSec already bound the restart rate.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -89,13 +92,24 @@ RestrictRealtime=yes
 SystemCallFilter=@system-service
 SystemCallArchitectures=native
 
-# Allow access to audio devices
+# Allow access to audio devices.
+# DeviceAllow does NOT expand shell globs; "/dev/snd/* rw" is silently dropped,
+# and with DevicePolicy=closed that denies ALL audio devices (no capture).
+# "char-alsa" is the ALSA device group (major 116), which is what we need.
 SupplementaryGroups=audio
-DeviceAllow=/dev/snd/* rw
+DeviceAllow=char-alsa rw
 DevicePolicy=closed
 
+# Runtime/state directories. systemd creates (and cleans) these before the
+# sandbox on every start, so the unit no longer fails after a reboot when /run
+# (tmpfs) has been wiped. RuntimeDirectory -> /run/lyrebird (== /var/run/lyrebird),
+# StateDirectory -> /var/lib/lyrebird; both are added to the writable set.
+RuntimeDirectory=lyrebird
+RuntimeDirectoryMode=0750
+StateDirectory=lyrebird
+StateDirectoryMode=0750
+
 # Allow access to required paths
-ReadWritePaths=/var/run/lyrebird /var/lib/lyrebird
 ReadOnlyPaths=/etc/lyrebird /proc/asound
 
 # Resource limits
