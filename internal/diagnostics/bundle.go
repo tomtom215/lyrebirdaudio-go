@@ -59,7 +59,7 @@ func ExportBundle(ctx context.Context, opts BundleOptions, dst string) error {
 	sysInfo := buildSystemInfoText(opts.Options)
 
 	// Collect log snippets.
-	logSnippets := collectLogSnippets(opts.Options.LogDir, opts.MaxLogLines)
+	logSnippets := collectLogSnippets(opts.LogDir, opts.MaxLogLines)
 
 	// Create the destination file.
 	f, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600) //#nosec G304 -- dst is caller-supplied output path

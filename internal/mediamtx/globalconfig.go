@@ -98,7 +98,7 @@ func (c *Client) GetGlobalConfig(ctx context.Context) (*GlobalConfig, error) {
 	if resp.StatusCode != http.StatusOK {
 		body, readErr := io.ReadAll(resp.Body)
 		if readErr != nil {
-			return nil, fmt.Errorf("get global config: API returned status %d (failed to read body: %v)", resp.StatusCode, readErr)
+			return nil, fmt.Errorf("get global config: API returned status %d (failed to read body: %w)", resp.StatusCode, readErr)
 		}
 		return nil, fmt.Errorf("get global config: API returned status %d: %s", resp.StatusCode, string(body))
 	}

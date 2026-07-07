@@ -3,6 +3,7 @@ package stream
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"testing"
 	"time"
@@ -100,7 +101,7 @@ func TestManagerRunContextCancelledDuringBackoff(t *testing.T) {
 	// Should complete quickly (not wait full backoff)
 	select {
 	case err := <-errCh:
-		if err != context.Canceled {
+		if !errors.Is(err, context.Canceled) {
 			t.Errorf("Run() error = %v, want context.Canceled", err)
 		}
 	case <-time.After(2 * time.Second):

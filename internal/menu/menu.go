@@ -11,6 +11,7 @@ package menu
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -141,7 +142,7 @@ func (m *Menu) Display() error {
 		err := form.Run()
 		if err != nil {
 			// Handle Ctrl+C or other interrupts
-			if err == huh.ErrUserAborted {
+			if errors.Is(err, huh.ErrUserAborted) {
 				return nil
 			}
 			return err

@@ -4,6 +4,7 @@ package lock
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -65,7 +66,7 @@ func TestFileLockAcquireContextCancelledBeforeAcquire(t *testing.T) {
 		t.Fatal("AcquireContext() should fail with cancelled context")
 	}
 
-	if err != context.Canceled {
+	if !errors.Is(err, context.Canceled) {
 		t.Errorf("AcquireContext() error = %v, want context.Canceled", err)
 	}
 
@@ -113,7 +114,7 @@ func TestFileLockAcquireContextCancelledDuringAcquire(t *testing.T) {
 		t.Fatal("AcquireContext() should fail when context is cancelled")
 	}
 
-	if err != context.Canceled {
+	if !errors.Is(err, context.Canceled) {
 		t.Errorf("AcquireContext() error = %v, want context.Canceled", err)
 	}
 
@@ -202,7 +203,7 @@ func TestFileLockAcquireContextConcurrent(t *testing.T) {
 			if err == nil {
 				t.Errorf("Goroutine %d: AcquireContext() should fail with cancelled context", id)
 			}
-			if err != context.Canceled {
+			if !errors.Is(err, context.Canceled) {
 				t.Errorf("Goroutine %d: error = %v, want context.Canceled", id, err)
 			}
 		}(i)

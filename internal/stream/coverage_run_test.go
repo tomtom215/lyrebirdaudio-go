@@ -5,6 +5,7 @@ package stream
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -175,7 +176,7 @@ func TestManagerRunShortCleanExitContextCancelDuringBackoff(t *testing.T) {
 
 	select {
 	case err := <-errCh:
-		if err != context.Canceled {
+		if !errors.Is(err, context.Canceled) {
 			t.Errorf("Run() error = %v, want context.Canceled", err)
 		}
 	case <-time.After(2 * time.Second):

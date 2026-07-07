@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -119,7 +120,7 @@ func TestStreamServiceRunContextCancelled(t *testing.T) {
 	select {
 	case err := <-errCh:
 		// context.Canceled is the expected result
-		if err != nil && err != context.Canceled {
+		if err != nil && !errors.Is(err, context.Canceled) {
 			t.Logf("Run() returned: %v (expected context.Canceled)", err)
 		}
 	case <-time.After(5 * time.Second):

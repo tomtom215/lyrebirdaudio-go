@@ -5,6 +5,7 @@ package main
 import (
 	"archive/tar"
 	"compress/gzip"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -51,7 +52,7 @@ func TestCreateDiagnosticBundle(t *testing.T) {
 	fileCount := 0
 	for {
 		_, err := tr.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
