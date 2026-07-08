@@ -169,7 +169,7 @@ func (c *Client) ListRTSPSessionsPage(ctx context.Context, page, itemsPerPage in
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		body, readErr := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 		if readErr != nil {
 			return nil, fmt.Errorf("API returned status %d (failed to read body: %w)", resp.StatusCode, readErr)
 		}
@@ -245,7 +245,7 @@ func (c *Client) KickRTSPSession(ctx context.Context, id string) error {
 	case http.StatusNotFound:
 		return fmt.Errorf("%w: %s", ErrSessionNotFound, id)
 	default:
-		body, readErr := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 		if readErr != nil {
 			return fmt.Errorf("kick session: API returned status %d (failed to read body: %w)", resp.StatusCode, readErr)
 		}

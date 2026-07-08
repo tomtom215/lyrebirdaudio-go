@@ -34,6 +34,11 @@ const (
 
 	// DefaultTimeout is the default HTTP request timeout.
 	DefaultTimeout = 30 * time.Second
+
+	// maxDownloadBytes bounds a streamed release-asset download so a malicious or
+	// corrupted asset cannot exhaust the disk. It is deliberately generous (2x the
+	// 100 MiB extracted-binary cap) since the asset is a compressed archive.
+	maxDownloadBytes = 200 * 1024 * 1024 // 200 MiB
 )
 
 // Release represents a GitHub release.
@@ -316,9 +321,16 @@ func (u *Updater) Download(ctx context.Context, url, destPath string, progress f
 		}
 	}
 
-	_, err = io.Copy(out, reader)
+	// Cap the streamed download so a malicious or corrupted release asset cannot
+	// exhaust the disk. Read one byte past the cap to distinguish "exactly at the
+	// limit" from "over the limit". The extracted binary is separately capped at
+	// maxBinarySize (100 MiB) during un-tar; this bounds the compressed asset.
+	written, err := io.Copy(out, io.LimitReader(reader, maxDownloadBytes+1))
 	if err != nil {
 		return fmt.Errorf("download failed: %w", err)
+	}
+	if written > maxDownloadBytes {
+		return fmt.Errorf("download aborted: asset exceeds the %d-byte limit", maxDownloadBytes)
 	}
 
 	return nil

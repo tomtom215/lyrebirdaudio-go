@@ -82,14 +82,17 @@ func createDiagnosticBundle(outputPath string) error {
 
 	// Collect health endpoint response.
 	httpClient := &http.Client{Timeout: 5 * time.Second}
+	// Bound each read: the endpoint is localhost, but a wedged/compromised
+	// server must not be able to balloon the bundle (and memory) without limit.
+	const maxBundleResponseBytes = 8 << 20                                        // 8 MiB
 	if resp, err := httpClient.Get("http://127.0.0.1:9998/healthz"); err == nil { //#nosec G107 -- localhost only
 		defer resp.Body.Close()
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxBundleResponseBytes))
 		writeFile("healthz.json", string(body))
 	}
 	if resp, err := httpClient.Get("http://127.0.0.1:9998/metrics"); err == nil { //#nosec G107 -- localhost only
 		defer resp.Body.Close()
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxBundleResponseBytes))
 		writeFile("metrics.txt", string(body))
 	}
 

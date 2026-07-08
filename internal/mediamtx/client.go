@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -23,6 +24,12 @@ const (
 
 	// DefaultTimeout is the default HTTP request timeout.
 	DefaultTimeout = 5 * time.Second
+
+	// maxErrorBodyBytes caps how much of a non-2xx response body is read into an
+	// error message. MediaMTX runs on localhost, but bounding the read keeps a
+	// misbehaving or compromised endpoint from making the client buffer an
+	// unbounded body just to format an error string.
+	maxErrorBodyBytes = 4 << 10 // 4 KiB
 )
 
 // Client provides methods for interacting with the MediaMTX REST API.
@@ -235,7 +242,7 @@ func (c *Client) ListPaths(ctx context.Context) ([]Path, error) {
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		body, readErr := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 		if readErr != nil {
 			return nil, fmt.Errorf("API returned status %d (failed to read body: %w)", resp.StatusCode, readErr)
 		}
@@ -262,9 +269,13 @@ func (c *Client) ListPaths(ctx context.Context) ([]Path, error) {
 //   - *Path: Path information
 //   - error: if path not found or request fails
 func (c *Client) GetPath(ctx context.Context, name string) (*Path, error) {
-	url := fmt.Sprintf("%s/v3/paths/get/%s", c.baseURL, name)
+	// Escape the path name: a MediaMTX path is a device friendly-name that can
+	// contain characters (spaces, slashes, '#', '?') which would otherwise
+	// corrupt the request URL. This mirrors the escaping already done for the
+	// session ID in KickRTSPSession.
+	reqURL := fmt.Sprintf("%s/v3/paths/get/%s", c.baseURL, url.PathEscape(name))
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -280,7 +291,7 @@ func (c *Client) GetPath(ctx context.Context, name string) (*Path, error) {
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		body, readErr := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 		if readErr != nil {
 			return nil, fmt.Errorf("API returned status %d (failed to read body: %w)", resp.StatusCode, readErr)
 		}
@@ -378,7 +389,7 @@ func (c *Client) Ping(ctx context.Context) error {
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		body, readErr := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 		if readErr != nil {
 			return fmt.Errorf("MediaMTX API returned status %d (failed to read body: %w)", resp.StatusCode, readErr)
 		}
