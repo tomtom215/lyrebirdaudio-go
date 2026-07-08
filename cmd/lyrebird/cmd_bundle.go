@@ -93,15 +93,22 @@ func createDiagnosticBundle(outputPath string) error {
 		writeFile("metrics.txt", string(body))
 	}
 
-	// Create tar.gz archive.
-	outFile, err := os.Create(outputPath) //#nosec G304 -- outputPath is from CLI argument
+	// Create tar.gz archive. 0600: the bundle aggregates config.yaml plus
+	// journald/MediaMTX logs and metrics — owner-only, per the project's
+	// least-privilege policy (it must not land world-readable).
+	outFile, err := os.OpenFile(outputPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600) //#nosec G304 -- outputPath is from CLI argument
 	if err != nil {
 		return fmt.Errorf("failed to create bundle file: %w", err)
 	}
-	defer outFile.Close()
 
 	if err := createTarGz(outFile, tmpDir); err != nil {
+		_ = outFile.Close()
 		return fmt.Errorf("failed to create bundle archive: %w", err)
+	}
+	// Close explicitly and check: the final flush to disk can fail (e.g. ENOSPC),
+	// which would otherwise leave a truncated archive reported as success.
+	if err := outFile.Close(); err != nil {
+		return fmt.Errorf("failed to finalize bundle file: %w", err)
 	}
 
 	fmt.Printf("Bundle created: %s\n", outputPath)
@@ -109,15 +116,15 @@ func createDiagnosticBundle(outputPath string) error {
 	return nil
 }
 
-// createTarGz creates a gzip-compressed tar archive of srcDir at outFile.
+// createTarGz creates a gzip-compressed tar archive of srcDir at outFile. The
+// tar and gzip trailers are flushed in their Close() calls, so those errors are
+// propagated rather than swallowed: a failure there means a truncated/corrupt
+// archive that must not be reported as a successful bundle.
 func createTarGz(outFile *os.File, srcDir string) error {
 	gzWriter := gzip.NewWriter(outFile)
-	defer gzWriter.Close()
-
 	tarWriter := tar.NewWriter(gzWriter)
-	defer tarWriter.Close()
 
-	return filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
+	walkErr := filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
@@ -150,4 +157,14 @@ func createTarGz(outFile *os.File, srcDir string) error {
 		_, err = io.Copy(tarWriter, f)
 		return err
 	})
+
+	// Flush the tar then gzip trailers explicitly and surface any error; a
+	// failure here (e.g. disk full) produces a truncated archive.
+	if err := tarWriter.Close(); err != nil && walkErr == nil {
+		walkErr = err
+	}
+	if err := gzWriter.Close(); err != nil && walkErr == nil {
+		walkErr = err
+	}
+	return walkErr
 }

@@ -111,9 +111,12 @@ func TestProcessExists(t *testing.T) {
 		t.Error("processExists() returned false for current process")
 	}
 
-	// Test with PID 1 (init, should exist on Linux)
+	// PID 1 (init) always exists. When the test runs non-root, signal(0) to it
+	// returns EPERM; treating EPERM as "not running" (the old behavior) would
+	// misreport a live root-owned daemon as a stale lock, so this is a hard
+	// assertion guarding the fix.
 	if !processExists(1) {
-		t.Log("processExists(1) returned false (may be expected in some environments)")
+		t.Error("processExists(1) = false, want true (EPERM must be treated as alive)")
 	}
 
 	// Test with invalid PID (should not exist)
