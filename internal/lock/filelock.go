@@ -97,11 +97,15 @@ func (fl *FileLock) Acquire(timeout time.Duration) error {
 // when the calling goroutine needs to terminate.
 //
 // Acquisition process:
-//  1. Check for stale lock (dead process, old age)
-//  2. Remove stale lock if found
-//  3. Open/create lock file
-//  4. Call flock(2) with timeout, checking context.Done() in loop
-//  5. Write our PID to lock file
+//  1. Open/create lock file
+//  2. Call flock(2) with timeout, checking context.Done() in loop
+//  3. Write our PID to lock file
+//
+// flock(2) is the sole gate. Stale locks are NOT unlinked: the kernel releases
+// a dead holder's flock on process exit, so a new acquirer flocks the same
+// inode. Unlinking and recreating the file (the previous behavior) let two
+// acquirers flock two different inodes at the same path and both believe they
+// held the lock — two managers driving the same device.
 //
 // Parameters:
 //   - ctx: Context for cancellation
@@ -118,11 +122,6 @@ func (fl *FileLock) AcquireContext(ctx context.Context, timeout time.Duration) e
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
-	}
-
-	// Check for stale lock and remove if found
-	if stale, _ := isLockStale(fl.path, DefaultStaleThreshold); stale {
-		_ = os.Remove(fl.path) // Explicitly ignore error - file might not exist
 	}
 
 	// Open lock file (create if doesn't exist)
