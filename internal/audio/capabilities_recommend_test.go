@@ -232,7 +232,7 @@ func TestRecommendSettingsEdgeCases(t *testing.T) {
 			},
 			tier:     QualityNormal,
 			wantRate: 48000,
-			wantChan: 2, // Loop doesn't modify, fallback check fails since 2 < 8
+			wantChan: 4, // No supported count <= 2, so fall back to the minimum (4)
 		},
 		{
 			name: "format fallback to S24_LE",

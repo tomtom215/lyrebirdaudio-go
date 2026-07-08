@@ -122,12 +122,15 @@ func replaceNonAlphanumeric(s string) string {
 	return result.String()
 }
 
+// underscoreRegex matches one or more consecutive underscores. Pre-compiled at
+// package level to avoid recompiling on every call, since collapseUnderscores
+// runs on the device-polling hot path.
+var underscoreRegex = regexp.MustCompile(`_+`)
+
 // collapseUnderscores replaces consecutive underscores with a single underscore.
 // Matches bash: sed 's/__*/_/g'
 func collapseUnderscores(s string) string {
-	// Use regex to match one or more underscores and replace with single underscore
-	re := regexp.MustCompile(`_+`)
-	return re.ReplaceAllString(s, "_")
+	return underscoreRegex.ReplaceAllString(s, "_")
 }
 
 // isAlphanumeric checks if a byte is a-z, A-Z, or 0-9.

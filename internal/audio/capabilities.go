@@ -154,11 +154,56 @@ func parseStreamFile(path string, caps *Capabilities) error {
 	defer func() { _ = file.Close() }()
 
 	scanner := bufio.NewScanner(file)
-	inCaptureSection := false
 
+	// Committed capture capabilities, accumulated across altsets.
 	var formats []string
 	var rates []int
 	var channels []int
+
+	// Per-altset buffers. The Endpoint direction line appears AFTER the
+	// Format/Channels/Rates lines within an altset, so we cannot decide whether
+	// an altset is capture until the altset ends. Buffer each altset and commit
+	// its values to the globals only if it turns out to be a capture altset.
+	//
+	// altCapture defaults to true so that altsets without an explicit endpoint
+	// direction are treated as capture (matching the previous permissive default).
+	altCapture := true
+	var altFormats []string
+	var altChannels []int
+	var altRates []int
+	var altMinRate, altMaxRate int
+
+	// flushAltset commits the current altset buffer into the globals if it is a
+	// capture altset, then resets the buffer for the next altset.
+	flushAltset := func() {
+		if altCapture {
+			for _, f := range altFormats {
+				if !contains(formats, f) {
+					formats = append(formats, f)
+				}
+			}
+			for _, ch := range altChannels {
+				if !containsInt(channels, ch) {
+					channels = append(channels, ch)
+				}
+			}
+			for _, r := range altRates {
+				if !containsInt(rates, r) {
+					rates = append(rates, r)
+				}
+			}
+			if altMinRate > 0 && altMaxRate > 0 {
+				caps.MinRate = altMinRate
+				caps.MaxRate = altMaxRate
+			}
+		}
+		altCapture = true
+		altFormats = nil
+		altChannels = nil
+		altRates = nil
+		altMinRate = 0
+		altMaxRate = 0
+	}
 
 	// Regex patterns matching bash implementation
 	formatRe := regexp.MustCompile(`Format:\s+(\S+)`)
@@ -169,36 +214,37 @@ func parseStreamFile(path string, caps *Capabilities) error {
 	for scanner.Scan() {
 		line := scanner.Text()
 
-		// Look for capture endpoint (IN direction)
-		if strings.Contains(line, "Endpoint:") && strings.Contains(line, "IN") {
-			inCaptureSection = true
-			continue
-		}
-
-		// Look for playback endpoint (OUT direction) to exit capture section
-		if strings.Contains(line, "Endpoint:") && strings.Contains(line, "OUT") {
-			inCaptureSection = false
-			continue
-		}
-
-		// Also detect capture by interface description
+		// A new Interface/Altset boundary ends the previous altset: flush it and
+		// start a fresh buffer.
 		if strings.Contains(line, "Interface") || strings.Contains(line, "Altset") {
-			inCaptureSection = true
+			flushAltset()
+			continue
+		}
+
+		// The endpoint direction determines whether this altset is capture (IN)
+		// or playback (OUT).
+		if strings.Contains(line, "Endpoint:") {
+			if strings.Contains(line, "IN") {
+				altCapture = true
+			} else if strings.Contains(line, "OUT") {
+				altCapture = false
+			}
+			continue
 		}
 
 		// Parse format
 		if match := formatRe.FindStringSubmatch(line); match != nil {
 			format := match[1]
-			if !contains(formats, format) {
-				formats = append(formats, format)
+			if !contains(altFormats, format) {
+				altFormats = append(altFormats, format)
 			}
 		}
 
 		// Parse channels
 		if match := channelsRe.FindStringSubmatch(line); match != nil {
 			if ch, err := strconv.Atoi(match[1]); err == nil {
-				if !containsInt(channels, ch) {
-					channels = append(channels, ch)
+				if !containsInt(altChannels, ch) {
+					altChannels = append(altChannels, ch)
 				}
 			}
 		}
@@ -211,22 +257,25 @@ func parseStreamFile(path string, caps *Capabilities) error {
 			if rangeMatch := rateRangeRe.FindStringSubmatch(rateStr); rangeMatch != nil {
 				minRate, _ := strconv.Atoi(rangeMatch[1])
 				maxRate, _ := strconv.Atoi(rangeMatch[2])
-				caps.MinRate = minRate
-				caps.MaxRate = maxRate
-				rates = generateRatesInRange(minRate, maxRate)
+				altMinRate = minRate
+				altMaxRate = maxRate
+				altRates = generateRatesInRange(minRate, maxRate)
 			} else {
 				// Parse comma-separated rates
 				for _, r := range strings.Split(rateStr, ",") {
 					r = strings.TrimSpace(r)
 					if rate, err := strconv.Atoi(r); err == nil {
-						if !containsInt(rates, rate) {
-							rates = append(rates, rate)
+						if !containsInt(altRates, rate) {
+							altRates = append(altRates, rate)
 						}
 					}
 				}
 			}
 		}
 	}
+
+	// Flush the final altset (there is no trailing boundary line at EOF).
+	flushAltset()
 
 	// Use parsed values or defaults
 	if len(formats) > 0 {
@@ -241,8 +290,8 @@ func parseStreamFile(path string, caps *Capabilities) error {
 		caps.Channels = channels
 	}
 
-	// Mark as capture section found if we got IN endpoint
-	if !inCaptureSection && len(formats) == 0 {
+	// No capture capabilities collected (e.g. playback-only device).
+	if len(formats) == 0 {
 		return fmt.Errorf("no capture capabilities found")
 	}
 
