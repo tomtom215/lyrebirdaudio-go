@@ -1,7 +1,7 @@
 # LyreBirdAudio-Go Makefile
 # Production-grade build system
 
-.PHONY: help build build-all install clean test test-race test-coverage test-integration bench lint fmt vet check coverage-html
+.PHONY: help build build-all install clean test test-race test-coverage test-integration test-e2e bench lint fmt vet check coverage-html sec deps tidy update-deps ci dev version
 
 # Default target
 .DEFAULT_GOAL := help
@@ -103,6 +103,12 @@ test-coverage:
 test-integration:
 	@echo "==> Running integration tests..."
 	go test -v -race -tags=integration -timeout 5m ./...
+
+## test-e2e: Run hardware-free end-to-end tests (needs mediamtx + ffmpeg on PATH,
+## or LYREBIRD_MEDIAMTX_BIN / LYREBIRD_FFMPEG_BIN; tests skip if absent)
+test-e2e:
+	@echo "==> Running end-to-end tests (real MediaMTX + ffmpeg, no hardware)..."
+	go test -tags e2e -count=1 -timeout 5m ./test/e2e/...
 
 ## bench: Run benchmarks
 bench:
