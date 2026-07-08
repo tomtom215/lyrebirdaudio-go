@@ -383,11 +383,38 @@ func (u *Updater) Update(ctx context.Context, info *UpdateInfo, binaryPath strin
 		}()
 	}
 
-	// Replace binary
-	if err := copyFile(newBinaryPath, binaryPath); err != nil {
-		return fmt.Errorf("failed to install new binary: %w", err)
+	// Install the new binary atomically (see installBinary).
+	if err := installBinary(newBinaryPath, binaryPath); err != nil {
+		return err
 	}
 
+	return nil
+}
+
+// installBinary atomically replaces binaryPath with the executable at
+// newBinaryPath. It stages a sibling temp file in the same directory and
+// renames it over the target.
+//
+// Copying over the destination in place (copyFile uses O_TRUNC) fails with
+// ETXTBSY when the destination IS the running executable — which is exactly the
+// self-update case, so the headline feature could never work — and is
+// non-atomic (a crash mid-copy leaves a corrupt binary). Rename sidesteps both:
+// the running process keeps its open inode and the path atomically flips to the
+// new binary. Rename requires the same filesystem, hence the same directory.
+func installBinary(newBinaryPath, binaryPath string) error {
+	stagePath := filepath.Join(filepath.Dir(binaryPath), "."+filepath.Base(binaryPath)+".new")
+	if err := copyFile(newBinaryPath, stagePath); err != nil {
+		return fmt.Errorf("failed to stage new binary: %w", err)
+	}
+	// #nosec G302 -- binary must be executable
+	if err := os.Chmod(stagePath, 0755); err != nil {
+		_ = os.Remove(stagePath)
+		return fmt.Errorf("failed to make staged binary executable: %w", err)
+	}
+	if err := os.Rename(stagePath, binaryPath); err != nil {
+		_ = os.Remove(stagePath)
+		return fmt.Errorf("failed to install new binary: %w", err)
+	}
 	return nil
 }
 
