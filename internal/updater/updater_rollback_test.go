@@ -144,7 +144,9 @@ func TestUpdateRollbackOnInstallFailure(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	u := New()
+	// This fixture serves no checksums asset; opt out of the fail-closed
+	// default so the test can exercise the backup/install/rollback mechanics.
+	u := New(WithAllowUnverified(true))
 	u.httpClient = server.Client()
 
 	// Verify the function signature uses named return (structural test).

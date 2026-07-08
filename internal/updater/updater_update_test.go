@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -24,8 +25,18 @@ func TestUpdateWithMock(t *testing.T) {
 		t.Fatalf("Failed to read archive: %v", err)
 	}
 
-	// Create mock download server
+	// The release also ships a checksums file, so this exercises the full
+	// verified happy path under the fail-closed default (no opt-out needed).
+	const assetName = "lyrebird-linux-amd64.tar.gz"
+	checksums := sha256HexTest(archiveContent) + "  " + assetName + "\n"
+
+	// Create mock download server. It serves the checksums file on the
+	// checksums path and the archive on every other path.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "checksums.txt") {
+			_, _ = w.Write([]byte(checksums))
+			return
+		}
 		w.Header().Set("Content-Type", "application/gzip")
 		_, _ = w.Write(archiveContent)
 	}))
@@ -42,7 +53,8 @@ func TestUpdateWithMock(t *testing.T) {
 
 	info := &UpdateInfo{
 		DownloadURL: server.URL + "/release.tar.gz",
-		AssetName:   "lyrebird-linux-amd64.tar.gz",
+		AssetName:   assetName,
+		ChecksumURL: server.URL + "/checksums.txt",
 	}
 
 	err = u.Update(context.Background(), info, binaryPath, nil)
