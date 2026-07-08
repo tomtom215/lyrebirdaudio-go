@@ -27,10 +27,8 @@ func TestNew(t *testing.T) {
 		{
 			name: "with restart policy",
 			cfg: Config{
-				ShutdownTimeout:   10 * time.Second,
-				RestartDelay:      2 * time.Second,
-				MaxRestartDelay:   60 * time.Second,
-				RestartMultiplier: 2.0,
+				ShutdownTimeout: 10 * time.Second,
+				RestartDelay:    2 * time.Second,
 			},
 		},
 	}
@@ -80,10 +78,29 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.RestartDelay != 1*time.Second {
 		t.Errorf("RestartDelay = %v, want %v", cfg.RestartDelay, 1*time.Second)
 	}
-	if cfg.MaxRestartDelay != 5*time.Minute {
-		t.Errorf("MaxRestartDelay = %v, want %v", cfg.MaxRestartDelay, 5*time.Minute)
+}
+
+// TestBuildSpecMapsConfig verifies that buildSpec honors the supervisor Config
+// by mapping it onto suture's restart-throttling fields. This is the observable
+// contract for defect fix #2: RestartDelay must reach suture as FailureBackoff,
+// ShutdownTimeout as Timeout, and jitter must be enabled so correlated restarts
+// are decorrelated.
+func TestBuildSpecMapsConfig(t *testing.T) {
+	cfg := Config{
+		Name:            "test-sup",
+		ShutdownTimeout: 7 * time.Second,
+		RestartDelay:    3 * time.Second,
 	}
-	if cfg.RestartMultiplier != 2.0 {
-		t.Errorf("RestartMultiplier = %v, want %v", cfg.RestartMultiplier, 2.0)
+
+	spec := buildSpec(cfg)
+
+	if spec.FailureBackoff != cfg.RestartDelay {
+		t.Errorf("FailureBackoff = %v, want RestartDelay %v", spec.FailureBackoff, cfg.RestartDelay)
+	}
+	if spec.Timeout != cfg.ShutdownTimeout {
+		t.Errorf("Timeout = %v, want ShutdownTimeout %v", spec.Timeout, cfg.ShutdownTimeout)
+	}
+	if spec.BackoffJitter == nil {
+		t.Error("BackoffJitter = nil, want jitter enabled so throttled restarts are decorrelated")
 	}
 }

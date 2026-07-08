@@ -4,6 +4,7 @@ package stream
 
 import (
 	"context"
+	"math/rand/v2"
 	"sync"
 	"time"
 )
@@ -230,8 +231,38 @@ func (b *Backoff) Reset() {
 	b.consecutiveFailures = 0
 }
 
-// Wait blocks for the current backoff delay.
+// jitterFactorMin is the lower bound of the multiplicative jitter applied to
+// the deterministic backoff delay when computing an ACTUAL wait. Sleeps are
+// drawn uniformly from [currentDelay*jitterFactorMin, currentDelay).
+//
+// Rationale: every stream manager shares identical backoff parameters, so a
+// correlated failure (MediaMTX restart, network blip, host resume) would make
+// all of them retry in lockstep at identical delays — a thundering herd against
+// MediaMTX. Jittering only the actual sleep — never the stored currentDelay —
+// decorrelates the retries while keeping CurrentDelay() deterministic for
+// reporting and tests. Because the factor is <= 1.0, the jittered wait never
+// exceeds currentDelay, so the maxDelay cap is still respected.
+const jitterFactorMin = 0.5
+
+// jitteredDelay returns the deterministic currentDelay scaled by a random
+// factor in [jitterFactorMin, 1.0). It does NOT modify the stored currentDelay,
+// so CurrentDelay() remains deterministic. It uses math/rand/v2, whose
+// top-level source is safe for concurrent use and needs no seeding.
+func (b *Backoff) jitteredDelay() time.Duration {
+	delay := b.CurrentDelay()
+	if delay <= 0 {
+		return delay
+	}
+	factor := jitterFactorMin + rand.Float64()*(1.0-jitterFactorMin)
+	return time.Duration(float64(delay) * factor)
+}
+
+// Wait blocks for a jittered fraction of the current backoff delay.
 // Returns immediately if receiver is nil.
+//
+// The actual sleep is drawn from [CurrentDelay()/2, CurrentDelay()) to
+// decorrelate restarts across streams (see jitterFactorMin); the stored delay
+// itself is unchanged.
 //
 // This is equivalent to: sleep ${RESTART_DELAY}
 //
@@ -240,12 +271,15 @@ func (b *Backoff) Wait() {
 	if b == nil {
 		return
 	}
-	delay := b.CurrentDelay()
-	time.Sleep(delay)
+	time.Sleep(b.jitteredDelay())
 }
 
-// WaitContext blocks for the current backoff delay or until context is cancelled.
-// Returns nil immediately if receiver is nil.
+// WaitContext blocks for a jittered fraction of the current backoff delay or
+// until context is cancelled. Returns nil immediately if receiver is nil.
+//
+// The actual sleep is drawn from [CurrentDelay()/2, CurrentDelay()) to
+// decorrelate restarts across streams (see jitterFactorMin); the stored delay
+// itself is unchanged.
 //
 // Returns:
 //   - nil if wait completed or receiver is nil
@@ -254,7 +288,7 @@ func (b *Backoff) WaitContext(ctx context.Context) error {
 	if b == nil {
 		return nil
 	}
-	delay := b.CurrentDelay()
+	delay := b.jitteredDelay()
 
 	select {
 	case <-time.After(delay):

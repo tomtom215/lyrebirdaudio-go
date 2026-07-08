@@ -13,11 +13,9 @@ import (
 func TestSupervisor_ServiceRestart(t *testing.T) {
 	var buf bytes.Buffer
 	sup := New(Config{
-		ShutdownTimeout:   2 * time.Second,
-		Logger:            slog.New(slog.NewTextHandler(&buf, nil)),
-		RestartDelay:      50 * time.Millisecond, // Fast restart for testing
-		MaxRestartDelay:   200 * time.Millisecond,
-		RestartMultiplier: 1.5,
+		ShutdownTimeout: 2 * time.Second,
+		Logger:          slog.New(slog.NewTextHandler(&buf, nil)),
+		RestartDelay:    50 * time.Millisecond, // Fast restart throttle for testing
 	})
 
 	svc := newMockService("failing-service")
@@ -128,10 +126,8 @@ func TestSupervisor_ServiceStatusUpdates(t *testing.T) {
 
 func TestSupervisor_RestartCounter(t *testing.T) {
 	sup := New(Config{
-		ShutdownTimeout:   2 * time.Second,
-		RestartDelay:      10 * time.Millisecond,
-		MaxRestartDelay:   50 * time.Millisecond,
-		RestartMultiplier: 1.5,
+		ShutdownTimeout: 2 * time.Second,
+		RestartDelay:    10 * time.Millisecond,
 	})
 
 	svc := newMockService("restart-counter")
