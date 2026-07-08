@@ -191,8 +191,23 @@ func runDaemon(flags daemonFlags) int {
 	go startReloadHandler(ctx, logger, reloadBridge, koanfCfg, sup,
 		&registeredMu, registeredServices, registeredConfigHashes, registerDevices)
 
-	// GAP-5/A-5: Start systemd watchdog heartbeat goroutine.
-	startWatchdog(ctx, logger)
+	// GAP-5/A-5: Start systemd watchdog heartbeat, gated on supervisor liveness.
+	// A deadlocked supervisor (its mutex held forever) will not answer Status()
+	// within the probe deadline, so the keepalive is withheld and systemd
+	// restarts the daemon; an idle-but-responsive daemon always pings.
+	startWatchdog(ctx, logger, func(probeCtx context.Context) bool {
+		done := make(chan struct{})
+		go func() {
+			_ = sup.Status()
+			close(done)
+		}()
+		select {
+		case <-done:
+			return true
+		case <-probeCtx.Done():
+			return false
+		}
+	})
 
 	// Start health check HTTP server
 	startHealthEndpoint(ctx, logger, cfg, sup)
@@ -312,6 +327,13 @@ func registerNewDevices(
 
 		if err := sup.Add(svc); err != nil {
 			logger.Warn("failed to add service", "device", devName, "error", err)
+			// stream.NewManager eagerly opens a rotating log-file fd, so an
+			// abandoned manager must be closed or the fd leaks. sup.Add fails on
+			// a duplicate name, which can happen when the device poller and the
+			// SIGHUP reload handler race to register the same new device.
+			if closeErr := mgr.Close(); closeErr != nil {
+				logger.Warn("failed to close abandoned manager", "device", devName, "error", closeErr)
+			}
 			continue
 		}
 

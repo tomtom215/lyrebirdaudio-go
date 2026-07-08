@@ -54,7 +54,7 @@ func TestStartWatchdogInvalidUsec(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	startWatchdog(ctx, logger)
+	startWatchdog(ctx, logger, nil)
 
 	if !bytes.Contains(logBuf.Bytes(), []byte("invalid WATCHDOG_USEC")) {
 		t.Errorf("expected 'invalid WATCHDOG_USEC' warning, got: %s", logBuf.String())
@@ -72,7 +72,7 @@ func TestStartWatchdogZeroUsec(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	startWatchdog(ctx, logger)
+	startWatchdog(ctx, logger, nil)
 
 	if !bytes.Contains(logBuf.Bytes(), []byte("invalid WATCHDOG_USEC")) {
 		t.Errorf("expected 'invalid WATCHDOG_USEC' warning for usec=0, got: %s", logBuf.String())

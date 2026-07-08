@@ -38,9 +38,16 @@ func sdNotify(state string) error {
 // startWatchdog starts a goroutine that sends WATCHDOG=1 pings to systemd
 // on a schedule derived from the WATCHDOG_USEC environment variable (GAP-2 / A-5).
 //
+// Each ping is gated on the healthy probe: before sending the keepalive, the
+// probe is run under a bounded context, and if it fails (or times out) the ping
+// is WITHHELD so systemd's WatchdogSec restarts a wedged daemon. An unconditional
+// ping would keep feeding the watchdog even if the daemon were logically hung
+// (e.g. the supervisor mutex held forever), defeating the whole mechanism. A nil
+// probe preserves the old always-ping behavior.
+//
 // If WATCHDOG_USEC is not set (i.e., not running under systemd with WatchdogSec=),
 // the goroutine exits immediately.
-func startWatchdog(ctx context.Context, logger *slog.Logger) {
+func startWatchdog(ctx context.Context, logger *slog.Logger, healthy func(context.Context) bool) {
 	usecStr := os.Getenv("WATCHDOG_USEC")
 	if usecStr == "" {
 		return // watchdog not configured
@@ -62,6 +69,15 @@ func startWatchdog(ctx context.Context, logger *slog.Logger) {
 		for {
 			select {
 			case <-ticker.C:
+				if healthy != nil {
+					probeCtx, cancel := context.WithTimeout(ctx, interval)
+					ok := healthy(probeCtx)
+					cancel()
+					if !ok {
+						logger.Warn("watchdog liveness probe failed; withholding keepalive so systemd can restart a wedged daemon")
+						continue
+					}
+				}
 				if err := sdNotify("WATCHDOG=1"); err != nil {
 					logger.Warn("watchdog notify failed", "error", err)
 				}

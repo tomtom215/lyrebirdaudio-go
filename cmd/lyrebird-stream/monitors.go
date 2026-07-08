@@ -279,6 +279,21 @@ func startStallDetector(
 			}
 			registeredMu.RUnlock()
 
+			// Prune stall state for devices removed elsewhere (SIGHUP reload,
+			// failed-stream recovery). Without this, a stale prevBytes/stallCount
+			// carried into a re-registered device triggers a spurious restart or
+			// bogus "stalled" warnings right after a reload.
+			live := make(map[string]struct{}, len(names))
+			for _, n := range names {
+				live[n] = struct{}{}
+			}
+			for n := range stallCount {
+				if _, ok := live[n]; !ok {
+					delete(stallCount, n)
+					delete(prevBytes, n)
+				}
+			}
+
 			for _, name := range names {
 				stats, err := mtxClient.GetStreamStats(ctx, name)
 				if err != nil {
@@ -287,7 +302,11 @@ func startStallDetector(
 				}
 
 				if stats.Ready && stats.BytesReceived > 0 {
-					if prev, ok := prevBytes[name]; ok && stats.BytesReceived <= prev {
+					// Only a byte counter that did NOT advance since the last check
+					// is a stall. A DECREASE means the publisher reconnected (a new
+					// RTSP session resets the counter) — a restart, not a stall — so
+					// it resets the count rather than driving toward a restart.
+					if prev, ok := prevBytes[name]; ok && stats.BytesReceived == prev {
 						stallCount[name]++
 						logger.Warn("stream data stalled", "stream", name, "bytes", stats.BytesReceived, "stall_count", stallCount[name])
 					} else {
