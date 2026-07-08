@@ -128,9 +128,10 @@ func TestManagerRunContextCancelledImmediately(t *testing.T) {
 func TestManagerRunContextCancelledDuringRun(t *testing.T) {
 	lockDir := t.TempDir()
 
-	// Create a script that sleeps ignoring all arguments
+	// Mock ffmpeg that runs until signaled and, like real ffmpeg, exits
+	// promptly on SIGINT (graceful shutdown), rather than being force-killed.
 	scriptPath := filepath.Join(lockDir, "mock_ffmpeg.sh")
-	scriptContent := "#!/bin/sh\nsleep 10\n"
+	scriptContent := "#!/bin/sh\ntrap 'exit 0' INT TERM\nwhile true; do sleep 0.1; done\n"
 	if err := os.WriteFile(scriptPath, []byte(scriptContent), 0755); err != nil {
 		t.Fatalf("Failed to create mock script: %v", err)
 	}
