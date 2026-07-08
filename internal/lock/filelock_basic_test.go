@@ -253,8 +253,12 @@ func TestFileLockLargeTimeout(t *testing.T) {
 	}
 	elapsed := time.Since(start)
 
-	// Should be very fast (< 100ms)
-	if elapsed > 100*time.Millisecond {
-		t.Errorf("Acquire with no contention took %v, expected < 100ms", elapsed)
+	// An uncontended acquire must return essentially immediately rather than
+	// waiting anywhere near the 1-hour timeout. The bound is generous (not a
+	// tight latency budget) so it stays robust under loaded CI runners where
+	// tempdir setup + flock + race-detector overhead can add >100ms of noise;
+	// it still fails hard if the implementation ever slept on the timeout.
+	if elapsed > 5*time.Second {
+		t.Errorf("Acquire with no contention took %v, expected near-immediate (<< 1h timeout)", elapsed)
 	}
 }

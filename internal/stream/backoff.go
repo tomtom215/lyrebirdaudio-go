@@ -253,6 +253,8 @@ func (b *Backoff) jitteredDelay() time.Duration {
 	if delay <= 0 {
 		return delay
 	}
+	// #nosec G404 -- jitter is for decorrelating retries, not a secret; math/rand/v2
+	// is the correct, non-cryptographic choice and crypto/rand would be pointless here.
 	factor := jitterFactorMin + rand.Float64()*(1.0-jitterFactorMin)
 	return time.Duration(float64(delay) * factor)
 }
