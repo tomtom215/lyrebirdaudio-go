@@ -34,6 +34,11 @@ const (
 
 	// DefaultTimeout is the default HTTP request timeout.
 	DefaultTimeout = 30 * time.Second
+
+	// maxDownloadBytes bounds a streamed release-asset download so a malicious or
+	// corrupted asset cannot exhaust the disk. It is deliberately generous (2x the
+	// 100 MiB extracted-binary cap) since the asset is a compressed archive.
+	maxDownloadBytes = 200 * 1024 * 1024 // 200 MiB
 )
 
 // Release represents a GitHub release.
@@ -70,10 +75,11 @@ type UpdateInfo struct {
 
 // Updater handles version checking and updates.
 type Updater struct {
-	owner          string
-	repo           string
-	httpClient     *http.Client
-	currentVersion string
+	owner           string
+	repo            string
+	httpClient      *http.Client
+	currentVersion  string
+	allowUnverified bool
 }
 
 // Option is a functional option for configuring the Updater.
@@ -104,6 +110,19 @@ func WithHTTPClient(client *http.Client) Option {
 func WithCurrentVersion(version string) Option {
 	return func(u *Updater) {
 		u.currentVersion = version
+	}
+}
+
+// WithAllowUnverified controls whether Update may install a binary when the
+// release provides no checksums asset (info.ChecksumURL == "").
+//
+// The default is false: a missing checksum is a hard failure and Update fails
+// closed rather than install an unverified binary, so a MITM or corrupted CDN
+// cannot bypass verification simply by omitting the checksums file. Set this to
+// true only when you knowingly accept the risk of installing without a checksum.
+func WithAllowUnverified(allow bool) Option {
+	return func(u *Updater) {
+		u.allowUnverified = allow
 	}
 }
 
@@ -142,14 +161,13 @@ func (u *Updater) CheckForUpdates(ctx context.Context) (*UpdateInfo, error) {
 	// Compare versions
 	info.UpdateAvailable = isNewerVersion(latest.TagName, u.currentVersion)
 
-	// Find appropriate asset for this platform and the checksums file.
-	assetName := getAssetName()
+	// Find the binary asset for this platform. Match by exact base name so a
+	// 32-bit ARM build never selects the arm64 asset (see selectAsset).
+	info.DownloadURL, info.AssetName = selectAsset(latest.Assets, getAssetName())
+
+	// Look for the checksums file (GitHub convention: "checksums.txt" or
+	// "sha256sums.txt").
 	for _, asset := range latest.Assets {
-		if strings.Contains(asset.Name, assetName) {
-			info.DownloadURL = asset.BrowserDownloadURL
-			info.AssetName = asset.Name
-		}
-		// Look for checksums.txt (GitHub convention: "checksums.txt" or "sha256sums.txt")
 		lowerName := strings.ToLower(asset.Name)
 		if lowerName == "checksums.txt" || lowerName == "sha256sums.txt" || strings.HasSuffix(lowerName, "_checksums.txt") {
 			info.ChecksumURL = asset.BrowserDownloadURL
@@ -303,9 +321,16 @@ func (u *Updater) Download(ctx context.Context, url, destPath string, progress f
 		}
 	}
 
-	_, err = io.Copy(out, reader)
+	// Cap the streamed download so a malicious or corrupted release asset cannot
+	// exhaust the disk. Read one byte past the cap to distinguish "exactly at the
+	// limit" from "over the limit". The extracted binary is separately capped at
+	// maxBinarySize (100 MiB) during un-tar; this bounds the compressed asset.
+	written, err := io.Copy(out, io.LimitReader(reader, maxDownloadBytes+1))
 	if err != nil {
 		return fmt.Errorf("download failed: %w", err)
+	}
+	if written > maxDownloadBytes {
+		return fmt.Errorf("download aborted: asset exceeds the %d-byte limit", maxDownloadBytes)
 	}
 
 	return nil
@@ -339,13 +364,18 @@ func (u *Updater) Update(ctx context.Context, info *UpdateInfo, binaryPath strin
 		return fmt.Errorf("download failed: %w", err)
 	}
 
-	// M-13: Verify SHA256 checksum before installing.
-	// When the release includes a checksums.txt asset, its absence or mismatch
-	// is treated as a hard failure to prevent MITM / corrupted-CDN attacks.
-	if info.ChecksumURL != "" {
-		if err := u.verifyChecksumFromURL(ctx, info.ChecksumURL, info.AssetName, downloadPath); err != nil {
-			return fmt.Errorf("checksum verification failed: %w", err)
+	// M-13: Verify the SHA256 checksum before installing. Verification is
+	// mandatory by default (fail-closed): a release that ships no checksums
+	// asset (info.ChecksumURL == "") is rejected, because a MITM or corrupted
+	// CDN could otherwise omit the checksums file to sidestep verification
+	// entirely. Callers that knowingly accept an unverified install opt out with
+	// WithAllowUnverified(true).
+	if info.ChecksumURL == "" {
+		if !u.allowUnverified {
+			return fmt.Errorf("no checksum available for %s: refusing to install unverified binary (use WithAllowUnverified to override)", info.AssetName)
 		}
+	} else if err := u.verifyChecksumFromURL(ctx, info.ChecksumURL, info.AssetName, downloadPath); err != nil {
+		return fmt.Errorf("checksum verification failed: %w", err)
 	}
 
 	// Extract binary from tarball if needed
@@ -383,11 +413,38 @@ func (u *Updater) Update(ctx context.Context, info *UpdateInfo, binaryPath strin
 		}()
 	}
 
-	// Replace binary
-	if err := copyFile(newBinaryPath, binaryPath); err != nil {
-		return fmt.Errorf("failed to install new binary: %w", err)
+	// Install the new binary atomically (see installBinary).
+	if err := installBinary(newBinaryPath, binaryPath); err != nil {
+		return err
 	}
 
+	return nil
+}
+
+// installBinary atomically replaces binaryPath with the executable at
+// newBinaryPath. It stages a sibling temp file in the same directory and
+// renames it over the target.
+//
+// Copying over the destination in place (copyFile uses O_TRUNC) fails with
+// ETXTBSY when the destination IS the running executable — which is exactly the
+// self-update case, so the headline feature could never work — and is
+// non-atomic (a crash mid-copy leaves a corrupt binary). Rename sidesteps both:
+// the running process keeps its open inode and the path atomically flips to the
+// new binary. Rename requires the same filesystem, hence the same directory.
+func installBinary(newBinaryPath, binaryPath string) error {
+	stagePath := filepath.Join(filepath.Dir(binaryPath), "."+filepath.Base(binaryPath)+".new")
+	if err := copyFile(newBinaryPath, stagePath); err != nil {
+		return fmt.Errorf("failed to stage new binary: %w", err)
+	}
+	// #nosec G302 -- binary must be executable
+	if err := os.Chmod(stagePath, 0755); err != nil {
+		_ = os.Remove(stagePath)
+		return fmt.Errorf("failed to make staged binary executable: %w", err)
+	}
+	if err := os.Rename(stagePath, binaryPath); err != nil {
+		_ = os.Remove(stagePath)
+		return fmt.Errorf("failed to install new binary: %w", err)
+	}
 	return nil
 }
 

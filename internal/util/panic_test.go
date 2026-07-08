@@ -161,7 +161,7 @@ func TestSafeGoWithRecover(t *testing.T) {
 		}, errCh, nil)
 
 		err := <-errCh
-		if err != testErr {
+		if !errors.Is(err, testErr) {
 			t.Errorf("Expected test error, got: %v", err)
 		}
 	})
@@ -268,7 +268,7 @@ func TestRecoverToPanic(t *testing.T) {
 			return testErr
 		})
 
-		if err != testErr {
+		if !errors.Is(err, testErr) {
 			t.Errorf("Expected test error, got: %v", err)
 		}
 	})

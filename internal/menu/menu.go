@@ -11,12 +11,14 @@ package menu
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 
 	"github.com/charmbracelet/huh"
+	"github.com/mattn/go-isatty"
 )
 
 // MenuItem represents a single menu option.
@@ -98,11 +100,20 @@ func (m *Menu) AddSeparator() {
 	m.Items = append(m.Items, MenuItem{Key: "", Label: ""})
 }
 
+// terminalCheck reports whether the given file descriptor refers to a
+// terminal. It is a package-level variable so tests can force the interactive
+// (huh) code path without a real TTY.
+var terminalCheck = isatty.IsTerminal
+
 // Display shows the menu and waits for user input.
 // Returns when the user selects an action or exits.
 func (m *Menu) Display() error {
-	// Check if we're in test mode (non-TTY input)
-	if m.input != os.Stdin {
+	// The huh/bubbletea TUI requires a real terminal on stdin. Fall back to the
+	// line-based scanner for injected test input (m.input != os.Stdin) or
+	// whenever stdin is not a terminal (redirected or piped under systemd, cron,
+	// ssh without -t, etc.), where the TUI would otherwise error instead of
+	// degrading gracefully.
+	if m.input != os.Stdin || !terminalCheck(os.Stdin.Fd()) {
 		return m.displayWithScanner()
 	}
 
@@ -141,7 +152,7 @@ func (m *Menu) Display() error {
 		err := form.Run()
 		if err != nil {
 			// Handle Ctrl+C or other interrupts
-			if err == huh.ErrUserAborted {
+			if errors.Is(err, huh.ErrUserAborted) {
 				return nil
 			}
 			return err

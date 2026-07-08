@@ -50,10 +50,8 @@ func (s *cleanExitService) Run(ctx context.Context) error {
 // proves the first invocation hit the else branch.
 func TestServiceCleanExitHitsElseBranch(t *testing.T) {
 	sup := New(Config{
-		ShutdownTimeout:   2 * time.Second,
-		RestartDelay:      10 * time.Millisecond,
-		MaxRestartDelay:   100 * time.Millisecond,
-		RestartMultiplier: 1.5,
+		ShutdownTimeout: 2 * time.Second,
+		RestartDelay:    10 * time.Millisecond,
 	})
 
 	svc := newCleanExitService("clean-exit-svc", 30*time.Millisecond)

@@ -229,7 +229,13 @@ func TestStartStallDetectorHealthyStream(t *testing.T) {
 		t.Errorf("healthy stream should not generate stall warning, got: %s", logBuf.String())
 	}
 
-	if callCount == 0 {
+	// Read callCount under the same mutex the handler uses: after ctx is
+	// cancelled the last in-flight handler goroutine may still be executing
+	// callCount++ concurrently with this read, so an unsynchronized read races.
+	mu.Lock()
+	finalCount := callCount
+	mu.Unlock()
+	if finalCount == 0 {
 		t.Errorf("fake MediaMTX server was never called")
 	}
 }

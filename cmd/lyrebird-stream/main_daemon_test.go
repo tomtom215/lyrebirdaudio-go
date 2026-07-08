@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 )
@@ -63,7 +64,7 @@ func TestDaemonSystemInfoProviderDiskSpace(t *testing.T) {
 		recordDir:        dir,
 		diskLowThreshold: 0, // disabled
 	}
-	si := p.SystemInfo()
+	si := p.SystemInfo(context.Background())
 
 	// On any real filesystem, disk total should be positive.
 	if si.DiskTotalBytes == 0 {
@@ -81,7 +82,7 @@ func TestDaemonSystemInfoProviderDiskLowThreshold(t *testing.T) {
 		recordDir:        dir,
 		diskLowThreshold: 1<<62 - 1, // absurdly large
 	}
-	si := p.SystemInfo()
+	si := p.SystemInfo(context.Background())
 	if !si.DiskLowWarning {
 		t.Error("DiskLowWarning should be true when threshold exceeds free space")
 	}

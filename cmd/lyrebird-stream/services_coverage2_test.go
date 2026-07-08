@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"testing"
 )
 
@@ -16,7 +17,7 @@ func TestSystemInfoEmptyRecordDirFallback(t *testing.T) {
 		diskLowThreshold: 0,  // disabled
 	}
 
-	si := p.SystemInfo()
+	si := p.SystemInfo(context.Background())
 
 	// Statfs on "/" must succeed; total bytes must be non-zero.
 	if si.DiskTotalBytes == 0 {
@@ -36,7 +37,7 @@ func TestSystemInfoNTPBranchExclusive(t *testing.T) {
 		diskLowThreshold: 0,
 	}
 
-	si := p.SystemInfo()
+	si := p.SystemInfo(context.Background())
 
 	if si.NTPSynced && si.NTPMessage != "" {
 		t.Error("NTPSynced and NTPMessage must not both be set simultaneously")

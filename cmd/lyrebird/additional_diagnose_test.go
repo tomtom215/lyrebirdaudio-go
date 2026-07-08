@@ -108,7 +108,9 @@ func TestRunDiagnoseWithoutMediamtx(t *testing.T) {
 	}
 }
 
-// TestRunCheckSystemWithMissingFFmpeg verifies check-system output when ffmpeg is absent.
+// TestRunCheckSystemWithMissingFFmpeg verifies check-system exits non-zero when
+// the required ffmpeg binary is absent (M-cli1): a missing required tool is a
+// deterministic incompatibility that automation must be able to detect.
 func TestRunCheckSystemWithMissingFFmpeg(t *testing.T) {
 	tmpBin := t.TempDir()
 
@@ -122,8 +124,8 @@ func TestRunCheckSystemWithMissingFFmpeg(t *testing.T) {
 	t.Setenv("PATH", tmpBin)
 
 	err := runCheckSystem([]string{})
-	if err != nil {
-		t.Errorf("runCheckSystem() unexpected error: %v", err)
+	if err == nil {
+		t.Error("runCheckSystem() with missing ffmpeg: expected non-nil error, got nil")
 	}
 }
 

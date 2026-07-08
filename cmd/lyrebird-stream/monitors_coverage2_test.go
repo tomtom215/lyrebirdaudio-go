@@ -15,11 +15,11 @@ import (
 	"github.com/tomtom215/lyrebirdaudio-go/internal/supervisor"
 )
 
-// TestStartReloadHandlerLoadErrorPath covers monitors.go:88-92 — the
-// koanfCfg.Load() error branch after a successful Reload(). We overwrite
-// the config file with valid YAML that contains semantically invalid values
-// (sample_rate: -1). Reload() succeeds because the YAML parses; Load() then
-// fails because Validate() rejects the negative sample rate.
+// TestStartReloadHandlerLoadErrorPath covers the reload handler's rejection of
+// a semantically-invalid hot reload. We overwrite the config file with valid
+// YAML containing an invalid value (sample_rate: -1). reload() now validates
+// before swapping, so Reload() itself fails and the handler logs "failed to
+// reload configuration" while keeping the last-known-good config live.
 func TestStartReloadHandlerLoadErrorPath(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfgPath := tmpDir + "/config.yaml"
@@ -70,8 +70,8 @@ func TestStartReloadHandlerLoadErrorPath(t *testing.T) {
 		t.Fatal("startReloadHandler did not exit after context cancel")
 	}
 
-	if !bytes.Contains(logBuf.Bytes(), []byte("failed to load updated config")) {
-		t.Errorf("expected 'failed to load updated config' warning, got: %s", logBuf.String())
+	if !bytes.Contains(logBuf.Bytes(), []byte("failed to reload configuration")) {
+		t.Errorf("expected 'failed to reload configuration' warning, got: %s", logBuf.String())
 	}
 }
 
@@ -177,22 +177,18 @@ func TestStartDevicePollerKoanfNonNilRegistersDevices(t *testing.T) {
 }
 
 // TestStartDevicePollerKoanfLoadError covers monitors.go:40-43 — the
-// loadErr != nil branch when koanfCfg.Load() fails. After creating koanfCfg
-// from a valid file, we overwrite the file with semantically invalid YAML so
-// that Reload() succeeds but Load() → Validate() fails. The poller logs a
-// warning and continues. The context is cancelled ~12s in (after the first
-// 10s tick fires), which is enough for one iteration of the error path.
+// loadErr != nil branch when koanfCfg.Load() fails each tick. NewKoanfConfig's
+// initial load does not pre-validate (there is nothing to preserve), so a
+// semantically-invalid config file constructs successfully but the poller's
+// Load()->Validate() fails on every tick; the poller logs a warning and
+// continues. (A hot reload of an invalid config is instead rejected at Reload()
+// time — see TestStartReloadHandlerLoadErrorPath.) The context is cancelled
+// ~12s in (after the first 10s tick fires).
 func TestStartDevicePollerKoanfLoadError(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfgPath := tmpDir + "/config.yaml"
-	writeTestConfig(t, cfgPath, minimalConfig())
 
-	koanfCfg, _, err := loadConfigurationKoanf(cfgPath)
-	if err != nil || koanfCfg == nil {
-		t.Fatalf("loadConfigurationKoanf: err=%v", err)
-	}
-
-	// Overwrite with semantically invalid config so Load() → Validate() fails.
+	// A semantically-invalid config (negative sample rate).
 	invalidCfg := `default:
   sample_rate: -1
   channels: 2
@@ -202,9 +198,9 @@ func TestStartDevicePollerKoanfLoadError(t *testing.T) {
 	if err := os.WriteFile(cfgPath, []byte(invalidCfg), 0640); err != nil { //#nosec G304 -- test helper
 		t.Fatalf("WriteFile: %v", err)
 	}
-	// Force koanfCfg to pick up the new invalid content.
-	if err := koanfCfg.Reload(); err != nil {
-		t.Fatalf("Reload after writing invalid config: %v", err)
+	koanfCfg, err := config.NewKoanfConfig(config.WithYAMLFile(cfgPath), config.WithEnvPrefix("LYREBIRD"))
+	if err != nil {
+		t.Fatalf("NewKoanfConfig: %v", err)
 	}
 
 	var logBuf bytes.Buffer

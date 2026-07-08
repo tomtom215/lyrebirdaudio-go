@@ -1,0 +1,37 @@
+# golangci-lint v2 configuration.
+# Pinned so local `make lint` and CI produce identical results (previously CI
+# ran v1.64.8, the Makefile installed v1.62.2, and developers had v2.x — three
+# different default linter sets).
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  # Standard set: errcheck, govet, ineffassign, staticcheck, unused.
+  default: standard
+  enable:
+    - bodyclose   # HTTP response bodies must be closed (catches leaks)
+    - errorlint   # correct errors.Is/As usage and %w wrapping
+    - misspell    # spelling in comments/strings
+    - unconvert   # redundant type conversions
+  exclusions:
+    generated: lax
+    presets:
+      # Restores the idiomatic v1 default of not flagging deferred Close/Write
+      # and similar unchecked errors on cleanup paths.
+      - std-error-handling
+      - common-false-positives
+    rules:
+      # Test helpers routinely ignore Close/Remove on temp resources.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - bodyclose
+
+formatters:
+  enable:
+    - gofmt
+  settings:
+    gofmt:
+      simplify: true

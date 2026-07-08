@@ -6,6 +6,7 @@ package diagnostics
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -33,7 +34,7 @@ func TestRunContextCancellationMidCheck(t *testing.T) {
 
 	// If context was cancelled, we should get an error
 	if err != nil {
-		if err != context.DeadlineExceeded && err != context.Canceled {
+		if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
 			t.Errorf("expected context error, got: %v", err)
 		}
 		// Report should still be partially populated
@@ -56,7 +57,7 @@ func TestRunReturnsContextError(t *testing.T) {
 	if err == nil {
 		t.Log("Run completed without error on cancelled context")
 	} else {
-		if err != context.Canceled {
+		if !errors.Is(err, context.Canceled) {
 			t.Errorf("expected context.Canceled, got: %v", err)
 		}
 	}

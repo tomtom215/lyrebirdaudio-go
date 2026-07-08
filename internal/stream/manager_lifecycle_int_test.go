@@ -2,6 +2,7 @@ package stream
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -65,7 +66,7 @@ func TestStreamManagerLifecycle(t *testing.T) {
 	// Verify Run returns without error
 	select {
 	case err := <-errCh:
-		if err != nil && err != context.Canceled {
+		if err != nil && !errors.Is(err, context.Canceled) {
 			t.Errorf("Run() error = %v", err)
 		}
 	case <-time.After(1 * time.Second):
@@ -252,7 +253,7 @@ func TestStreamManagerGracefulShutdown(t *testing.T) {
 			// Verify graceful shutdown
 			select {
 			case err := <-errCh:
-				if err != nil && err != context.Canceled {
+				if err != nil && !errors.Is(err, context.Canceled) {
 					t.Errorf("Run() error = %v, want context.Canceled", err)
 				}
 			case <-time.After(5 * time.Second):

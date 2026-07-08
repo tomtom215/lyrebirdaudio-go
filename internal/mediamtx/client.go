@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -23,6 +24,12 @@ const (
 
 	// DefaultTimeout is the default HTTP request timeout.
 	DefaultTimeout = 5 * time.Second
+
+	// maxErrorBodyBytes caps how much of a non-2xx response body is read into an
+	// error message. MediaMTX runs on localhost, but bounding the read keeps a
+	// misbehaving or compromised endpoint from making the client buffer an
+	// unbounded body just to format an error string.
+	maxErrorBodyBytes = 4 << 10 // 4 KiB
 )
 
 // Client provides methods for interacting with the MediaMTX REST API.
@@ -56,11 +63,15 @@ type Path struct {
 
 	// Deprecated fields kept for compatibility with pre-v1.17 servers.
 	// Prefer Available/AvailableTime/InboundBytes/OutboundBytes above.
-	Ready         bool    `json:"ready"`
-	ReadyTime     string  `json:"readyTime,omitempty"`
-	Tracks        []Track `json:"tracks,omitempty"`
-	BytesReceived int64   `json:"bytesReceived"`
-	BytesSent     int64   `json:"bytesSent"`
+	Ready     bool   `json:"ready"`
+	ReadyTime string `json:"readyTime,omitempty"`
+	// Tracks is the deprecated "tracks" field. On the wire MediaMTX emits it
+	// as an array of codec-label strings (e.g. ["Opus"], ["audio/AAC"]), NOT
+	// an array of objects. Modeling it as a struct slice makes json.Decode
+	// fail on every path that has a track. Prefer Tracks2 (rich objects).
+	Tracks        []string `json:"tracks,omitempty"`
+	BytesReceived int64    `json:"bytesReceived"`
+	BytesSent     int64    `json:"bytesSent"`
 }
 
 // IsAvailable reports whether the path is receiving data. It prefers the
@@ -101,30 +112,6 @@ func (p *Path) AvailableAtTime() string {
 type Source struct {
 	Type string `json:"type"`
 	ID   string `json:"id,omitempty"`
-}
-
-// TrackType represents the type of media track.
-type TrackType string
-
-const (
-	// TrackTypeAudio represents an audio track.
-	TrackTypeAudio TrackType = "audio"
-	// TrackTypeVideo represents a video track.
-	TrackTypeVideo TrackType = "video"
-)
-
-// Track represents a media track in a stream.
-//
-// Deprecated: MediaMTX v1.17+ exposes tracks through Path.Tracks2 using the
-// richer PathTrack type. The deprecated "tracks" field is still emitted by
-// current servers, so this type is retained for compatibility.
-type Track struct {
-	Type       string `json:"type"`       // "audio" or "video" (use TrackTypeAudio/TrackTypeVideo constants)
-	Codec      string `json:"codec"`      // e.g., "opus", "aac"
-	ClockRate  int    `json:"clockRate"`  // e.g., 48000
-	Channels   int    `json:"channels"`   // Audio channels
-	BitDepth   int    `json:"bitDepth"`   // Audio bit depth
-	SampleRate int    `json:"sampleRate"` // Audio sample rate
 }
 
 // PathTrack represents an entry in a MediaMTX v1.17+ "tracks2" array.
@@ -255,9 +242,9 @@ func (c *Client) ListPaths(ctx context.Context) ([]Path, error) {
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		body, readErr := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 		if readErr != nil {
-			return nil, fmt.Errorf("API returned status %d (failed to read body: %v)", resp.StatusCode, readErr)
+			return nil, fmt.Errorf("API returned status %d (failed to read body: %w)", resp.StatusCode, readErr)
 		}
 		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
 	}
@@ -282,9 +269,13 @@ func (c *Client) ListPaths(ctx context.Context) ([]Path, error) {
 //   - *Path: Path information
 //   - error: if path not found or request fails
 func (c *Client) GetPath(ctx context.Context, name string) (*Path, error) {
-	url := fmt.Sprintf("%s/v3/paths/get/%s", c.baseURL, name)
+	// Escape the path name: a MediaMTX path is a device friendly-name that can
+	// contain characters (spaces, slashes, '#', '?') which would otherwise
+	// corrupt the request URL. This mirrors the escaping already done for the
+	// session ID in KickRTSPSession.
+	reqURL := fmt.Sprintf("%s/v3/paths/get/%s", c.baseURL, url.PathEscape(name))
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -300,9 +291,9 @@ func (c *Client) GetPath(ctx context.Context, name string) (*Path, error) {
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		body, readErr := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 		if readErr != nil {
-			return nil, fmt.Errorf("API returned status %d (failed to read body: %v)", resp.StatusCode, readErr)
+			return nil, fmt.Errorf("API returned status %d (failed to read body: %w)", resp.StatusCode, readErr)
 		}
 		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
 	}
@@ -398,9 +389,9 @@ func (c *Client) Ping(ctx context.Context) error {
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		body, readErr := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 		if readErr != nil {
-			return fmt.Errorf("MediaMTX API returned status %d (failed to read body: %v)", resp.StatusCode, readErr)
+			return fmt.Errorf("MediaMTX API returned status %d (failed to read body: %w)", resp.StatusCode, readErr)
 		}
 		return fmt.Errorf("MediaMTX API returned status %d: %s", resp.StatusCode, string(body))
 	}
@@ -453,12 +444,14 @@ func (c *Client) GetStreamStats(ctx context.Context, name string) (*StreamStats,
 		}
 		break
 	}
+	// Legacy fallback for servers that only populate the deprecated "tracks"
+	// array, which is a list of codec-label strings (e.g. ["Opus"]). Sample
+	// rate and channel count are not available in this shape — they come only
+	// from tracks2/CodecProps above.
 	if stats.AudioCodec == "" {
-		for _, track := range path.Tracks {
-			if track.Type == string(TrackTypeAudio) {
-				stats.AudioCodec = track.Codec
-				stats.SampleRate = track.SampleRate
-				stats.Channels = track.Channels
+		for _, codec := range path.Tracks {
+			if isAudioCodec(codec) {
+				stats.AudioCodec = codec
 				break
 			}
 		}

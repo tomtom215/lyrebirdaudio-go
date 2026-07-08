@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -70,9 +71,10 @@ func TestStreamServiceRunContextCancelled(t *testing.T) {
 	var logBuf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
 
-	// Create a script that runs for a while
+	// Mock ffmpeg that runs until signaled and, like real ffmpeg, exits
+	// promptly on SIGINT (graceful shutdown) rather than being force-killed.
 	scriptPath := filepath.Join(lockDir, "mock_ffmpeg.sh")
-	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\nsleep 30\n"), 0755); err != nil {
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\ntrap 'exit 0' INT TERM\nwhile true; do sleep 0.1; done\n"), 0755); err != nil {
 		t.Fatalf("Failed to create mock script: %v", err)
 	}
 
@@ -119,7 +121,7 @@ func TestStreamServiceRunContextCancelled(t *testing.T) {
 	select {
 	case err := <-errCh:
 		// context.Canceled is the expected result
-		if err != nil && err != context.Canceled {
+		if err != nil && !errors.Is(err, context.Canceled) {
 			t.Logf("Run() returned: %v (expected context.Canceled)", err)
 		}
 	case <-time.After(5 * time.Second):

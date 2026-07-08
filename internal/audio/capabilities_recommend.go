@@ -84,18 +84,24 @@ func RecommendSettings(caps *Capabilities, tier QualityTier) *RecommendedSetting
 		}
 	}
 
-	// Adjust channels if not supported
+	// Adjust channels if not supported.
+	// caps.Channels is sorted ascending (see capabilities.go), so caps.Channels[0]
+	// is the minimum supported count.
 	if len(caps.Channels) > 0 {
 		if !containsInt(caps.Channels, settings.Channels) {
-			// Use max available channels up to desired
+			// Prefer the largest supported channel count that does not exceed
+			// the desired count.
+			found := false
 			for i := len(caps.Channels) - 1; i >= 0; i-- {
 				if caps.Channels[i] <= settings.Channels {
 					settings.Channels = caps.Channels[i]
+					found = true
 					break
 				}
 			}
-			// If all channels are higher, use minimum
-			if settings.Channels > caps.Channels[len(caps.Channels)-1] {
+			// If every supported count exceeds the desired count, fall back to
+			// the minimum supported count (the device cannot do fewer).
+			if !found {
 				settings.Channels = caps.Channels[0]
 			}
 		}

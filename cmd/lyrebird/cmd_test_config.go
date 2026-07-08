@@ -41,6 +41,11 @@ func runTest(args []string) error {
 
 	fmt.Printf("Testing configuration: %s\n\n", configPath)
 
+	// `test` is an advisory dry-run: an unloadable/invalid config is a hard
+	// failure (it returns an error below), but every other check is a soft
+	// warning so the command stays usable before devices and servers are
+	// provisioned. allPassed only drives the human-facing summary. The
+	// scriptable capability gate is `check-system`; the doctor is `diagnose`.
 	allPassed := true
 
 	// Test 1: Config syntax and validation

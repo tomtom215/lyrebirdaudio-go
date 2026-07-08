@@ -1,7 +1,7 @@
 # LyreBirdAudio-Go Makefile
 # Production-grade build system
 
-.PHONY: help build build-all install clean test test-race test-coverage test-integration bench lint fmt vet check coverage-html
+.PHONY: help build build-all install clean test test-race test-coverage test-integration test-e2e bench lint fmt vet check coverage-html sec deps tidy update-deps ci dev version
 
 # Default target
 .DEFAULT_GOAL := help
@@ -55,9 +55,12 @@ build-all:
 		if [ "$$GOARCH" = "arm/7" ]; then GOARCH=arm; GOARM=7; fi; \
 		if [ "$$GOARCH" = "arm/6" ]; then GOARCH=arm; GOARM=6; fi; \
 		output_name=$(BUILD_DIR)/$(BINARY_NAME)-$${GOOS}-$${GOARCH}$${GOARM:+v$$GOARM}; \
-		echo "  Building $$output_name..."; \
+		stream_output=$(BUILD_DIR)/$(STREAM_BINARY)-$${GOOS}-$${GOARCH}$${GOARM:+v$$GOARM}; \
+		echo "  Building $$output_name and $$stream_output..."; \
 		CGO_ENABLED=0 GOOS=$$GOOS GOARCH=$$GOARCH GOARM=$$GOARM \
 			go build $(GO_BUILD_FLAGS) -o $$output_name ./cmd/lyrebird || exit 1; \
+		CGO_ENABLED=0 GOOS=$$GOOS GOARCH=$$GOARCH GOARM=$$GOARM \
+			go build $(GO_BUILD_FLAGS) -o $$stream_output ./cmd/lyrebird-stream || exit 1; \
 	done
 	@echo "==> Cross-compilation complete"
 	@ls -lh $(BUILD_DIR)/
@@ -101,6 +104,12 @@ test-integration:
 	@echo "==> Running integration tests..."
 	go test -v -race -tags=integration -timeout 5m ./...
 
+## test-e2e: Run hardware-free end-to-end tests (needs mediamtx + ffmpeg on PATH,
+## or LYREBIRD_MEDIAMTX_BIN / LYREBIRD_FFMPEG_BIN; tests skip if absent)
+test-e2e:
+	@echo "==> Running end-to-end tests (real MediaMTX + ffmpeg, no hardware)..."
+	go test -tags e2e -count=1 -timeout 5m ./test/e2e/...
+
 ## bench: Run benchmarks
 bench:
 	@echo "==> Running benchmarks..."
@@ -116,7 +125,7 @@ coverage-html: test-coverage
 lint:
 ifndef GOLANGCI_LINT
 	@echo "==> golangci-lint not installed. Installing..."
-	go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.62.2
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.5.0
 endif
 	@echo "==> Running linters..."
 	golangci-lint run --timeout 5m ./...
@@ -124,7 +133,7 @@ endif
 ## fmt: Format code
 fmt:
 	@echo "==> Formatting code..."
-	go fmt ./...
+	gofmt -s -w .
 	@echo "==> Format complete"
 
 ## vet: Run go vet
@@ -171,8 +180,8 @@ ci: deps check test-race test-coverage sec
 ## dev: Install development tools
 dev:
 	@echo "==> Installing development tools..."
-	go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.62.2
-	go install github.com/securego/gosec/v2/cmd/gosec@v2.21.4
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.5.0
+	go install github.com/securego/gosec/v2/cmd/gosec@v2.25.0
 	go install golang.org/x/tools/cmd/goimports@latest
 	@echo "==> Development tools installed"
 

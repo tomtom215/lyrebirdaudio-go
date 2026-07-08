@@ -22,7 +22,7 @@ func TestStartWatchdogNoEnvVar(t *testing.T) {
 	defer cancel()
 
 	// Should return immediately (no goroutine started)
-	startWatchdog(ctx, logger)
+	startWatchdog(ctx, logger, nil)
 }
 
 // TestStartWatchdogInvalidValue verifies startWatchdog handles invalid WATCHDOG_USEC.
@@ -34,7 +34,7 @@ func TestStartWatchdogInvalidValue(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	startWatchdog(ctx, logger)
+	startWatchdog(ctx, logger, nil)
 
 	// Should log warning
 	if !bytes.Contains(logBuf.Bytes(), []byte("invalid WATCHDOG_USEC")) {
@@ -51,7 +51,7 @@ func TestStartWatchdogZeroValue(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	startWatchdog(ctx, logger)
+	startWatchdog(ctx, logger, nil)
 
 	// Should log warning about invalid value
 	if !bytes.Contains(logBuf.Bytes(), []byte("invalid WATCHDOG_USEC")) {
@@ -81,7 +81,7 @@ func TestStartWatchdogValidValue(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	startWatchdog(ctx, logger)
+	startWatchdog(ctx, logger, nil)
 
 	// Wait for at least one ping
 	buf := make([]byte, 256)

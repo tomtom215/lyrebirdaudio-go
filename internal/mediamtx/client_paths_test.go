@@ -64,15 +64,18 @@ func TestGetPath(t *testing.T) {
 			return
 		}
 
-		resp := Path{
-			Name:          "test_stream",
-			Ready:         true,
-			BytesReceived: 5000,
-			Tracks: []Track{
-				{Type: "audio", Codec: "opus", SampleRate: 48000},
-			},
-		}
-		_ = json.NewEncoder(w).Encode(resp)
+		// Real MediaMTX v1.19.2 wire format (captured from a live server):
+		// "tracks" is an array of codec-label STRINGS, not objects.
+		_, _ = w.Write([]byte(`{
+			"name": "test_stream",
+			"confName": "all_others",
+			"ready": true,
+			"available": true,
+			"tracks": ["Opus"],
+			"tracks2": [{"codec": "Opus", "codecProps": {"channelCount": 2}}],
+			"inboundBytes": 5000,
+			"bytesReceived": 5000
+		}`))
 	}))
 	defer server.Close()
 
@@ -85,11 +88,11 @@ func TestGetPath(t *testing.T) {
 	if path.Name != "test_stream" {
 		t.Errorf("path.Name = %q, want %q", path.Name, "test_stream")
 	}
-	if !path.Ready {
-		t.Error("path.Ready should be true")
+	if !path.IsAvailable() {
+		t.Error("path.IsAvailable() should be true")
 	}
-	if len(path.Tracks) != 1 {
-		t.Errorf("len(path.Tracks) = %d, want 1", len(path.Tracks))
+	if len(path.Tracks) != 1 || path.Tracks[0] != "Opus" {
+		t.Errorf("path.Tracks = %v, want [\"Opus\"]", path.Tracks)
 	}
 }
 

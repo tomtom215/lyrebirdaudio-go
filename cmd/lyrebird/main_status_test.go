@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -111,9 +112,12 @@ func TestProcessExists(t *testing.T) {
 		t.Error("processExists() returned false for current process")
 	}
 
-	// Test with PID 1 (init, should exist on Linux)
+	// PID 1 (init) always exists. When the test runs non-root, signal(0) to it
+	// returns EPERM; treating EPERM as "not running" (the old behavior) would
+	// misreport a live root-owned daemon as a stale lock, so this is a hard
+	// assertion guarding the fix.
 	if !processExists(1) {
-		t.Log("processExists(1) returned false (may be expected in some environments)")
+		t.Error("processExists(1) = false, want true (EPERM must be treated as alive)")
 	}
 
 	// Test with invalid PID (should not exist)
@@ -150,18 +154,20 @@ func TestRunStatusWithTestFixtures(t *testing.T) {
 	_ = err
 }
 
-// TestRunDiagnoseOutput verifies diagnose command runs without panic.
+// TestRunDiagnoseOutput verifies diagnose prints its report header. The header
+// is emitted unconditionally before any environment-dependent check, so this
+// assertion holds regardless of ffmpeg/config/device state and the return value.
 func TestRunDiagnoseOutput(t *testing.T) {
-	// Diagnose command should not panic
-	err := runDiagnose([]string{})
-	// May or may not error depending on environment
-	_ = err
+	out, _ := captureStdout(t, func() error { return runDiagnose([]string{}) })
+	if !strings.Contains(out, "LyreBird System Diagnostics") {
+		t.Errorf("diagnose output missing report header; got:\n%s", out)
+	}
 }
 
-// TestRunCheckSystemOutput verifies check-system command output.
+// TestRunCheckSystemOutput verifies check-system prints its report header.
 func TestRunCheckSystemOutput(t *testing.T) {
-	// Check-system command should not panic
-	err := runCheckSystem([]string{})
-	// May or may not error depending on environment
-	_ = err
+	out, _ := captureStdout(t, func() error { return runCheckSystem([]string{}) })
+	if !strings.Contains(out, "System Compatibility Check") {
+		t.Errorf("check-system output missing report header; got:\n%s", out)
+	}
 }

@@ -82,19 +82,59 @@ type RTSPSessionList struct {
 	Items     []RTSPSession `json:"items"`
 }
 
-// ListRTSPSessions returns the first page of active RTSP sessions using the
-// server's default itemsPerPage. For deployments that may exceed the default
-// page size, fetch additional pages via ListRTSPSessionsPage.
+// ListRTSPSessions returns all active RTSP sessions, transparently paginating
+// across every page the server reports. It fetches the first page using the
+// server's default itemsPerPage, reads the PageCount from that response, then
+// walks pages 1..PageCount-1, accumulating every session into a single slice.
+//
+// This matters for correctness on busy servers: MediaMTX caps a page at its
+// default itemsPerPage (100 as of v1.17.1), so a deployment with more active
+// sessions than the page size would otherwise silently drop the later pages —
+// hiding reader sessions from stall-recovery and under-reporting status.
+//
+// Callers that need per-page control, or the raw ItemCount/PageCount totals,
+// should use ListRTSPSessionsPage instead.
+//
+// The number of requests is bounded by the PageCount reported in the first
+// response, so a misbehaving server cannot induce an unbounded fetch loop.
+// Pagination stops early if ctx is canceled between page fetches, returning
+// the context error. A degenerate PageCount of 0 or 1 yields no extra
+// requests and returns the first page as-is.
 //
 // API endpoint: GET /v3/rtspsessions/list
 //
 // The returned slice is always non-nil when err is nil; it may be empty.
 func (c *Client) ListRTSPSessions(ctx context.Context) ([]RTSPSession, error) {
-	list, err := c.ListRTSPSessionsPage(ctx, -1, -1)
+	// Fetch the first page using the server's default itemsPerPage (negative
+	// arguments omit the query params). This keeps the common single-page case
+	// byte-for-byte identical to a plain unpaginated request.
+	first, err := c.ListRTSPSessionsPage(ctx, -1, -1)
 	if err != nil {
 		return nil, err
 	}
-	return list.Items, nil
+
+	// ListRTSPSessionsPage guarantees a non-nil Items slice, so all starts
+	// non-nil and the non-nil-on-success contract holds through accumulation.
+	all := first.Items
+
+	// PageCount is captured once from the first response and used as a hard
+	// upper bound, so the number of iterations is fixed regardless of what
+	// later responses claim.
+	for page := 1; int64(page) < first.PageCount; page++ {
+		// Honor cancellation between pages rather than issuing every remaining
+		// request after the caller has given up.
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		next, err := c.ListRTSPSessionsPage(ctx, page, -1)
+		if err != nil {
+			return nil, fmt.Errorf("fetching rtsp sessions page %d: %w", page, err)
+		}
+		all = append(all, next.Items...)
+	}
+
+	return all, nil
 }
 
 // ListRTSPSessionsPage fetches one page of active RTSP sessions. Pass a
@@ -129,9 +169,9 @@ func (c *Client) ListRTSPSessionsPage(ctx context.Context, page, itemsPerPage in
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		body, readErr := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 		if readErr != nil {
-			return nil, fmt.Errorf("API returned status %d (failed to read body: %v)", resp.StatusCode, readErr)
+			return nil, fmt.Errorf("API returned status %d (failed to read body: %w)", resp.StatusCode, readErr)
 		}
 		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
 	}
@@ -205,9 +245,9 @@ func (c *Client) KickRTSPSession(ctx context.Context, id string) error {
 	case http.StatusNotFound:
 		return fmt.Errorf("%w: %s", ErrSessionNotFound, id)
 	default:
-		body, readErr := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 		if readErr != nil {
-			return fmt.Errorf("kick session: API returned status %d (failed to read body: %v)", resp.StatusCode, readErr)
+			return fmt.Errorf("kick session: API returned status %d (failed to read body: %w)", resp.StatusCode, readErr)
 		}
 		return fmt.Errorf("kick session: API returned status %d: %s", resp.StatusCode, string(body))
 	}

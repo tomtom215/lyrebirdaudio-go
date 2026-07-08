@@ -158,6 +158,12 @@ func TestCheckForUpdatesChecksumAsset(t *testing.T) {
 // newTestUpdater creates an Updater that routes API calls to the given base
 // URL instead of api.github.com. It replaces GitHubAPIURL by using a custom
 // http.Client whose Transport rewrites requests to the test server.
+//
+// It opts into WithAllowUnverified(true) because these fixtures exercise the
+// download/extract/backup/install mechanics against mock servers that do not
+// serve a checksums asset; the fail-closed default (verified in
+// TestUpdateFailsClosedWithoutChecksum) would otherwise short-circuit those
+// paths before they are reached.
 func newTestUpdater(serverURL string) *Updater {
 	// Use a custom transport to redirect GitHub API requests to the test server.
 	transport := &redirectTransport{serverURL: serverURL}
@@ -166,6 +172,7 @@ func newTestUpdater(serverURL string) *Updater {
 		WithOwner("owner"),
 		WithRepo("repo"),
 		WithHTTPClient(client),
+		WithAllowUnverified(true),
 	)
 }
 

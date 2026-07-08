@@ -18,12 +18,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version: '1.25.9'
+          go-version: '1.25.12'
           cache: true
 
       - name: Verify go.mod is tidy
@@ -46,10 +46,32 @@ jobs:
         run: go vet ./...
 
       - name: Install golangci-lint
-        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
+        # v2 line; pinned so CI matches the committed .golangci.yml (version: 2)
+        # and the Makefile. Note the /v2 module path.
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.5.0
 
       - name: Run golangci-lint
         run: $(go env GOPATH)/bin/golangci-lint run --timeout 5m ./...
+
+  # Shell-script linting (the project ships operational shell, e.g.
+  # docs/monitoring-timer.sh, that governs alerting).
+  shellcheck:
+    name: Shell Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Run shellcheck and bash -n
+        run: |
+          mapfile -t files < <(find . -name '*.sh' -not -path './.git/*')
+          if [ "${#files[@]}" -eq 0 ]; then echo "no shell scripts"; exit 0; fi
+          printf '%s\n' "${files[@]}"
+          shellcheck "${files[@]}"
+          for f in "${files[@]}"; do bash -n "$f"; done
 
   # Security scanning
   security:
@@ -57,12 +79,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version: '1.25.9'
+          go-version: '1.25.12'
           cache: true
 
       - name: Install gosec
@@ -80,16 +102,21 @@ jobs:
   test:
     name: Unit Tests
     runs-on: ubuntu-latest
+    # GOTOOLCHAIN=local pins each matrix leg to its own Go version. Without it the
+    # `toolchain go1.25.12` directive in go.mod makes GOTOOLCHAIN=auto silently
+    # upgrade the floor leg, so it would never actually exercise the minimum version.
+    env:
+      GOTOOLCHAIN: local
     strategy:
       matrix:
-        # Test minimum supported version (go.mod: go 1.24.2) and latest stable.
-        go-version: ['1.24.2', '1.25.9']
+        # Minimum supported version (go.mod `go` directive) and latest stable patch.
+        go-version: ['1.25.0', '1.25.12']
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Set up Go ${{ matrix.go-version }}
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: ${{ matrix.go-version }}
           cache: true
@@ -120,7 +147,7 @@ jobs:
 
       - name: Check coverage threshold
         run: |
-          coverage=$(go tool cover -func=coverage.out | grep total | awk '{print substr($3, 1, length($3)-1)}')
+          coverage=$(go tool cover -func=coverage.out | grep '^total:' | awk '{print substr($3, 1, length($3)-1)}')
           echo "Total coverage: ${coverage}%"
           # Note: 65% threshold accounts for CLI commands requiring root/interactive input
           # Internal packages maintain ~87% coverage; CLI packages have lower coverage
@@ -149,12 +176,12 @@ jobs:
             goarm: 6
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version: '1.25.9'
+          go-version: '1.25.12'
           cache: true
 
       - name: Download dependencies
@@ -201,7 +228,7 @@ jobs:
           fi
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: binaries-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goarm && format('v{0}', matrix.goarm) || '' }}
           path: bin/*
@@ -215,12 +242,12 @@ jobs:
     if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version: '1.25.9'
+          go-version: '1.25.12'
           cache: true
 
       - name: Install ffmpeg
@@ -243,6 +270,40 @@ jobs:
           echo "audio devices.  Tests on ubuntu-latest are skipped via t.Skip() or"
           echo "build constraints.  See docs/PEER_REVIEW.md CI-5 for details."
 
+  # Hardware-free end-to-end tests: real MediaMTX + real ffmpeg (synthetic
+  # audio), no USB microphone required. This exercises the actual streaming
+  # integration and the MediaMTX API client against real wire-format responses.
+  e2e:
+    name: E2E (real MediaMTX + ffmpeg)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: '1.25.12'
+          cache: true
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Download MediaMTX
+        env:
+          MEDIAMTX_VERSION: v1.19.2
+        run: |
+          curl -fsSL -o /tmp/mediamtx.tar.gz \
+            "https://github.com/bluenviron/mediamtx/releases/download/${MEDIAMTX_VERSION}/mediamtx_${MEDIAMTX_VERSION}_linux_amd64.tar.gz"
+          mkdir -p /tmp/mediamtx
+          tar -xzf /tmp/mediamtx.tar.gz -C /tmp/mediamtx
+          echo "LYREBIRD_MEDIAMTX_BIN=/tmp/mediamtx/mediamtx" >> "$GITHUB_ENV"
+
+      - name: Run E2E tests
+        run: go test -tags e2e -count=1 -timeout 10m ./test/e2e/...
+
   # Release build (only on tags)
   release:
     name: Release Build
@@ -254,10 +315,10 @@ jobs:
       contents: write
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Download all build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: artifacts
           pattern: binaries-*
@@ -286,7 +347,7 @@ jobs:
             bin/checksums.txt
 
       - name: Upload release artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: binaries
           path: |

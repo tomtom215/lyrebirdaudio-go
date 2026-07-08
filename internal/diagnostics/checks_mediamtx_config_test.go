@@ -197,7 +197,7 @@ func TestCheckMediaMTXConfig_IncludedInFullMode(t *testing.T) {
 	cancel()
 	found := false
 	for _, c := range checks {
-		res := c(ctx)
+		res := c.fn(ctx)
 		if res.Name == "MediaMTX Config" {
 			found = true
 			break

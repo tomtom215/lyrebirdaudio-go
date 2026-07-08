@@ -229,15 +229,63 @@ func RestoreBackup(backupPath, configPath, backupDir string) (string, error) {
 		return previousBackup, fmt.Errorf("failed to create config directory: %w", err)
 	}
 
-	// Write restored config
+	// Write restored config atomically (temp file + fsync + rename) so a crash
+	// mid-restore leaves either the old config or the fully-restored one, never a
+	// truncated file that the daemon would then fail to parse. This mirrors the
+	// atomic guarantee Config.Save already provides for the normal save path.
 	// SEC-4: Match backup creation permissions (0640) — restored configs should
 	// not become less secure than the originals. Consistent with SEC-3 (config save).
-	// #nosec G306,G703 -- config file restricted to owner+group; configPath cleaned at function entry
-	if err := os.WriteFile(configPath, data, 0640); err != nil {
+	if err := writeFileAtomic(configPath, data, 0640); err != nil {
 		return previousBackup, fmt.Errorf("failed to restore config: %w", err)
 	}
 
 	return previousBackup, nil
+}
+
+// writeFileAtomic writes data to path atomically: it writes to a temp file in
+// the same directory, fsyncs it, sets perm, and renames over path. os.Rename is
+// atomic on POSIX filesystems, so a crash leaves either the old file or the
+// complete new file — never a partial write. The temp file is removed on any
+// error before the rename.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) (err error) {
+	dir := filepath.Dir(path)
+
+	// #nosec G304 -- dir derives from a cleaned, caller-controlled config path
+	tmpFile, err := os.CreateTemp(dir, ".config.*.tmp")
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+
+	success := false
+	defer func() {
+		if !success {
+			_ = tmpFile.Close()
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err := tmpFile.Write(data); err != nil {
+		return fmt.Errorf("failed to write temp file: %w", err)
+	}
+	if err := tmpFile.Sync(); err != nil {
+		return fmt.Errorf("failed to sync temp file: %w", err)
+	}
+	// #nosec G302 -- perm is caller-chosen (0640 for configs); least-privilege enforced by caller
+	if err := tmpFile.Chmod(perm); err != nil {
+		return fmt.Errorf("failed to set temp file permissions: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("failed to close temp file: %w", err)
+	}
+
+	// #nosec G703 -- path is a cleaned, caller-controlled config path, not web input
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("failed to rename temp file: %w", err)
+	}
+
+	success = true
+	return nil
 }
 
 // CleanOldBackups removes old backups, keeping only the most recent ones.
@@ -281,37 +329,43 @@ func CleanOldBackups(backupDir, configName string, keepCount int) (int, error) {
 // parseBackupTimestamp extracts the timestamp from a backup filename.
 //
 // Expected format: config.yaml.2025-12-14T10-30-00.bak
+// Sub-second collision form: config.yaml.2025-12-14T10-30-00.000.bak
 func parseBackupTimestamp(filename string) (time.Time, error) {
 	// Remove .bak suffix
 	name := strings.TrimSuffix(filename, BackupSuffix)
 
-	// Find timestamp part (last component after splitting by dots)
 	parts := strings.Split(name, ".")
 
-	// Need at least 2 parts: filename and timestamp
+	// Need at least 2 parts: base name and timestamp.
 	if len(parts) < 2 {
 		return time.Time{}, fmt.Errorf("invalid backup filename format")
 	}
 
-	// Timestamp is the last part
-	timestampStr := parts[len(parts)-1]
-
-	// Handle millisecond format
+	// The base name may itself contain dots ("config.yaml") and the sub-second
+	// collision timestamp contains an internal dot (".000"), so a plain
+	// last-component split is ambiguous and previously made millisecond backups
+	// unparseable — invisible to ListBackups and unprunable by CleanOldBackups,
+	// so they accumulated forever. Instead, try the two-component dot-suffix
+	// first (matches the "...T10-30-00.000" form) then the one-component suffix
+	// (matches the whole-second form); time.Parse is strict, so a base-name
+	// token can never masquerade as a timestamp.
 	formats := []string{
-		BackupTimestampFormat,
-		"2006-01-02T15-04-05.000",
+		"2006-01-02T15-04-05.000", // sub-second collision form
+		BackupTimestampFormat,     // whole-second form
 	}
-
-	var t time.Time
-	var err error
-	for _, format := range formats {
-		t, err = time.Parse(format, timestampStr)
-		if err == nil {
-			return t, nil
+	for _, suffixLen := range []int{2, 1} {
+		if len(parts) < suffixLen {
+			continue
+		}
+		candidate := strings.Join(parts[len(parts)-suffixLen:], ".")
+		for _, format := range formats {
+			if t, err := time.Parse(format, candidate); err == nil {
+				return t, nil
+			}
 		}
 	}
 
-	return time.Time{}, fmt.Errorf("invalid timestamp format: %s", timestampStr)
+	return time.Time{}, fmt.Errorf("invalid backup timestamp in %q", filename)
 }
 
 // validateYAMLSyntax checks if data is valid YAML.

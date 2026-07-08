@@ -198,8 +198,19 @@ func buildFFmpegCommand(ctx context.Context, cfg *ManagerConfig) *exec.Cmd {
 		args = append(args, cfg.RTSPURL)
 	}
 
+	// Intentionally exec.Command, NOT exec.CommandContext(ctx): tying the
+	// process to the shutdown context makes os/exec send SIGKILL the instant the
+	// context is cancelled, which truncates the in-progress recording segment
+	// (the tee/segment muxer never writes its container trailer) on every
+	// graceful shutdown, hot-reload, or stall-triggered restart. Instead,
+	// Manager.stop() owns shutdown: it sends a single SIGINT so ffmpeg can flush
+	// and finalize, then escalates to SIGKILL only after StopTimeout. Sending a
+	// second SIGINT (which os/exec's default cancel would race with) would make
+	// ffmpeg force-quit without finalizing, so there must be exactly one.
+	// ctx is retained in the signature for API stability.
+	_ = ctx
 	// #nosec G204 - FFmpegPath is from validated configuration, not user input
-	cmd := exec.CommandContext(ctx, cfg.FFmpegPath, args...)
+	cmd := exec.Command(cfg.FFmpegPath, args...)
 
 	return cmd
 }

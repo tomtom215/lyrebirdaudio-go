@@ -1,6 +1,7 @@
 package health
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -12,7 +13,7 @@ type mockSysInfoProvider struct {
 	info SystemInfo
 }
 
-func (m *mockSysInfoProvider) SystemInfo() SystemInfo {
+func (m *mockSysInfoProvider) SystemInfo(context.Context) SystemInfo {
 	return m.info
 }
 
@@ -116,9 +117,14 @@ func TestWithSystemInfoNTPDesynced(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	// NTP desync downgrades to degraded
+	// NTP desync downgrades the body to "degraded" but is a SOFT warning: the
+	// HTTP status must stay 200 so a routine clock re-sync doesn't flap a
+	// watchdog or load balancer.
 	if resp.Status != "degraded" {
 		t.Errorf("status = %q, want degraded when NTP not synced", resp.Status)
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("HTTP status = %d, want 200 (NTP desync is a soft warning, not a hard failure)", rec.Code)
 	}
 	if resp.System.NTPSynced {
 		t.Error("NTPSynced should be false")

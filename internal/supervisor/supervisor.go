@@ -97,17 +97,16 @@ type Config struct {
 	// Default: 10 seconds.
 	ShutdownTimeout time.Duration
 
-	// RestartDelay is the initial delay before restarting a failed service.
-	// Default: 1 second.
+	// RestartDelay is the throttle pause applied once a service has failed too
+	// rapidly. It maps onto suture's Spec.FailureBackoff: suture restarts a
+	// failed service immediately until an exponentially-decayed failure count
+	// crosses its FailureThreshold, then pauses for RestartDelay (jittered)
+	// before resuming. Default: 1 second.
+	//
+	// Note: suture v4 does not implement per-restart exponential backoff with a
+	// maximum-delay cap, so there are deliberately no "max delay" or "multiplier"
+	// knobs here — see New for the full Config -> suture.Spec mapping.
 	RestartDelay time.Duration
-
-	// MaxRestartDelay is the maximum delay between restarts (exponential backoff cap).
-	// Default: 5 minutes.
-	MaxRestartDelay time.Duration
-
-	// RestartMultiplier is the factor by which RestartDelay is multiplied after each failure.
-	// Default: 2.0.
-	RestartMultiplier float64
 
 	// Logger is optional; if set, supervisor events are logged here.
 	// When nil, supervisor operates silently.
@@ -117,11 +116,9 @@ type Config struct {
 // DefaultConfig returns a Config with sensible defaults.
 func DefaultConfig() Config {
 	return Config{
-		Name:              "supervisor",
-		ShutdownTimeout:   10 * time.Second,
-		RestartDelay:      1 * time.Second,
-		MaxRestartDelay:   5 * time.Minute,
-		RestartMultiplier: 2.0,
+		Name:            "supervisor",
+		ShutdownTimeout: 10 * time.Second,
+		RestartDelay:    1 * time.Second,
 	}
 }
 
@@ -240,6 +237,27 @@ func (w *serviceWrapper) Stop() {
 	}
 }
 
+// buildSpec maps the supervisor Config onto a suture.Spec.
+//
+// suture v4 does not implement per-restart exponential backoff with a cap.
+// Instead it restarts a failed service immediately until an
+// exponentially-decayed failure count crosses FailureThreshold, then pauses
+// once for FailureBackoff (jittered) before resetting the count. We therefore
+// map only the field that has an honest equivalent — RestartDelay ->
+// FailureBackoff — and enable jitter so that many services throttled by the
+// same correlated failure do not resume in lockstep. FailureThreshold and
+// FailureDecay are intentionally left at suture's defaults (5 failures, 30s
+// decay). This is also why Config exposes no "max delay" or "multiplier"
+// knobs: suture has no concept to map them onto.
+func buildSpec(cfg Config) suture.Spec {
+	return suture.Spec{
+		EventHook:      nil, // We handle logging ourselves.
+		Timeout:        cfg.ShutdownTimeout,
+		FailureBackoff: cfg.RestartDelay,
+		BackoffJitter:  &suture.DefaultJitter{},
+	}
+}
+
 // New creates a new Supervisor with the given configuration.
 func New(cfg Config) *Supervisor {
 	// Apply defaults
@@ -252,22 +270,10 @@ func New(cfg Config) *Supervisor {
 	if cfg.RestartDelay == 0 {
 		cfg.RestartDelay = 1 * time.Second
 	}
-	if cfg.MaxRestartDelay == 0 {
-		cfg.MaxRestartDelay = 5 * time.Minute
-	}
-	if cfg.RestartMultiplier == 0 {
-		cfg.RestartMultiplier = 2.0
-	}
-
-	// Create suture supervisor with configured backoff
-	spec := suture.Spec{
-		EventHook: nil, // We handle logging ourselves
-		Timeout:   cfg.ShutdownTimeout,
-	}
 
 	s := &Supervisor{
 		cfg:      cfg,
-		suture:   suture.New(cfg.Name, spec),
+		suture:   suture.New(cfg.Name, buildSpec(cfg)),
 		services: make(map[string]*serviceEntry),
 	}
 

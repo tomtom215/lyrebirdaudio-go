@@ -6,9 +6,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 )
+
+// usbIDHalfRegex matches a single USB ID half: exactly four hexadecimal digits.
+// Pre-compiled at package level to avoid recompiling on every call.
+var usbIDHalfRegex = regexp.MustCompile(`^[0-9a-fA-F]{4}$`)
 
 // Device represents a USB audio device detected from ALSA.
 //
@@ -213,8 +218,8 @@ func ParseUSBID(usbID string) (vendorID, productID string, err error) {
 	vendorID = strings.TrimSpace(parts[0])
 	productID = strings.TrimSpace(parts[1])
 
-	// Validate format (4 hex digits each)
-	if len(vendorID) != 4 || len(productID) != 4 {
+	// Validate format (exactly 4 hexadecimal digits each)
+	if !usbIDHalfRegex.MatchString(vendorID) || !usbIDHalfRegex.MatchString(productID) {
 		return "", "", fmt.Errorf("invalid USB ID format: expected 4-digit hex, got %q", usbID)
 	}
 

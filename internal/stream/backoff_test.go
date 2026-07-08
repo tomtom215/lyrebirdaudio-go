@@ -206,7 +206,12 @@ func TestBackoffReset(t *testing.T) {
 	}
 }
 
-// TestBackoffWaitActuallyWaits verifies Wait() blocks for the correct duration.
+// TestBackoffWaitActuallyWaits verifies Wait() blocks for a jittered fraction
+// of the current delay.
+//
+// Wait() applies multiplicative jitter in [0.5, 1.0) to the deterministic base
+// delay to decorrelate restarts across streams, so a 100ms base yields a
+// ~50-100ms sleep. The bounds below allow scheduling slop on both ends.
 func TestBackoffWaitActuallyWaits(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping timing test in short mode")
@@ -218,9 +223,59 @@ func TestBackoffWaitActuallyWaits(t *testing.T) {
 	backoff.Wait()
 	elapsed := time.Since(start)
 
-	// Should wait ~100ms (initial delay)
-	if elapsed < 90*time.Millisecond || elapsed > 200*time.Millisecond {
-		t.Errorf("Wait() took %v, expected ~100ms", elapsed)
+	// Jittered wait is in [50ms, 100ms); allow slop below 50ms and above 100ms.
+	if elapsed < 40*time.Millisecond || elapsed > 200*time.Millisecond {
+		t.Errorf("Wait() took %v, expected jittered ~50-100ms", elapsed)
+	}
+}
+
+// TestBackoffJitterBounds verifies that the jittered wait derived from a known
+// deterministic delay always falls within [base/2, base] over many samples,
+// that jitter actually varies the wait, and that CurrentDelay() itself stays
+// deterministic and unchanged regardless of jitter sampling.
+func TestBackoffJitterBounds(t *testing.T) {
+	backoff := NewBackoff(10*time.Second, 300*time.Second, 50)
+
+	// Advance to a known, non-initial deterministic delay: 10s -> 20s -> 40s.
+	backoff.RecordFailure()
+	backoff.RecordFailure()
+
+	const base = 40 * time.Second
+	if got := backoff.CurrentDelay(); got != base {
+		t.Fatalf("CurrentDelay() = %v, want %v", got, base)
+	}
+
+	const samples = 2000
+	minSeen, maxSeen := base, time.Duration(0)
+	for i := 0; i < samples; i++ {
+		got := backoff.jitteredDelay()
+
+		if got > base {
+			t.Fatalf("jitteredDelay() = %v, exceeds base %v", got, base)
+		}
+		if got < base/2 {
+			t.Fatalf("jitteredDelay() = %v, below base/2 %v", got, base/2)
+		}
+		if got < minSeen {
+			minSeen = got
+		}
+		if got > maxSeen {
+			maxSeen = got
+		}
+
+		// The stored delay must remain deterministic across jitter sampling.
+		if cd := backoff.CurrentDelay(); cd != base {
+			t.Fatalf("CurrentDelay() mutated to %v after jitter sampling, want %v", cd, base)
+		}
+	}
+
+	// Prove jitter is actually applied (not a constant): the minimum sample
+	// must dip below base, and the spread must be non-trivial.
+	if minSeen >= base {
+		t.Errorf("jitter never reduced the delay below base %v (min=%v)", base, minSeen)
+	}
+	if maxSeen-minSeen < base/10 {
+		t.Errorf("jitter spread too small: min=%v max=%v", minSeen, maxSeen)
 	}
 }
 
@@ -350,11 +405,13 @@ func TestBackoffShortRunDoesNotDoubleCount(t *testing.T) {
 		t.Errorf("After one RecordFailure, Attempts() = %d, want 1", backoff.Attempts())
 	}
 
-	// Simulate a long successful run
+	// Simulate a long successful run. A genuine success fully resets the
+	// backoff, including the attempt counter, so a healthy stream that merely
+	// restarts is never abandoned by the max-attempts ceiling.
 	backoff.RecordSuccess(400 * time.Second)
 
-	if backoff.Attempts() != 2 {
-		t.Errorf("After RecordFailure + RecordSuccess, Attempts() = %d, want 2", backoff.Attempts())
+	if backoff.Attempts() != 0 {
+		t.Errorf("After a long successful run, Attempts() = %d, want 0 (reset)", backoff.Attempts())
 	}
 	if backoff.ConsecutiveFailures() != 0 {
 		t.Errorf("After long success, ConsecutiveFailures() = %d, want 0", backoff.ConsecutiveFailures())

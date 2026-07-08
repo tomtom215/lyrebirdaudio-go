@@ -120,6 +120,9 @@ func TestParseUSBIDEdgeCases(t *testing.T) {
 		{"empty before colon", ":0014", true},
 		{"only whitespace", "   ", true},
 		{"just colon", ":", true},
+		{"non-hex vendor (4 chars)", "0d8g:0014", true},
+		{"non-hex product (4 chars)", "0d8c:00zz", true},
+		{"non-hex both (4 chars)", "gggg:hhhh", true},
 	}
 
 	for _, tt := range tests {

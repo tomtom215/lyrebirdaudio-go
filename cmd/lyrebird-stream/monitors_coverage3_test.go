@@ -66,7 +66,7 @@ func TestStartWatchdogNotifyFailed(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&sb, nil))
 	ctx, cancel := context.WithCancel(context.Background())
 
-	startWatchdog(ctx, logger)
+	startWatchdog(ctx, logger, nil)
 
 	// Allow at least one tick (5ms interval) for the notify to fail.
 	time.Sleep(50 * time.Millisecond)

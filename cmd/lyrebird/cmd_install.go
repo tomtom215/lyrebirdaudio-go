@@ -21,7 +21,7 @@ func runInstallMediaMTX(args []string) error {
 	}
 
 	// Parse flags
-	version := "v1.17.1" // Known stable version
+	version := "v1.19.2" // Known stable version (latest as of 2026-07)
 	installService := true
 	for _, arg := range args {
 		switch {
@@ -141,10 +141,19 @@ func runInstallMediaMTX(args []string) error {
 			copyCmd := exec.Command("cp", configSrc, configDst) // #nosec G204 -- paths are from controlled tmpDir
 			if output, err := copyCmd.CombinedOutput(); err != nil {
 				fmt.Printf("Warning: failed to copy config: %v: %s\n", err, string(output))
+			} else if changed, apiErr := enableMediaMTXAPI(configDst); apiErr != nil {
+				fmt.Printf("Warning: could not enable the MediaMTX API in %s: %v\n", configDst, apiErr)
+				fmt.Println("         Set 'api: yes' manually — lyrebird needs it for status and monitoring.")
+			} else if changed {
+				fmt.Println("Enabled the MediaMTX control API (api: yes) for lyrebird monitoring.")
 			}
 		}
 	} else {
 		fmt.Printf("Config already exists at %s, keeping existing.\n", configDst)
+		if enabled, chkErr := mediaMTXAPIEnabled(configDst); chkErr == nil && !enabled {
+			fmt.Printf("NOTE: the existing config has the control API disabled; lyrebird's\n")
+			fmt.Printf("      status and monitoring require 'api: yes' in %s.\n", configDst)
+		}
 	}
 
 	// Install systemd service
@@ -281,6 +290,62 @@ var validVersionRe = regexp.MustCompile(`^v?\d+\.\d+\.\d+(-[a-zA-Z0-9.]+)?$`)
 
 func isValidMediaMTXVersion(v string) bool {
 	return validVersionRe.MatchString(v)
+}
+
+// enableMediaMTXAPI rewrites the top-level "api:" key in a MediaMTX config to
+// "yes" so lyrebird's control-API client (status, monitoring, RTSP session
+// management) works out of the box. The stock MediaMTX config ships with the
+// API disabled (api: false), which otherwise leaves those features silently
+// non-functional after a fresh install. It returns whether a change was made.
+func enableMediaMTXAPI(configPath string) (bool, error) {
+	data, err := os.ReadFile(configPath) // #nosec G304 -- configPath is the fixed install destination
+	if err != nil {
+		return false, err
+	}
+	lines := strings.Split(string(data), "\n")
+	for i, line := range lines {
+		if isTopLevelYAMLKey(line, "api") && topLevelYAMLBoolIsFalse(line) {
+			lines[i] = "api: yes"
+			// 0640: readable by the root-run mediamtx service, not world-readable.
+			// #nosec G306 G703 -- configPath is the fixed install destination (/etc/mediamtx/mediamtx.yml), not user/network input
+			return true, os.WriteFile(configPath, []byte(strings.Join(lines, "\n")), 0640)
+		}
+	}
+	return false, nil
+}
+
+// mediaMTXAPIEnabled reports whether the top-level "api:" key is truthy.
+func mediaMTXAPIEnabled(configPath string) (bool, error) {
+	data, err := os.ReadFile(configPath) // #nosec G304 -- configPath is the fixed install destination
+	if err != nil {
+		return false, err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if isTopLevelYAMLKey(line, "api") {
+			return !topLevelYAMLBoolIsFalse(line), nil
+		}
+	}
+	return false, nil
+}
+
+// isTopLevelYAMLKey reports whether line defines the given unindented YAML key.
+func isTopLevelYAMLKey(line, key string) bool {
+	if line == "" || line[0] == ' ' || line[0] == '\t' || line[0] == '#' {
+		return false
+	}
+	k, _, found := strings.Cut(line, ":")
+	return found && strings.TrimSpace(k) == key
+}
+
+// topLevelYAMLBoolIsFalse reports whether a "key: value" line's value is a
+// falsey YAML boolean (false/no), ignoring any inline comment.
+func topLevelYAMLBoolIsFalse(line string) bool {
+	_, v, _ := strings.Cut(line, ":")
+	v = strings.TrimSpace(v)
+	if i := strings.IndexByte(v, '#'); i >= 0 {
+		v = strings.TrimSpace(v[:i])
+	}
+	return v == "false" || v == "no"
 }
 
 // installMediaMTXService installs the MediaMTX systemd service.

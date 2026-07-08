@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -316,7 +317,14 @@ func processExists(pid int) bool {
 		return false
 	}
 
-	// On Unix, FindProcess always succeeds. Send signal 0 to check if process exists.
+	// On Unix, FindProcess always succeeds; send signal 0 to probe the process.
 	err = process.Signal(syscall.Signal(0))
-	return err == nil
+	if err == nil {
+		return true // alive and signalable by us
+	}
+	// EPERM means the process exists but is owned by another user — e.g. the
+	// root-owned daemon when `lyrebird status` is run without sudo. Only ESRCH
+	// means it is truly gone. Treating EPERM as "not running" would misreport a
+	// live, healthy stream as a stale lock.
+	return errors.Is(err, syscall.EPERM)
 }

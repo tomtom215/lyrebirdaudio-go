@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -90,6 +91,77 @@ func TestListRTSPSessions_HappyPath(t *testing.T) {
 	}
 	if sessions[0].OutboundBytes != 123 {
 		t.Errorf("sessions[0].OutboundBytes = %d, want 123", sessions[0].OutboundBytes)
+	}
+}
+
+func TestListRTSPSessions_AutoPaginatesAllPages(t *testing.T) {
+	// A server reporting pageCount=2 with one session per page must yield BOTH
+	// sessions: the convenience wrapper walks every page, not just the first.
+	const (
+		idPage0 = "11111111-1111-1111-1111-111111111111"
+		idPage1 = "22222222-2222-2222-2222-222222222222"
+	)
+
+	var mu sync.Mutex
+	var gotPages []string // page query param seen on each request, in order
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v3/rtspsessions/list" {
+			http.NotFound(w, r)
+			return
+		}
+		page := r.URL.Query().Get("page")
+		mu.Lock()
+		gotPages = append(gotPages, page)
+		mu.Unlock()
+
+		switch page {
+		case "": // First request uses server defaults (page 0, no query).
+			_ = json.NewEncoder(w).Encode(RTSPSessionList{
+				PageCount: 2,
+				ItemCount: 2,
+				Items:     []RTSPSession{{ID: idPage0, State: "read", Path: "mic"}},
+			})
+		case "1":
+			_ = json.NewEncoder(w).Encode(RTSPSessionList{
+				PageCount: 2,
+				ItemCount: 2,
+				Items:     []RTSPSession{{ID: idPage1, State: "read", Path: "mic"}},
+			})
+		default:
+			t.Errorf("unexpected page request %q", page)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	sessions, err := NewClient(server.URL).ListRTSPSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ListRTSPSessions() error: %v", err)
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("len(sessions) = %d, want 2 (one from each page)", len(sessions))
+	}
+	if sessions[0].ID != idPage0 {
+		t.Errorf("sessions[0].ID = %q, want %q (page 0)", sessions[0].ID, idPage0)
+	}
+	if sessions[1].ID != idPage1 {
+		t.Errorf("sessions[1].ID = %q, want %q (page 1)", sessions[1].ID, idPage1)
+	}
+
+	// Verify the request sequence: first page via server defaults (no query),
+	// then an explicit request for page 1, and no requests beyond PageCount-1.
+	mu.Lock()
+	pages := append([]string(nil), gotPages...)
+	mu.Unlock()
+	if len(pages) != 2 {
+		t.Fatalf("server saw %d requests, want exactly 2: %v", len(pages), pages)
+	}
+	if pages[0] != "" {
+		t.Errorf("first request page query = %q, want empty (server default)", pages[0])
+	}
+	if pages[1] != "1" {
+		t.Errorf("second request page query = %q, want 1", pages[1])
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 )
@@ -110,24 +111,99 @@ func isNewerVersion(latest, current string) bool {
 	return false
 }
 
-// getAssetName returns the expected asset name for this platform.
+// getAssetName returns the expected release asset base name for the platform
+// this binary runs on, e.g. "lyrebird-linux-amd64" or "lyrebird-linux-armv7".
+//
+// The name mirrors what the build produces (see Makefile and
+// .github/workflows/ci.yml): the architecture component is GOARCH, except
+// 32-bit ARM (GOARCH=arm) which carries its GOARM level as a "vN" suffix so the
+// separately built ARMv6 and ARMv7 binaries stay distinguishable.
 func getAssetName() string {
-	os := runtime.GOOS
-	arch := runtime.GOARCH
+	return fmt.Sprintf("lyrebird-%s-%s", runtime.GOOS, archComponent(runtime.GOARCH, detectGOARM()))
+}
 
-	// Map Go arch names to common conventions
-	archMap := map[string]string{
-		"amd64": "amd64",
-		"386":   "386",
-		"arm64": "arm64",
-		"arm":   "arm",
+// archComponent returns the architecture component of a release asset name for
+// the given GOARCH/GOARM pair.
+//
+// For 32-bit ARM (goarch == "arm") the GOARM level is appended as "vN"
+// (e.g. "armv7"). Releases ship separate ARMv6 and ARMv7 binaries, and a bare
+// "arm" is an ambiguous prefix of "arm64" — the exact confusion that made
+// ARMv6/v7 devices such as the Raspberry Pi download the 64-bit binary and die
+// at exec with "Exec format error". When the GOARM level is unknown it falls
+// back to "6": an ARMv7 CPU can execute an ARMv6 binary, but not the reverse,
+// so v6 is the safe default.
+func archComponent(goarch, goarm string) string {
+	if goarch == "arm" {
+		if goarm == "" {
+			goarm = "6"
+		}
+		return "armv" + goarm
 	}
+	return goarch
+}
 
-	if mapped, ok := archMap[arch]; ok {
-		arch = mapped
+// detectGOARM returns the numeric GOARM level ("5", "6", "7") recorded in this
+// binary's build information, or "" when it is not recorded. It is only
+// meaningful for GOARCH=arm builds.
+func detectGOARM() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return ""
 	}
+	return goarmFromSettings(info.Settings)
+}
 
-	return fmt.Sprintf("lyrebird-%s-%s", os, arch)
+// goarmFromSettings returns the numeric GOARM level from a set of build
+// settings, or "" when GOARM is absent. The recorded value may carry a
+// float-mode suffix (e.g. "7,hardfloat"); only the leading numeric level is
+// returned.
+func goarmFromSettings(settings []debug.BuildSetting) string {
+	for _, s := range settings {
+		if s.Key != "GOARM" {
+			continue
+		}
+		v := s.Value
+		if i := strings.IndexByte(v, ','); i >= 0 {
+			v = v[:i]
+		}
+		return v
+	}
+	return ""
+}
+
+// knownArchiveExtensions lists the archive suffixes stripped from a release
+// asset file name to recover its platform base name (see assetBaseName). It is
+// kept in sync with the archive handling in Update.
+var knownArchiveExtensions = []string{".tar.gz", ".tgz"}
+
+// assetBaseName strips a single known archive extension from a release asset
+// file name, e.g. "lyrebird-linux-arm64.tar.gz" -> "lyrebird-linux-arm64". A
+// name without a known archive extension is returned unchanged.
+func assetBaseName(assetFileName string) string {
+	for _, ext := range knownArchiveExtensions {
+		if strings.HasSuffix(assetFileName, ext) {
+			return strings.TrimSuffix(assetFileName, ext)
+		}
+	}
+	return assetFileName
+}
+
+// selectAsset returns the download URL and file name of the release asset whose
+// base name (file name minus a known archive extension) equals platformName,
+// or empty strings when none matches.
+//
+// The comparison is exact equality, never substring containment: the arm64
+// asset "lyrebird-linux-arm64" contains the shorter 32-bit name
+// "lyrebird-linux-arm" as a prefix, so a substring match served the 64-bit
+// binary to ARMv6/v7 hardware (Raspberry Pi), which fails at exec with
+// "Exec format error".
+func selectAsset(assets []Asset, platformName string) (downloadURL, assetName string) {
+	for _, asset := range assets {
+		if assetBaseName(asset.Name) == platformName {
+			return asset.BrowserDownloadURL, asset.Name
+		}
+	}
+	return "", ""
 }
 
 // FormatReleaseInfo formats release information for display.

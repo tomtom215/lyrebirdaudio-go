@@ -1,7 +1,7 @@
 # CLAUDE.md — AI Session Guide for LyreBirdAudio-Go
 
-> **Last updated**: 2026-02-20
-> **Go Version**: 1.24+
+> **Last updated**: 2026-07-08
+> **Go Version**: 1.25+ (toolchain go1.25.12)
 > **Repository**: github.com/tomtom215/lyrebirdaudio-go
 
 ---
@@ -125,13 +125,15 @@ systemd/               → lyrebird-stream.service (18 security hardening direct
 `ProtectKernelTunables=true`, `ProtectKernelModules=true`, `ProtectControlGroups=true`,
 `RestrictSUIDSGID=yes`, `RestrictNamespaces=yes`, `LockPersonality=yes`,
 `MemoryDenyWriteExecute=yes`, `RestrictRealtime=yes`, `SystemCallFilter=@system-service`,
-`SystemCallArchitectures=native`, `DevicePolicy=closed`, `DeviceAllow=/dev/snd/* rw`,
-`ReadWritePaths=/var/run/lyrebird`, `ReadOnlyPaths=/etc/lyrebird /proc/asound`
+`SystemCallArchitectures=native`, `DevicePolicy=closed`, `DeviceAllow=char-alsa rw`
+(systemd does NOT glob `/dev/snd/*`; use the `char-alsa` device group),
+`RuntimeDirectory=lyrebird`, `StateDirectory=lyrebird`, `ReadOnlyPaths=/etc/lyrebird /proc/asound`
 
 ### Audit Trail
 - **Initial peer review**: [docs/PEER_REVIEW.md](docs/PEER_REVIEW.md) — 59 issues, all resolved
 - **Opus deep audit**: [docs/OPUS_AUDIT_REPORT.md](docs/OPUS_AUDIT_REPORT.md) — 3 bugs found and fixed
 - **Security audit**: [docs/SECURITY_AUDIT.md](docs/SECURITY_AUDIT.md) — Permissions hardening (SEC-1 through SEC-5)
+- **Engineering review (2026-07)**: [docs/ENGINEERING_REVIEW_2026-07.md](docs/ENGINEERING_REVIEW_2026-07.md) — 1 critical + 8 high fixed (real-E2E verified), MediaMTX v1.19.2 + Go 1.25.12 modernization; full MEDIUM + LOW backlog since resolved (all with regression tests; race/lint/govulncheck/E2E clean)
 
 ---
 
