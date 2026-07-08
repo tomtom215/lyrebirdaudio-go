@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -15,7 +16,7 @@ func TestDaemonSystemInfoProviderEmptyRecordDir(t *testing.T) {
 		recordDir:        "",
 		diskLowThreshold: 0,
 	}
-	si := p.SystemInfo()
+	si := p.SystemInfo(context.Background())
 
 	// Should still report disk stats (for "/")
 	if si.DiskTotalBytes == 0 {

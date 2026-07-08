@@ -8,7 +8,9 @@ import (
 	"log/slog"
 	"os/exec"
 	"strings"
+	"sync"
 	"syscall"
+	"time"
 
 	"github.com/tomtom215/lyrebirdaudio-go/internal/health"
 	"github.com/tomtom215/lyrebirdaudio-go/internal/stream"
@@ -52,7 +54,7 @@ type supervisorStatusProvider struct {
 	sup *supervisor.Supervisor
 }
 
-func (p *supervisorStatusProvider) Services() []health.ServiceInfo {
+func (p *supervisorStatusProvider) Services(context.Context) []health.ServiceInfo {
 	statuses := p.sup.Status()
 	services := make([]health.ServiceInfo, len(statuses))
 	for i, s := range statuses {
@@ -70,14 +72,41 @@ func (p *supervisorStatusProvider) Services() []health.ServiceInfo {
 	return services
 }
 
+// sysInfoCacheTTL bounds how often the (subprocess-backed) system info is
+// recomputed, so a burst of /healthz + /metrics scrapes runs timedatectl at
+// most once per interval. ntpProbeTimeout bounds the timedatectl subprocess so
+// a hung command cannot block a health-handler goroutine indefinitely.
+const (
+	sysInfoCacheTTL = 5 * time.Second
+	ntpProbeTimeout = 3 * time.Second
+)
+
 // daemonSystemInfoProvider implements health.SystemInfoProvider for the daemon.
 // It reports disk space for the recording directory and NTP sync status (GAP-7, GAP-1d).
 type daemonSystemInfoProvider struct {
 	recordDir        string // LocalRecordDir, or "/" if empty
 	diskLowThreshold uint64 // bytes; 0 = disabled (always initialized from a positive int64)
+
+	mu      sync.Mutex
+	cache   health.SystemInfo
+	cacheAt time.Time
 }
 
-func (p *daemonSystemInfoProvider) SystemInfo() health.SystemInfo {
+// SystemInfo returns cached system info, refreshing it (at most once per
+// sysInfoCacheTTL) via a subprocess bounded by ctx/ntpProbeTimeout.
+func (p *daemonSystemInfoProvider) SystemInfo(ctx context.Context) health.SystemInfo {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.cacheAt.IsZero() && time.Since(p.cacheAt) < sysInfoCacheTTL {
+		return p.cache
+	}
+	si := p.collect(ctx)
+	p.cache = si
+	p.cacheAt = time.Now()
+	return si
+}
+
+func (p *daemonSystemInfoProvider) collect(ctx context.Context) health.SystemInfo {
 	dir := p.recordDir
 	if dir == "" {
 		dir = "/"
@@ -95,8 +124,11 @@ func (p *daemonSystemInfoProvider) SystemInfo() health.SystemInfo {
 		}
 	}
 
-	// NTP sync check via timedatectl.
-	out, err := exec.Command("timedatectl", "show", "--property=NTPSynchronized", "--value").Output() //#nosec G204 -- fixed args
+	// NTP sync check via timedatectl, bounded so a hung command cannot block the
+	// health handler's goroutine past the deadline.
+	probeCtx, cancel := context.WithTimeout(ctx, ntpProbeTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(probeCtx, "timedatectl", "show", "--property=NTPSynchronized", "--value").Output() //#nosec G204 -- fixed args
 	if err == nil && strings.TrimSpace(string(out)) == "yes" {
 		si.NTPSynced = true
 	} else {

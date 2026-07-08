@@ -43,15 +43,19 @@ type SystemInfo struct {
 }
 
 // StatusProvider returns the current health status of all services.
-// The daemon implements this interface to supply live data.
+// The daemon implements this interface to supply live data. The context lets a
+// slow implementation be bounded by the request's deadline so a scrape can never
+// wedge a handler goroutine.
 type StatusProvider interface {
-	Services() []ServiceInfo
+	Services(ctx context.Context) []ServiceInfo
 }
 
 // SystemInfoProvider returns system-level health data.
-// The daemon implements this interface to supply disk space and NTP info.
+// The daemon implements this interface to supply disk space and NTP info. The
+// context bounds any subprocess (e.g. timedatectl) the implementation runs, so a
+// hung command cannot leak the handler goroutine past the request deadline.
 type SystemInfoProvider interface {
-	SystemInfo() SystemInfo
+	SystemInfo(ctx context.Context) SystemInfo
 }
 
 // Response is the JSON body returned by the health endpoint.
@@ -103,46 +107,48 @@ func (h *Handler) serveHealth(w http.ResponseWriter, r *http.Request) {
 
 	var services []ServiceInfo
 	if h.provider != nil {
-		services = h.provider.Services()
+		services = h.provider.Services(r.Context())
 	}
 	resp.Services = services
 
-	healthy := len(services) > 0
+	// A missing or unhealthy service is a hard failure (HTTP 503).
+	serviceFailure := len(services) == 0
 	for _, svc := range services {
 		if !svc.Healthy {
-			healthy = false
+			serviceFailure = true
 			break
 		}
 	}
 
-	if healthy {
-		resp.Status = "healthy"
-	} else {
-		resp.Status = "unhealthy"
+	// GAP-7 / GAP-1d: include system info when provider is wired.
+	diskLow := false
+	ntpWarning := false
+	if h.sysProvider != nil {
+		si := h.sysProvider.SystemInfo(r.Context())
+		resp.System = &si
+		diskLow = si.DiskLowWarning
+		ntpWarning = !si.NTPSynced
 	}
 
-	// GAP-7 / GAP-1d: include system info when provider is wired.
-	if h.sysProvider != nil {
-		si := h.sysProvider.SystemInfo()
-		resp.System = &si
-		if si.DiskLowWarning {
-			resp.Status = "degraded"
-			healthy = false
-		}
-		if !si.NTPSynced {
-			// NTP desync is a warning, not a hard failure — keep status as-is
-			// but ensure the degraded state is visible in the JSON body.
-			if resp.Status == "healthy" {
-				resp.Status = "degraded"
-			}
-		}
+	// Only hard failures return 503. NTP desync is a SOFT warning: it is
+	// surfaced in the body as "degraded" but kept at HTTP 200, so a routine
+	// clock re-sync (e.g. chrony stepping the clock) does not flap a systemd
+	// watchdog or load balancer keying on the status code.
+	hardFailure := serviceFailure || diskLow
+	switch {
+	case serviceFailure:
+		resp.Status = "unhealthy"
+	case diskLow, ntpWarning:
+		resp.Status = "degraded"
+	default:
+		resp.Status = "healthy"
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	if healthy && resp.Status == "healthy" {
-		w.WriteHeader(http.StatusOK)
-	} else {
+	if hardFailure {
 		w.WriteHeader(http.StatusServiceUnavailable)
+	} else {
+		w.WriteHeader(http.StatusOK)
 	}
 
 	_ = json.NewEncoder(w).Encode(resp)
@@ -161,7 +167,7 @@ func (h *Handler) serveMetrics(w http.ResponseWriter, r *http.Request) {
 
 	var services []ServiceInfo
 	if h.provider != nil {
-		services = h.provider.Services()
+		services = h.provider.Services(r.Context())
 	}
 
 	// Per-stream metrics.
@@ -198,7 +204,7 @@ func (h *Handler) serveMetrics(w http.ResponseWriter, r *http.Request) {
 
 	// System metrics.
 	if h.sysProvider != nil {
-		si := h.sysProvider.SystemInfo()
+		si := h.sysProvider.SystemInfo(r.Context())
 
 		fmt.Fprintln(&sb, "# HELP lyrebird_disk_free_bytes Free bytes on the recording filesystem.")
 		fmt.Fprintln(&sb, "# TYPE lyrebird_disk_free_bytes gauge")
@@ -278,14 +284,20 @@ func ListenAndServeReady(ctx context.Context, addr string, handler http.Handler,
 		close(errCh)
 	}()
 
-	<-ctx.Done()
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if err := srv.Shutdown(shutdownCtx); err != nil {
+	// Observe either shutdown (ctx cancelled) or a fatal Serve error. Previously
+	// only ctx.Done() was awaited, so a spontaneous Serve failure (fd exhaustion,
+	// listener torn down externally) left the endpoint dead while this function
+	// blocked and surfaced the error only at shutdown.
+	select {
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			return err
+		}
+		return <-errCh
+	case err := <-errCh:
+		// Serve failed on its own; the listener is already gone.
 		return err
 	}
-
-	return <-errCh
 }

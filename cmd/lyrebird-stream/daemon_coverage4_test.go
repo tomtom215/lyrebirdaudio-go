@@ -88,7 +88,7 @@ func TestDaemonSystemInfoDiskLowWarning(t *testing.T) {
 		diskLowThreshold: math.MaxUint64 / 2, // always larger than available free bytes
 	}
 
-	si := p.SystemInfo()
+	si := p.SystemInfo(context.Background())
 	if !si.DiskLowWarning {
 		t.Error("SystemInfo() DiskLowWarning = false, want true (threshold set to MaxUint64/2)")
 	}

@@ -287,7 +287,7 @@ func TestSupervisorStatusProviderEmptySupervisor(t *testing.T) {
 	sup := supervisor.New(supervisor.Config{})
 	provider := &supervisorStatusProvider{sup: sup}
 
-	services := provider.Services()
+	services := provider.Services(context.Background())
 	if len(services) != 0 {
 		t.Errorf("expected 0 services, got %d", len(services))
 	}
@@ -301,7 +301,7 @@ func TestDaemonSystemInfoProviderWithRecordDir(t *testing.T) {
 		diskLowThreshold: 1, // 1 byte threshold - should not trigger
 	}
 
-	si := p.SystemInfo()
+	si := p.SystemInfo(context.Background())
 	if si.DiskTotalBytes == 0 {
 		t.Error("DiskTotalBytes should be non-zero")
 	}
@@ -320,7 +320,7 @@ func TestDaemonSystemInfoProviderLowDiskThreshold(t *testing.T) {
 		diskLowThreshold: 1 << 62, // Impossibly high - should always trigger
 	}
 
-	si := p.SystemInfo()
+	si := p.SystemInfo(context.Background())
 	if !si.DiskLowWarning {
 		t.Error("DiskLowWarning should be true with impossibly high threshold")
 	}

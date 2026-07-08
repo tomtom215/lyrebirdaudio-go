@@ -1,11 +1,13 @@
 package health
 
+import "context"
+
 // mockProvider implements StatusProvider for testing.
 type mockProvider struct {
 	services []ServiceInfo
 }
 
-func (m *mockProvider) Services() []ServiceInfo {
+func (m *mockProvider) Services(context.Context) []ServiceInfo {
 	return m.services
 }
 

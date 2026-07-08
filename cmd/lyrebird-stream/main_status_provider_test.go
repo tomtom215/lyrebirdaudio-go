@@ -18,7 +18,7 @@ func TestSupervisorStatusProvider_NoServices(t *testing.T) {
 	})
 
 	provider := &supervisorStatusProvider{sup: sup}
-	services := provider.Services()
+	services := provider.Services(context.Background())
 
 	if len(services) != 0 {
 		t.Errorf("Services() returned %d services, want 0", len(services))
@@ -39,7 +39,7 @@ func TestSupervisorStatusProvider_WithServices(t *testing.T) {
 	}
 
 	provider := &supervisorStatusProvider{sup: sup}
-	services := provider.Services()
+	services := provider.Services(context.Background())
 
 	if len(services) != 1 {
 		t.Fatalf("Services() returned %d services, want 1", len(services))
@@ -71,7 +71,7 @@ func TestSupervisorStatusProvider_HealthyMapping(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	provider := &supervisorStatusProvider{sup: sup}
-	services := provider.Services()
+	services := provider.Services(context.Background())
 
 	cancel()
 
@@ -107,7 +107,7 @@ func TestSupervisorStatusProvider_FailedService(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	provider := &supervisorStatusProvider{sup: sup}
-	services := provider.Services()
+	services := provider.Services(context.Background())
 
 	cancel()
 
