@@ -12,6 +12,7 @@ package diagnostics
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"runtime"
@@ -122,6 +123,14 @@ const (
 	MinEntropyBytes = 256
 )
 
+// DefaultPerCheckTimeout bounds how long any single diagnostic check may run
+// before it is abandoned and reported as timed out. Several checks shell out to
+// systemctl/journalctl/dmesg/timedatectl/ss; if one of those wedges (a stuck
+// D-Bus or journald is exactly the condition an operator runs diagnostics to
+// investigate) the whole report/bundle would otherwise hang indefinitely. This
+// cap keeps each check — and therefore the overall run — bounded.
+const DefaultPerCheckTimeout = 5 * time.Second
+
 // Options configures the diagnostic run.
 type Options struct {
 	Mode       CheckMode
@@ -134,6 +143,11 @@ type Options struct {
 	DevSndDir       string // sound device directory (default "/dev/snd")
 	UdevRulesDir    string // udev rules directory (default "/etc/udev/rules.d")
 	MediaMTXAPIAddr string // MediaMTX API host:port (default "localhost:9997")
+
+	// PerCheckTimeout bounds each individual check. A value <= 0 falls back to
+	// DefaultPerCheckTimeout. This prevents one wedged check (e.g. a subprocess
+	// blocked on a stuck D-Bus/journald) from stalling the entire run.
+	PerCheckTimeout time.Duration
 
 	Output  io.Writer
 	Verbose bool
@@ -150,6 +164,7 @@ func DefaultOptions() Options {
 		DevSndDir:       "/dev/snd",
 		UdevRulesDir:    "/etc/udev/rules.d",
 		MediaMTXAPIAddr: "localhost:9997",
+		PerCheckTimeout: DefaultPerCheckTimeout,
 		Output:          os.Stdout,
 		Verbose:         false,
 	}
@@ -184,7 +199,7 @@ func (r *Runner) Run(ctx context.Context) (*DiagnosticReport, error) {
 		case <-ctx.Done():
 			return report, ctx.Err()
 		default:
-			result := check(ctx)
+			result := r.runCheck(ctx, check)
 			report.Checks = append(report.Checks, result)
 
 			// Update summary
@@ -210,85 +225,120 @@ func (r *Runner) Run(ctx context.Context) (*DiagnosticReport, error) {
 	return report, nil
 }
 
+// namedCheck pairs a diagnostic check with a stable, human-readable name.
+//
+// The name mirrors the CheckResult.Name each check sets internally, but it is
+// needed up front: when a check exceeds its per-check timeout it never returns
+// a CheckResult, so runCheck must synthesize one and needs a label for it.
+// Keeping the name here lets a wedged check still appear in the report with a
+// meaningful identity instead of a blank entry.
+type namedCheck struct {
+	name string
+	fn   func(context.Context) CheckResult
+}
+
+// perCheckTimeout returns the maximum time an individual check may run, falling
+// back to DefaultPerCheckTimeout when the option is unset or non-positive.
+func (r *Runner) perCheckTimeout() time.Duration {
+	if r.opts.PerCheckTimeout > 0 {
+		return r.opts.PerCheckTimeout
+	}
+	return DefaultPerCheckTimeout
+}
+
+// runCheck executes a single diagnostic check under a bounded per-check timeout.
+//
+// The check receives its own context derived from ctx with the per-check
+// deadline, so checks that shell out via exec.CommandContext have their
+// subprocess killed at the deadline instead of hanging the whole run.
+//
+// The check runs in a separate goroutine and runCheck selects on its completion
+// versus the deadline. This guarantees the runner returns within the timeout
+// even for a check that ignores its context entirely — e.g. one blocked in an
+// uninterruptible syscall or awaiting a subprocess stuck in D state that will
+// not die on SIGKILL. In that case the goroutine is abandoned (the buffered
+// channel lets it deliver its result and exit later without leaking) and
+// runCheck synthesizes a degraded ERROR result so the check is still reported.
+func (r *Runner) runCheck(ctx context.Context, c namedCheck) CheckResult {
+	timeout := r.perCheckTimeout()
+	checkCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	start := time.Now()
+	done := make(chan CheckResult, 1)
+	go func() {
+		done <- c.fn(checkCtx)
+	}()
+
+	select {
+	case res := <-done:
+		return res
+	case <-checkCtx.Done():
+		msg := fmt.Sprintf("check timed out after %s", timeout)
+		// Distinguish a per-check timeout from parent cancellation so the
+		// report does not mislabel an interrupted run as a wedged check.
+		if ctx.Err() != nil {
+			msg = "check cancelled: " + ctx.Err().Error()
+		}
+		return CheckResult{
+			Name:     c.name,
+			Category: "System",
+			Status:   StatusError,
+			Message:  msg,
+			Duration: time.Since(start),
+		}
+	}
+}
+
 // getChecks returns the checks to run based on mode.
-func (r *Runner) getChecks() []func(context.Context) CheckResult {
+func (r *Runner) getChecks() []namedCheck {
 	// Quick mode: essential checks only
-	quickChecks := []func(context.Context) CheckResult{
-		r.checkFFmpeg,
-		r.checkALSA,
-		r.checkUSBAudio,
-		r.checkMediaMTXService,
-		r.checkConfig,
+	quickChecks := []namedCheck{
+		{"FFmpeg", r.checkFFmpeg},
+		{"ALSA", r.checkALSA},
+		{"USB Audio", r.checkUSBAudio},
+		{"MediaMTX Service", r.checkMediaMTXService},
+		{"Configuration", r.checkConfig},
 	}
 
 	if r.opts.Mode == ModeQuick {
 		return quickChecks
 	}
 
-	// Full mode: all 24 checks
-	return []func(context.Context) CheckResult{
-		// 1. Prerequisites & Dependencies
-		r.checkPrerequisites,
-		// 2. Project Info & Versions
-		r.checkVersions,
-		// 3. System Information
-		r.checkSystemInfo,
-		// 4. USB Audio Devices
-		r.checkUSBAudio,
-		// 5. Audio Capabilities
-		r.checkAudioCapabilities,
-		// 6. FFmpeg
-		r.checkFFmpeg,
-		// 7. ALSA
-		r.checkALSA,
-		// 8. MediaMTX Service
-		r.checkMediaMTXService,
-		// 9. MediaMTX API
-		r.checkMediaMTXAPI,
-		// 9b. MediaMTX Config Sanity
-		r.checkMediaMTXConfig,
-		// 10. Configuration
-		r.checkConfig,
-		// 11. udev Rules
-		r.checkUdevRules,
-		// 12. Lock Directory
-		r.checkLockDir,
-		// 13. Log Files
-		r.checkLogFiles,
-		// 14. Disk Space
-		r.checkDiskSpace,
-		// 15. File Descriptors
-		r.checkFileDescriptors,
-		// 16. Memory
-		r.checkMemory,
-		// 17. Network Ports
-		r.checkNetworkPorts,
-		// 18. Time Synchronization
-		r.checkTimeSynchronization,
-		// 19. Systemd Services
-		r.checkSystemdServices,
-		// 20. Process Stability
-		r.checkProcessStability,
-		// 21. Audio Conflicts
-		r.checkAudioConflicts,
-		// 22. inotify Limits
-		r.checkInotifyLimits,
-		// 23. TCP Resources
-		r.checkTCPResources,
-		// 24. Entropy
-		r.checkEntropy,
-		// 25. Kernel Modules
-		r.checkKernelModules,
-		// 26. Device Permissions
-		r.checkDevicePermissions,
-		// 27. FFmpeg Codecs
-		r.checkFFmpegCodecs,
-		// 28. USB Stability
-		r.checkUSBStability,
-		// 29. Lock File Permissions
-		r.checkLockFilePermissions,
-		// 30. Resource Limits
-		r.checkUlimits,
+	// Full mode: all checks. Names must match each check's internal
+	// CheckResult.Name so a timed-out check is labeled consistently.
+	return []namedCheck{
+		{"Prerequisites", r.checkPrerequisites},
+		{"Versions", r.checkVersions},
+		{"System Info", r.checkSystemInfo},
+		{"USB Audio", r.checkUSBAudio},
+		{"Audio Capabilities", r.checkAudioCapabilities},
+		{"FFmpeg", r.checkFFmpeg},
+		{"ALSA", r.checkALSA},
+		{"MediaMTX Service", r.checkMediaMTXService},
+		{"MediaMTX API", r.checkMediaMTXAPI},
+		{"MediaMTX Config", r.checkMediaMTXConfig},
+		{"Configuration", r.checkConfig},
+		{"udev Rules", r.checkUdevRules},
+		{"Lock Directory", r.checkLockDir},
+		{"Log Files", r.checkLogFiles},
+		{"Disk Space", r.checkDiskSpace},
+		{"File Descriptors", r.checkFileDescriptors},
+		{"Memory", r.checkMemory},
+		{"Network Ports", r.checkNetworkPorts},
+		{"Time Sync", r.checkTimeSynchronization},
+		{"Systemd Services", r.checkSystemdServices},
+		{"Process Stability", r.checkProcessStability},
+		{"Audio Conflicts", r.checkAudioConflicts},
+		{"inotify Limits", r.checkInotifyLimits},
+		{"TCP Resources", r.checkTCPResources},
+		{"Entropy", r.checkEntropy},
+		{"Kernel Modules", r.checkKernelModules},
+		{"Device Permissions", r.checkDevicePermissions},
+		{"FFmpeg Codecs", r.checkFFmpegCodecs},
+		{"USB Stability", r.checkUSBStability},
+		{"Lock File Permissions", r.checkLockFilePermissions},
+		{"Resource Limits", r.checkUlimits},
 	}
 }
 

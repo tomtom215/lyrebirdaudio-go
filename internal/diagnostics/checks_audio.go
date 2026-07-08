@@ -336,10 +336,18 @@ func (r *Runner) checkDiskSpace(ctx context.Context) CheckResult {
 		Category: "Resources",
 	}
 
+	// Inspect the filesystem backing the log directory (which also backs
+	// recordings by default) rather than always "/". /var is frequently a
+	// separate mount, so "/" can report healthy while the filesystem the daemon
+	// actually writes logs and recordings to is full.
+	path := r.diskCheckPath()
+
 	var stat syscall.Statfs_t
-	if err := syscall.Statfs("/", &stat); err != nil {
+	inspected, err := statfsNearest(path, &stat)
+	if err != nil {
 		result.Status = StatusError
 		result.Message = "Failed to check disk space"
+		result.Details = fmt.Sprintf("path=%s: %v", path, err)
 		result.Duration = time.Since(start)
 		return result
 	}
@@ -348,12 +356,56 @@ func (r *Runner) checkDiskSpace(ctx context.Context) CheckResult {
 	available := stat.Bavail * uint64(stat.Bsize)
 	// #nosec G115 -- Bsize is always positive on Linux filesystems
 	total := stat.Blocks * uint64(stat.Bsize)
+	if total == 0 {
+		result.Status = StatusError
+		result.Message = "Failed to check disk space"
+		result.Details = fmt.Sprintf("filesystem: %s (reports zero total blocks)", inspected)
+		result.Duration = time.Since(start)
+		return result
+	}
 	usedPercent := 100.0 - (float64(available)/float64(total))*100.0
 
 	result.Status, result.Message, result.Suggestions = evaluateDiskUsage(usedPercent, available)
+	// Expose which filesystem was inspected so operators (and tests) can tell
+	// the check honored LogDir rather than defaulting to "/".
+	result.Details = "filesystem: " + inspected
 
 	result.Duration = time.Since(start)
 	return result
+}
+
+// diskCheckPath returns the path whose filesystem checkDiskSpace should inspect:
+// the log directory (also the default recording location) when configured,
+// otherwise "/".
+func (r *Runner) diskCheckPath() string {
+	if r.opts.LogDir != "" {
+		return r.opts.LogDir
+	}
+	return "/"
+}
+
+// statfsNearest fills stat for the filesystem backing path and returns the path
+// actually stat'd. If path does not exist yet (e.g. the log directory is only
+// created on first daemon run) it walks up to the nearest existing ancestor, so
+// the check still reports on the filesystem that will back it. The final error
+// is returned only if even "/" cannot be stat'd.
+func statfsNearest(path string, stat *syscall.Statfs_t) (string, error) {
+	if path == "" {
+		path = "/"
+	}
+	path = filepath.Clean(path)
+	for {
+		err := syscall.Statfs(path, stat)
+		if err == nil {
+			return path, nil
+		}
+		parent := filepath.Dir(path)
+		if parent == path {
+			// Reached the filesystem root; report the final failure.
+			return path, err
+		}
+		path = parent
+	}
 }
 
 func (r *Runner) checkFileDescriptors(ctx context.Context) CheckResult {
