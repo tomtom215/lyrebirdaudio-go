@@ -307,7 +307,8 @@ func enableMediaMTXAPI(configPath string) (bool, error) {
 		if isTopLevelYAMLKey(line, "api") && topLevelYAMLBoolIsFalse(line) {
 			lines[i] = "api: yes"
 			// 0640: readable by the root-run mediamtx service, not world-readable.
-			return true, os.WriteFile(configPath, []byte(strings.Join(lines, "\n")), 0640) // #nosec G306
+			// #nosec G306 G703 -- configPath is the fixed install destination (/etc/mediamtx/mediamtx.yml), not user/network input
+			return true, os.WriteFile(configPath, []byte(strings.Join(lines, "\n")), 0640)
 		}
 	}
 	return false, nil
