@@ -84,12 +84,25 @@ class of test that would have caught the CRITICAL. Run with `make test-e2e`.
 
 ---
 
-## Remaining findings (MEDIUM / LOW) — recommended follow-ups
+## MEDIUM / LOW findings — all resolved
 
-These were identified and verified during the review but not yet fixed. None
-block the core streaming path; they harden robustness and observability.
+> **Update (2026-07-08, follow-up session):** every MEDIUM and LOW item below
+> has now been fixed, each with regression tests, under `go test -race`,
+> `golangci-lint` (default + `e2e,integration` tags), and `govulncheck`, and the
+> real MediaMTX v1.19.2 + ffmpeg E2E harness. Resolution commits are noted inline.
 
-### MEDIUM
+### MEDIUM (resolved)
+
+Resolutions: mediamtx pagination `3398aba`; health NTP-soft + provider TTL cache
+`8cfdb75`; daemon stall-state prune + watchdog liveness gating + manager fd leak
+`149a6a2`; diagnostics per-check timeout + disk dir `b3bb611`; updater
+arm/arm64 exact-match + fail-closed checksum `aef2372`; stream backoff jitter +
+dead-config removal `0c17d97`; audio channel recommendation + capture-only caps
+`5f7db9d`; cli exit codes `c1b1e1b` + status EPERM/bundle perms `f0f90b2`; menu
+isatty + editor stdin `9e88fb7`; config validate-before-swap + fsnotify unwatch +
+de-flaked watch test `a0f8a50` + sub-second backups & atomic restore `4cc14fb`.
+
+Original finding list (for traceability):
 - `mediamtx/sessions.go`: `ListRTSPSessions` fetches only the first page; add
   auto-pagination so stall-recovery can find readers on page 2+.
 - `health/health.go`: NTP desync returns HTTP 503 despite being a soft warning →
@@ -125,11 +138,18 @@ block the core streaming path; they harden robustness and observability.
   wrong — `Unwatch()` exists); millisecond-collision backups are invisible to
   `ListBackups`/`CleanOldBackups`; `RestoreBackup` writes non-atomically.
 
-### LOW
-Unbounded `io.ReadAll` on HTTP/download bodies (add `io.LimitReader`); a few
-`url.PathEscape` parity gaps; the resource monitor never computes CPU%; several
-assertion-free or environment-coupled tests (`TestRun` depends on `/proc/asound`
-being absent); CI actions not SHA-pinned; a handful of doc/comment drifts.
+### LOW (resolved)
+
+- Unbounded `io.ReadAll` on HTTP/download bodies → bounded with `io.LimitReader`
+  (mediamtx error bodies, updater download cap, bundle reads) `2d75078`.
+- `url.PathEscape` parity gap in `mediamtx.GetPath` → escaped `2d75078`.
+- Resource monitor never computed CPU% → delta-based CPU% via jiffies,
+  USER_HZ=100, with a pure unit-tested helper `7f42290`.
+- Environment-coupled / assertion-free tests → `TestRun` split into
+  deterministic routing + env-independent dispatch checks; `--bundle` and
+  diagnose/check-system "output" tests now assert real behavior `224de53`.
+- CI actions not SHA-pinned → pinned to commit SHAs with version comments
+  `086d29d`.
 
 A full per-file list with file:line references is available in the review
 working notes.

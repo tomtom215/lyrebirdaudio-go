@@ -133,7 +133,7 @@ systemd/               → lyrebird-stream.service (18 security hardening direct
 - **Initial peer review**: [docs/PEER_REVIEW.md](docs/PEER_REVIEW.md) — 59 issues, all resolved
 - **Opus deep audit**: [docs/OPUS_AUDIT_REPORT.md](docs/OPUS_AUDIT_REPORT.md) — 3 bugs found and fixed
 - **Security audit**: [docs/SECURITY_AUDIT.md](docs/SECURITY_AUDIT.md) — Permissions hardening (SEC-1 through SEC-5)
-- **Engineering review (2026-07)**: [docs/ENGINEERING_REVIEW_2026-07.md](docs/ENGINEERING_REVIEW_2026-07.md) — 1 critical + 8 high fixed (real-E2E verified), MediaMTX v1.19.2 + Go 1.25.12 modernization, remaining MEDIUM/LOW backlog
+- **Engineering review (2026-07)**: [docs/ENGINEERING_REVIEW_2026-07.md](docs/ENGINEERING_REVIEW_2026-07.md) — 1 critical + 8 high fixed (real-E2E verified), MediaMTX v1.19.2 + Go 1.25.12 modernization; full MEDIUM + LOW backlog since resolved (all with regression tests; race/lint/govulncheck/E2E clean)
 
 ---
 
