@@ -175,9 +175,14 @@ func TestDisplayEmptyMenu(t *testing.T) {
 // When every item is hidden or a separator, the huh path returns nil immediately
 // without ever calling huh.NewForm (which would require a real TTY).
 func TestDisplayHuhPathEmptyOptions(t *testing.T) {
-	// Construct a menu that will go through the huh branch of Display().
-	// m.input is os.Stdin (default), so Display() will NOT call displayWithScanner().
-	// All items are hidden/separators, so options is empty → returns nil immediately.
+	// Force the interactive (huh) branch: m.input is os.Stdin and the terminal
+	// check reports a TTY, so Display() will NOT call displayWithScanner().
+	// All items are hidden/separators, so options is empty → returns nil
+	// immediately, before huh.NewForm is ever reached.
+	orig := terminalCheck
+	terminalCheck = func(uintptr) bool { return true }
+	defer func() { terminalCheck = orig }()
+
 	output := &bytes.Buffer{}
 	m := &Menu{
 		Title:       "HuhPathTest",

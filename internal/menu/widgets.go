@@ -149,3 +149,17 @@ func RunCommand(w io.Writer, name string, args ...string) error {
 	cmd.Stderr = w
 	return cmd.Run()
 }
+
+// RunInteractiveCommand runs a command that needs an interactive terminal
+// (such as a text editor), wiring the child process directly to this process's
+// standard streams. Unlike RunCommand, which captures output through a supplied
+// writer, this connects os.Stdin/os.Stdout/os.Stderr so the user can interact
+// with the spawned program; without a real stdin, editors like nano exit
+// immediately and vim warns that input is not from a terminal.
+func RunInteractiveCommand(name string, args ...string) error {
+	cmd := exec.Command(name, args...) // #nosec G204 G702 -- caller is responsible for providing safe command name and args
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}

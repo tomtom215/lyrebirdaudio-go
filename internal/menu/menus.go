@@ -4,6 +4,7 @@ package menu
 
 import (
 	"os"
+	"strings"
 )
 
 // CreateMainMenu creates the main LyreBird menu.
@@ -293,11 +294,17 @@ func createConfigMenu() *Menu {
 		Key:   "4",
 		Label: "Edit Config File",
 		Action: func() error {
-			editor := os.Getenv("EDITOR")
-			if editor == "" {
-				editor = "nano"
+			// $EDITOR may be multi-word (e.g. "code --wait"), so split it into
+			// the editor binary plus any leading arguments. Fall back to nano
+			// when the variable is unset or blank.
+			fields := strings.Fields(os.Getenv("EDITOR"))
+			if len(fields) == 0 {
+				fields = []string{"nano"}
 			}
-			return RunCommand(os.Stdout, "sudo", editor, "/etc/lyrebird/config.yaml")
+			// Run via sudo and wire the editor to the real terminal so it is
+			// actually usable (see RunInteractiveCommand).
+			args := append(fields, "/etc/lyrebird/config.yaml")
+			return RunInteractiveCommand("sudo", args...)
 		},
 	})
 
