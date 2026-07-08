@@ -51,6 +51,7 @@ type KoanfConfig struct {
 	mu        sync.RWMutex
 	filePath  string
 	envPrefix string
+	loaded    bool // true after the first successful load; gates validate-before-swap on hot reload
 }
 
 // Option configures a KoanfConfig.
@@ -230,9 +231,29 @@ func (kc *KoanfConfig) reload() error {
 		return fmt.Errorf("failed to load environment variables: %w", err)
 	}
 
+	// On a HOT reload (a working config is already live), validate the new
+	// config BEFORE swapping so a syntactically-valid but semantically-invalid
+	// edit (bad codec, out-of-range value, a nanosecond duration) can't destroy
+	// the live config — the daemon keeps running on the last-known-good and its
+	// device poller keeps working. On the initial load there is nothing to
+	// preserve, so let Load() validate and report (historical behavior).
+	kc.mu.RLock()
+	alreadyLoaded := kc.loaded
+	kc.mu.RUnlock()
+	if alreadyLoaded {
+		candidate := *DefaultConfig()
+		if err := newK.Unmarshal("", &candidate); err != nil {
+			return fmt.Errorf("failed to unmarshal new config: %w", err)
+		}
+		if err := candidate.Validate(); err != nil {
+			return fmt.Errorf("new configuration is invalid, keeping current config: %w", err)
+		}
+	}
+
 	// Atomic swap (protected by write lock)
 	kc.mu.Lock()
 	kc.k = newK
+	kc.loaded = true
 	kc.mu.Unlock()
 
 	return nil
@@ -246,16 +267,14 @@ func (kc *KoanfConfig) reload() error {
 //
 // This enables hot-reload via file system events (fsnotify).
 //
-// M-9 known limitation: the underlying koanf file.Provider spawns an fsnotify
-// goroutine internally.  koanf v2 does not expose a Stop() method on file.Provider,
-// so that goroutine cannot be stopped when ctx is cancelled.  The goroutine will
-// be collected when the process exits.  For long-lived applications that need
-// clean goroutine shutdown, prefer triggering manual Reload() calls on SIGHUP
-// instead of calling Watch().
+// On context cancellation, Watch stops the underlying fsnotify watcher and its
+// goroutine via the file provider's Unwatch(), so no inotify watch or goroutine
+// is leaked. (The earlier M-9 note claimed file.Provider had no way to stop the
+// watcher; the pinned provider does expose Unwatch().)
 //
 // Parameters:
-//   - ctx: Context for cancellation (stops the Watch blocking wait, but not the
-//     underlying fsnotify goroutine — see M-9 note above).
+//   - ctx: Context for cancellation (stops the blocking wait and the underlying
+//     fsnotify watcher).
 //   - callback: Function called when configuration changes. Receives event description
 //     and error (nil on success, non-nil on watch/reload errors).
 //
@@ -304,8 +323,10 @@ func (kc *KoanfConfig) Watch(ctx context.Context, callback func(event string, er
 		return fmt.Errorf("failed to start watching: %w", watchErr)
 	}
 
-	// Wait for context cancellation
+	// Wait for context cancellation, then stop the fsnotify watcher and its
+	// goroutine so neither is leaked when the caller shuts down.
 	<-ctx.Done()
+	_ = fp.Unwatch()
 
 	return nil
 }

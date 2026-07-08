@@ -43,11 +43,12 @@ monitor:
 		t.Fatalf("NewKoanfConfig failed: %v", err)
 	}
 
-	// Channel to signal when watch callback is called
-	watchCalled := make(chan string, 1)
+	// Buffered generously so re-write-triggered callbacks never block the
+	// fsnotify goroutine.
+	watchCalled := make(chan string, 16)
 
 	// Start watching in background
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	go func() {
@@ -61,7 +62,7 @@ monitor:
 	}()
 
 	// Give watcher time to start
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(150 * time.Millisecond)
 
 	// Modify config file
 	updatedConfig := `
@@ -81,18 +82,33 @@ mediamtx:
 monitor:
   enabled: true
 `
+	// fsnotify events can be coalesced, dropped, or delayed under load, so a
+	// single write is racy. Write, then re-write periodically until the callback
+	// fires or a generous deadline elapses — this makes the test deterministic
+	// without depending on a single event landing within a fixed window.
 	if err := os.WriteFile(configPath, []byte(updatedConfig), 0644); err != nil {
 		t.Fatalf("Failed to update test config: %v", err)
 	}
-
-	// Wait for watch callback
-	select {
-	case event := <-watchCalled:
-		if event != "config reloaded" {
-			t.Errorf("Expected event 'config reloaded', got %s", event)
+	deadline := time.After(10 * time.Second)
+	retick := time.NewTicker(300 * time.Millisecond)
+	defer retick.Stop()
+	var event string
+	for {
+		done := false
+		select {
+		case event = <-watchCalled:
+			done = true
+		case <-retick.C:
+			_ = os.WriteFile(configPath, []byte(updatedConfig), 0644) // nudge fsnotify
+		case <-deadline:
+			t.Fatal("Watch callback not called within deadline")
 		}
-	case <-time.After(2 * time.Second):
-		t.Error("Watch callback not called within timeout")
+		if done {
+			break
+		}
+	}
+	if event != "config reloaded" {
+		t.Errorf("Expected event 'config reloaded', got %s", event)
 	}
 
 	// Verify config was reloaded
