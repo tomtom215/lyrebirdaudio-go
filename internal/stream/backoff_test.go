@@ -350,11 +350,13 @@ func TestBackoffShortRunDoesNotDoubleCount(t *testing.T) {
 		t.Errorf("After one RecordFailure, Attempts() = %d, want 1", backoff.Attempts())
 	}
 
-	// Simulate a long successful run
+	// Simulate a long successful run. A genuine success fully resets the
+	// backoff, including the attempt counter, so a healthy stream that merely
+	// restarts is never abandoned by the max-attempts ceiling.
 	backoff.RecordSuccess(400 * time.Second)
 
-	if backoff.Attempts() != 2 {
-		t.Errorf("After RecordFailure + RecordSuccess, Attempts() = %d, want 2", backoff.Attempts())
+	if backoff.Attempts() != 0 {
+		t.Errorf("After a long successful run, Attempts() = %d, want 0 (reset)", backoff.Attempts())
 	}
 	if backoff.ConsecutiveFailures() != 0 {
 		t.Errorf("After long success, ConsecutiveFailures() = %d, want 0", backoff.ConsecutiveFailures())

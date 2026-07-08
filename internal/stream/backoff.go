@@ -123,9 +123,14 @@ func (b *Backoff) RecordSuccess(runTime time.Duration) {
 	b.attempts++
 
 	if runTime > b.successThreshold {
-		// Successful run - reset backoff
+		// Successful run - reset backoff fully, including the attempt counter.
+		// The max-attempts ceiling exists to give up on a stream that keeps
+		// failing WITHOUT a successful run in between; a healthy stream that
+		// merely restarts many times over its life (USB re-enumeration, a
+		// MediaMTX redeploy, an RTSP reconnect) must not accumulate toward it.
 		b.currentDelay = b.initialDelay
 		b.consecutiveFailures = 0
+		b.attempts = 0
 	} else {
 		// Short run - treat as failure
 		b.consecutiveFailures++
