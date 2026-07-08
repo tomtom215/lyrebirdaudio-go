@@ -97,8 +97,10 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	// Parse YAML
-	var cfg Config
+	// Parse YAML on top of the built-in defaults so that omitted fields keep
+	// their documented default (matching the daemon's koanf loader). yaml.v3
+	// only sets fields present in the document, leaving the rest untouched.
+	cfg := *DefaultConfig()
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse config YAML: %w", err)
 	}
@@ -297,6 +299,32 @@ func (s *StreamConfig) Validate() error {
 	}
 	if s.SegmentMaxTotalBytes < 0 {
 		return fmt.Errorf("segment_max_total_bytes must not be negative")
+	}
+	// Restart/backoff timing. These are load-bearing for 24/7 reliability and
+	// were previously unchecked, so a config that passed validation could still
+	// break streaming outright.
+	if s.MaxRestartAttempts < 1 {
+		return fmt.Errorf("max_restart_attempts must be at least 1 (got %d): 0 makes every stream fail before FFmpeg starts", s.MaxRestartAttempts)
+	}
+	// A bare number in YAML (e.g. `initial_restart_delay: 45`) is decoded as
+	// nanoseconds, collapsing exponential backoff into a near-instant restart
+	// loop. Require a sane floor and hint at the unit.
+	if s.InitialRestartDelay < time.Second {
+		return fmt.Errorf("initial_restart_delay must be at least 1s (got %v); "+
+			"a bare number is interpreted as nanoseconds — write a unit like 10s", s.InitialRestartDelay)
+	}
+	if s.MaxRestartDelay < s.InitialRestartDelay {
+		return fmt.Errorf("max_restart_delay (%v) must be >= initial_restart_delay (%v)",
+			s.MaxRestartDelay, s.InitialRestartDelay)
+	}
+	if s.SegmentDuration <= 0 {
+		return fmt.Errorf("segment_duration must be positive (got %d)", s.SegmentDuration)
+	}
+	if s.StopTimeout < 0 {
+		return fmt.Errorf("stop_timeout must not be negative (got %v)", s.StopTimeout)
+	}
+	if s.USBStabilizationDelay < 0 {
+		return fmt.Errorf("usb_stabilization_delay must not be negative (got %v)", s.USBStabilizationDelay)
 	}
 	return nil
 }

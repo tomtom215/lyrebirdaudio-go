@@ -29,6 +29,7 @@ func TestValidateConfig(t *testing.T) {
 					MaxRestartDelay:       300 * time.Second,
 					MaxRestartAttempts:    50,
 					USBStabilizationDelay: 5 * time.Second,
+					SegmentDuration:       3600,
 				},
 			},
 			wantErr: false,
@@ -163,6 +164,12 @@ func TestValidateConfigWithInvalidDevice(t *testing.T) {
 					Codec:       "opus",
 					ThreadQueue: 8192,
 				},
+				Stream: StreamConfig{
+					InitialRestartDelay: 10 * time.Second,
+					MaxRestartDelay:     300 * time.Second,
+					MaxRestartAttempts:  50,
+					SegmentDuration:     3600,
+				},
 				Devices: map[string]DeviceConfig{
 					"blue_yeti": {
 						SampleRate: 96000,
@@ -251,67 +258,44 @@ func TestValidateConfigWithInvalidDevice(t *testing.T) {
 	}
 }
 
-// TestStreamConfigValidate tests SegmentFormat validation (GAP-1b / A-2).
+// TestStreamConfigValidate tests SegmentFormat, size and restart-timing
+// validation. Each case starts from a known-valid base (the defaults) and
+// mutates one field, so a single invalid field is what triggers the error.
 func TestStreamConfigValidate(t *testing.T) {
 	tests := []struct {
 		name        string
-		cfg         StreamConfig
+		mutate      func(s *StreamConfig)
 		wantErr     bool
 		errContains string
 	}{
-		{
-			name: "empty segment format is valid (uses default wav)",
-			cfg:  StreamConfig{SegmentFormat: ""},
-		},
-		{
-			name: "wav is valid",
-			cfg:  StreamConfig{SegmentFormat: "wav"},
-		},
-		{
-			name: "flac is valid",
-			cfg:  StreamConfig{SegmentFormat: "flac"},
-		},
-		{
-			name: "ogg is valid",
-			cfg:  StreamConfig{SegmentFormat: "ogg"},
-		},
-		{
-			name:        "mp3 is invalid",
-			cfg:         StreamConfig{SegmentFormat: "mp3"},
-			wantErr:     true,
-			errContains: "segment_format",
-		},
-		{
-			name:        "xyz is invalid",
-			cfg:         StreamConfig{SegmentFormat: "xyz"},
-			wantErr:     true,
-			errContains: "segment_format",
-		},
-		{
-			name:        "WAV uppercase is invalid (must be lowercase)",
-			cfg:         StreamConfig{SegmentFormat: "WAV"},
-			wantErr:     true,
-			errContains: "segment_format",
-		},
-		{
-			name:        "negative total bytes is invalid",
-			cfg:         StreamConfig{SegmentMaxTotalBytes: -1},
-			wantErr:     true,
-			errContains: "segment_max_total_bytes",
-		},
-		{
-			name: "zero total bytes is valid (disabled)",
-			cfg:  StreamConfig{SegmentMaxTotalBytes: 0},
-		},
-		{
-			name: "positive total bytes is valid",
-			cfg:  StreamConfig{SegmentMaxTotalBytes: 32 * 1024 * 1024 * 1024},
-		},
+		{name: "defaults are valid", mutate: func(s *StreamConfig) {}},
+		{name: "empty segment format is valid", mutate: func(s *StreamConfig) { s.SegmentFormat = "" }},
+		{name: "wav is valid", mutate: func(s *StreamConfig) { s.SegmentFormat = "wav" }},
+		{name: "flac is valid", mutate: func(s *StreamConfig) { s.SegmentFormat = "flac" }},
+		{name: "ogg is valid", mutate: func(s *StreamConfig) { s.SegmentFormat = "ogg" }},
+		{name: "mp3 is invalid", mutate: func(s *StreamConfig) { s.SegmentFormat = "mp3" }, wantErr: true, errContains: "segment_format"},
+		{name: "xyz is invalid", mutate: func(s *StreamConfig) { s.SegmentFormat = "xyz" }, wantErr: true, errContains: "segment_format"},
+		{name: "WAV uppercase is invalid", mutate: func(s *StreamConfig) { s.SegmentFormat = "WAV" }, wantErr: true, errContains: "segment_format"},
+		{name: "negative total bytes is invalid", mutate: func(s *StreamConfig) { s.SegmentMaxTotalBytes = -1 }, wantErr: true, errContains: "segment_max_total_bytes"},
+		{name: "zero total bytes is valid (disabled)", mutate: func(s *StreamConfig) { s.SegmentMaxTotalBytes = 0 }},
+		{name: "positive total bytes is valid", mutate: func(s *StreamConfig) { s.SegmentMaxTotalBytes = 32 * 1024 * 1024 * 1024 }},
+
+		// Restart/backoff timing (H7).
+		{name: "zero max_restart_attempts is invalid", mutate: func(s *StreamConfig) { s.MaxRestartAttempts = 0 }, wantErr: true, errContains: "max_restart_attempts"},
+		{name: "nanosecond initial delay is invalid", mutate: func(s *StreamConfig) { s.InitialRestartDelay = 45 }, wantErr: true, errContains: "initial_restart_delay"},
+		{name: "max delay below initial is invalid", mutate: func(s *StreamConfig) {
+			s.InitialRestartDelay = 10 * time.Second
+			s.MaxRestartDelay = time.Second
+		}, wantErr: true, errContains: "max_restart_delay"},
+		{name: "zero segment duration is invalid", mutate: func(s *StreamConfig) { s.SegmentDuration = 0 }, wantErr: true, errContains: "segment_duration"},
+		{name: "negative stop timeout is invalid", mutate: func(s *StreamConfig) { s.StopTimeout = -1 }, wantErr: true, errContains: "stop_timeout"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := tt.cfg.Validate()
+			cfg := DefaultConfig().Stream // known-valid base
+			tt.mutate(&cfg)
+			err := cfg.Validate()
 			if (err != nil) != tt.wantErr {
 				t.Errorf("StreamConfig.Validate() error = %v, wantErr %v", err, tt.wantErr)
 				return

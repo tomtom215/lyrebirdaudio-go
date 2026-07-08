@@ -123,7 +123,14 @@ func NewKoanfConfig(opts ...Option) (*KoanfConfig, error) {
 //   - *Config: Unmarshaled configuration
 //   - error: if unmarshaling or validation fails
 func (kc *KoanfConfig) Load() (*Config, error) {
-	var cfg Config
+	// Start from the built-in defaults so that any field omitted from the file
+	// and environment keeps its documented default instead of collapsing to the
+	// Go zero value. koanf/mapstructure only overwrites keys that are actually
+	// present in the loaded sources, leaving the rest at these defaults. This is
+	// the documented lowest-precedence "built-in defaults" layer, and it fixes a
+	// config that omits the `stream:` section from silently getting
+	// MaxRestartAttempts=0 (which makes every stream fail before FFmpeg launches).
+	cfg := *DefaultConfig()
 
 	kc.mu.RLock()
 	k := kc.k
