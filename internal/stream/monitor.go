@@ -82,12 +82,26 @@ type ResourceAlert struct {
 	Value    interface{}
 }
 
+// userHZ is the number of clock ticks per second used by the kernel for the
+// CPU-time fields in /proc/{pid}/stat. On Linux this is USER_HZ, fixed at 100
+// for the /proc ABI across all supported architectures (matching the value
+// already used by getProcessStartTime).
+const userHZ = 100
+
+// cpuSample is a point-in-time snapshot of a process's cumulative CPU jiffies,
+// used to compute a rate (CPU%) between two GetMetrics calls.
+type cpuSample struct {
+	jiffies uint64
+	at      time.Time
+}
+
 // ResourceMonitor monitors resource usage for processes.
 type ResourceMonitor struct {
 	thresholds ResourceThresholds
 	logger     *slog.Logger
 	mu         sync.RWMutex
 	metrics    map[int]*ResourceMetrics // PID -> metrics
+	prevCPU    map[int]cpuSample        // PID -> last CPU sample (for delta CPU%)
 	procPath   string                   // Path to /proc (for testing)
 }
 
@@ -120,6 +134,7 @@ func NewResourceMonitor(opts ...MonitorOption) *ResourceMonitor {
 	m := &ResourceMonitor{
 		thresholds: DefaultThresholds(),
 		metrics:    make(map[int]*ResourceMetrics),
+		prevCPU:    make(map[int]cpuSample),
 		procPath:   "/proc",
 	}
 
@@ -160,12 +175,13 @@ func (m *ResourceMonitor) GetMetrics(pid int) (*ResourceMetrics, error) {
 	}
 
 	// Read stat for CPU and thread info
+	var cpuJiffies uint64
+	var haveCPU bool
 	statPath := filepath.Join(procDir, "stat")
 	// #nosec G304 -- reading from /proc, controlled path
 	if data, err := os.ReadFile(statPath); err == nil {
 		metrics.ThreadCount = parseThreadCount(string(data))
-		// Note: CPU percentage requires delta calculation over time
-		// For now, we just parse the raw values
+		cpuJiffies, haveCPU = parseCPUJiffies(string(data))
 	}
 
 	// Read statm for memory info
@@ -180,12 +196,56 @@ func (m *ResourceMonitor) GetMetrics(pid int) (*ResourceMetrics, error) {
 		metrics.Uptime = time.Since(startTime)
 	}
 
-	// Store metrics
+	// Store metrics and compute CPU% from the delta since the previous sample.
 	m.mu.Lock()
+	if haveCPU {
+		if prev, ok := m.prevCPU[pid]; ok && cpuJiffies >= prev.jiffies {
+			// A decrease means PID reuse (a different process now); skip this
+			// sample rather than report a bogus spike. The first sample also
+			// reports 0% since there is no interval to rate over yet.
+			metrics.CPUPercent = cpuPercent(cpuJiffies-prev.jiffies, metrics.Timestamp.Sub(prev.at))
+		}
+		m.prevCPU[pid] = cpuSample{jiffies: cpuJiffies, at: metrics.Timestamp}
+	}
 	m.metrics[pid] = metrics
 	m.mu.Unlock()
 
 	return metrics, nil
+}
+
+// cpuPercent converts a delta of CPU jiffies (utime+stime) accumulated over dt
+// wall-clock time into a percentage of a single core. It can legitimately exceed
+// 100 for a multi-threaded process. A non-positive interval yields 0.
+func cpuPercent(deltaJiffies uint64, dt time.Duration) float64 {
+	secs := dt.Seconds()
+	if secs <= 0 {
+		return 0
+	}
+	cpuSeconds := float64(deltaJiffies) / float64(userHZ)
+	return cpuSeconds / secs * 100
+}
+
+// parseCPUJiffies extracts utime+stime (fields 14 and 15 of /proc/{pid}/stat, in
+// clock ticks) and whether parsing succeeded. Like the other stat parsers it
+// locates the comm field by its closing paren, since comm may itself contain
+// spaces and parentheses.
+func parseCPUJiffies(stat string) (uint64, bool) {
+	idx := strings.LastIndex(stat, ")")
+	if idx == -1 {
+		return 0, false
+	}
+	fields := strings.Fields(stat[idx+1:])
+	// Fields after comm are 0-indexed from state (field 3); utime is field 14
+	// (index 11) and stime is field 15 (index 12).
+	if len(fields) < 13 {
+		return 0, false
+	}
+	utime, err1 := strconv.ParseUint(fields[11], 10, 64)
+	stime, err2 := strconv.ParseUint(fields[12], 10, 64)
+	if err1 != nil || err2 != nil {
+		return 0, false
+	}
+	return utime + stime, true
 }
 
 // CheckThresholds checks metrics against thresholds and returns alerts.
@@ -306,6 +366,7 @@ func (m *ResourceMonitor) ClearMetrics(pid int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.metrics, pid)
+	delete(m.prevCPU, pid)
 }
 
 // getProcessStartTime reads the process start time from /proc/{pid}/stat.
