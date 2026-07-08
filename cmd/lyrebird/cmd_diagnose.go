@@ -34,7 +34,14 @@ func runDiagnose(args []string) error {
 	fmt.Println("===========================")
 	fmt.Println()
 
+	// issues counts every reported problem for the human summary; blocking counts
+	// only the deterministic, streaming-blocking ones (missing required binary,
+	// unparseable config). M-cli1: the command exits non-zero when blocking > 0
+	// so automation can detect real breakage, while environmental gaps that are
+	// expected during provisioning (no device yet, ALSA absent in a container,
+	// server not started) stay exit 0 with a printed warning.
 	issues := 0
+	blocking := 0
 
 	// 1. Check FFmpeg
 	fmt.Print("FFmpeg: ")
@@ -42,6 +49,7 @@ func runDiagnose(args []string) error {
 	if err != nil {
 		fmt.Println("NOT FOUND - audio encoding will fail")
 		issues++
+		blocking++ // required for streaming
 	} else {
 		// Get version
 		cmd := exec.Command(ffmpegPath, "-version") // #nosec G204 -- ffmpegPath is from exec.LookPath
@@ -105,6 +113,7 @@ func runDiagnose(args []string) error {
 		if err != nil {
 			fmt.Printf("ERROR - %v\n", err)
 			issues++
+			blocking++ // a config file that exists but won't parse blocks startup
 		} else {
 			fmt.Printf("OK (%d device config(s))\n", len(cfg.Devices))
 		}
@@ -148,15 +157,26 @@ func runDiagnose(args []string) error {
 	}
 
 	fmt.Println()
-	if issues > 0 {
+	switch {
+	case blocking > 0:
+		fmt.Printf("Found %d issue(s); %d block streaming and must be fixed.\n", issues, blocking)
+	case issues > 0:
 		fmt.Printf("Found %d issue(s) that may affect operation.\n", issues)
-	} else {
+	default:
 		fmt.Println("All checks passed. System is ready for streaming.")
 	}
 
-	// B-5 / GAP-9: Create support bundle if --bundle was requested.
+	// B-5 / GAP-9: Create support bundle if --bundle was requested. The bundle is
+	// written even when blocking issues exist — capturing a broken system is the
+	// whole point — but a bundle-write failure is surfaced first.
 	if bundlePath != "" {
-		return createDiagnosticBundle(bundlePath)
+		if err := createDiagnosticBundle(bundlePath); err != nil {
+			return err
+		}
+	}
+	// M-cli1: non-zero exit on deterministic, streaming-blocking problems.
+	if blocking > 0 {
+		return fmt.Errorf("diagnostics found %d blocking issue(s); see report above", blocking)
 	}
 	return nil
 }
@@ -232,10 +252,11 @@ func runCheckSystem(args []string) error {
 	fmt.Println()
 	if compatible {
 		fmt.Println("System is compatible with LyreBirdAudio.")
-	} else {
-		fmt.Println("System is MISSING required components.")
-		fmt.Println("Install FFmpeg: sudo apt-get install ffmpeg")
+		return nil
 	}
-
-	return nil
+	fmt.Println("System is MISSING required components.")
+	fmt.Println("Install FFmpeg: sudo apt-get install ffmpeg")
+	// M-cli1: a missing required tool is a deterministic incompatibility, so
+	// exit non-zero for scripts and provisioning automation.
+	return fmt.Errorf("system is missing required components; see report above")
 }
