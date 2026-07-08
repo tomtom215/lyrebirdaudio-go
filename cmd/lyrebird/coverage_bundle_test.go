@@ -66,17 +66,16 @@ func TestCreateDiagnosticBundle(t *testing.T) {
 	}
 }
 
-// TestRunDiagnoseWithBundle verifies the --bundle flag triggers bundle creation.
+// TestRunDiagnoseWithBundle verifies the --bundle flag actually writes a bundle.
+// The bundle is created even when diagnose reports blocking issues (it captures
+// a broken system on purpose), so its existence is asserted independently of the
+// environment-dependent return value.
 func TestRunDiagnoseWithBundle(t *testing.T) {
 	outDir := t.TempDir()
 	bundlePath := filepath.Join(outDir, "test-bundle.tar.gz")
 
-	// Run diagnose with --bundle flag (equals form)
-	err := runDiagnose([]string{"--bundle=" + bundlePath})
-	// May fail due to missing system commands, but should not panic
-	if err != nil {
-		t.Logf("runDiagnose(--bundle) returned error (may be expected): %v", err)
-	}
+	_ = runDiagnose([]string{"--bundle=" + bundlePath}) // env-dependent return; bundle must exist regardless
+	assertBundleWritten(t, bundlePath)
 }
 
 // TestRunDiagnoseWithBundleSpaceForm verifies the --bundle flag with space separator.
@@ -84,11 +83,19 @@ func TestRunDiagnoseWithBundleSpaceForm(t *testing.T) {
 	outDir := t.TempDir()
 	bundlePath := filepath.Join(outDir, "test-bundle.tar.gz")
 
-	// Run diagnose with --bundle flag (space form)
-	err := runDiagnose([]string{"--bundle", bundlePath})
-	// May fail due to missing system commands, but should not panic
+	_ = runDiagnose([]string{"--bundle", bundlePath})
+	assertBundleWritten(t, bundlePath)
+}
+
+// assertBundleWritten fails unless a non-empty bundle exists at path.
+func assertBundleWritten(t *testing.T, path string) {
+	t.Helper()
+	info, err := os.Stat(path)
 	if err != nil {
-		t.Logf("runDiagnose(--bundle space) returned error (may be expected): %v", err)
+		t.Fatalf("bundle not created at %s: %v", path, err)
+	}
+	if info.Size() == 0 {
+		t.Errorf("bundle at %s is empty", path)
 	}
 }
 
