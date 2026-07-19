@@ -152,16 +152,31 @@ func runDaemon(flags daemonFlags) int {
 	}()
 
 	// Shared device registration state, protected by mutex (C-2, L-14 fix).
+	//
+	// registeredCardNumbers records the ALSA card number each registered stream
+	// was pinned to (hw:<card>,0), so the device poller can detect a USB
+	// re-enumeration to a DIFFERENT card number and restart the stale stream.
+	// Without it, a device that returns on a new card (unplug/replug, hub reset,
+	// or a USB bus reset from a power dip) leaves the manager driving the old,
+	// now-wrong hw:<oldcard>,0 for hours before backoff exhaustion + the
+	// 5-minute failed-stream recovery eventually rebuild it. It is written only
+	// on registration (registerNewDevices), always in lockstep with
+	// registeredServices; the reload/stall/failed-recovery paths that delete a
+	// registration may leave a stale entry, but that is harmless — the
+	// card-change check only consults it while a device is actively registered,
+	// and the next registration overwrites it. The distinct-device-name key
+	// space is tiny (physical hardware), so stale entries never accumulate.
 	var (
 		registeredMu           sync.RWMutex
 		registeredServices     = make(map[string]bool)
 		registeredConfigHashes = make(map[string]string)
+		registeredCardNumbers  = make(map[string]int)
 	)
 
 	// registerDevices detects USB audio devices and registers new ones with the supervisor.
 	registerDevices := func(cfg *config.Config) int {
 		return registerNewDevices(ctx, logger, cfg, flags, ffmpegPath, sup,
-			&registeredMu, registeredServices, registeredConfigHashes)
+			&registeredMu, registeredServices, registeredConfigHashes, registeredCardNumbers)
 	}
 
 	// Initial device registration
@@ -173,8 +188,13 @@ func runDaemon(flags daemonFlags) int {
 		logger.Info("detected USB audio devices", "count", sup.ServiceCount())
 	}
 
-	// Start background goroutines
-	go startDevicePoller(ctx, logger, koanfCfg, cfg, registerDevices)
+	// Start background goroutines. Each long-lived loop is wrapped in
+	// runSupervised so a panic in one background subsystem is recovered, logged,
+	// and the loop restarted — rather than crashing the whole daemon and dropping
+	// every audio stream. See runSupervised for the rationale.
+	go runSupervised(ctx, logger, "device-poller", func() {
+		startDevicePoller(ctx, logger, koanfCfg, cfg, registerDevices)
+	})
 
 	// Bridge os.Signal channel to struct{} channel for testability
 	reloadBridge := make(chan struct{}, 1)
@@ -188,8 +208,10 @@ func runDaemon(flags daemonFlags) int {
 			}
 		}
 	}()
-	go startReloadHandler(ctx, logger, reloadBridge, koanfCfg, sup,
-		&registeredMu, registeredServices, registeredConfigHashes, registerDevices)
+	go runSupervised(ctx, logger, "reload-handler", func() {
+		startReloadHandler(ctx, logger, reloadBridge, koanfCfg, sup,
+			&registeredMu, registeredServices, registeredConfigHashes, registerDevices)
+	})
 
 	// GAP-5/A-5: Start systemd watchdog heartbeat, gated on supervisor liveness.
 	// A deadlocked supervisor (its mutex held forever) will not answer Status()
@@ -213,24 +235,32 @@ func runDaemon(flags daemonFlags) int {
 	startHealthEndpoint(ctx, logger, cfg, sup)
 
 	// P-3 fix: Periodic recovery for permanently failed streams.
-	go startFailedStreamRecovery(ctx, logger, cfg.Monitor.Interval, sup,
-		&registeredMu, registeredServices, registeredConfigHashes)
+	go runSupervised(ctx, logger, "failed-stream-recovery", func() {
+		startFailedStreamRecovery(ctx, logger, cfg.Monitor.Interval, sup,
+			&registeredMu, registeredServices, registeredConfigHashes)
+	})
 
 	// P-1/P-2 fix: Stream health check loop using MediaMTX API.
 	if cfg.Monitor.Enabled {
-		go startStallDetector(ctx, logger, cfg, sup,
-			&registeredMu, registeredServices, registeredConfigHashes)
+		go runSupervised(ctx, logger, "stall-detector", func() {
+			startStallDetector(ctx, logger, cfg, sup,
+				&registeredMu, registeredServices, registeredConfigHashes)
+		})
 	}
 
 	// GAP-1c: Segment retention goroutine.
 	if cfg.Stream.LocalRecordDir != "" &&
 		(cfg.Stream.SegmentMaxAge > 0 || cfg.Stream.SegmentMaxTotalBytes > 0) {
-		go runSegmentRetention(ctx, logger, cfg.Stream)
+		go runSupervised(ctx, logger, "segment-retention", func() {
+			runSegmentRetention(ctx, logger, cfg.Stream)
+		})
 	}
 
 	// GAP-1d: Disk space monitoring goroutine.
 	if cfg.Monitor.DiskLowThresholdMB > 0 {
-		go runDiskSpaceMonitor(ctx, logger, cfg)
+		go runSupervised(ctx, logger, "disk-space-monitor", func() {
+			runDiskSpaceMonitor(ctx, logger, cfg)
+		})
 	}
 
 	// Run supervisor (blocks until shutdown)
@@ -242,6 +272,12 @@ func runDaemon(flags daemonFlags) int {
 	logger.Info("shutdown complete")
 	return 0
 }
+
+// detectAudioDevices is the device-detection function used by registerNewDevices.
+// It is a package-level indirection so tests can inject synthetic device lists;
+// the registration and card-number-change paths are otherwise unreachable
+// without real USB audio hardware exposed under /proc/asound.
+var detectAudioDevices = audio.DetectDevices
 
 // registerNewDevices detects USB audio devices and registers new ones with the supervisor.
 // Returns the number of newly registered devices.
@@ -255,8 +291,9 @@ func registerNewDevices(
 	registeredMu *sync.RWMutex,
 	registeredServices map[string]bool,
 	registeredConfigHashes map[string]string,
+	registeredCardNumbers map[string]int,
 ) int {
-	devices, err := audio.DetectDevices("/proc/asound")
+	devices, err := detectAudioDevices("/proc/asound")
 	if err != nil {
 		logger.Warn("failed to detect audio devices", "error", err)
 		return 0
@@ -268,9 +305,34 @@ func registerNewDevices(
 
 		registeredMu.RLock()
 		alreadyRegistered := registeredServices[devName]
+		prevCard, hadCard := registeredCardNumbers[devName]
 		registeredMu.RUnlock()
 		if alreadyRegistered {
-			continue
+			if !hadCard || prevCard == dev.CardNumber {
+				// Same device on the same ALSA card: nothing to do.
+				continue
+			}
+			// The device re-enumerated to a DIFFERENT ALSA card number. The
+			// running manager is pinned to the stale hw:<prevCard>,0 and cannot
+			// recover on its own until it exhausts ~50 backoff attempts (hours)
+			// and the failed-stream recovery loop rebuilds it. Tear it down now
+			// and fall through to re-register against the new card so recovery
+			// happens on this poll (seconds), not hours later. This also avoids
+			// streaming a DIFFERENT device that may have taken the old card
+			// number under this device's name.
+			logger.Info("device re-enumerated to a new ALSA card, restarting stream",
+				"device", devName, "old_card", prevCard, "new_card", dev.CardNumber)
+			if removeErr := sup.Remove(devName); removeErr != nil {
+				logger.Warn("failed to remove stream for card-number change; will retry next poll",
+					"device", devName, "error", removeErr)
+				continue
+			}
+			registeredMu.Lock()
+			delete(registeredServices, devName)
+			delete(registeredConfigHashes, devName)
+			delete(registeredCardNumbers, devName)
+			registeredMu.Unlock()
+			// Fall through to registration below with the new card number.
 		}
 
 		// P-7 fix: Wait for USB device to finish Linux initialization
@@ -340,6 +402,7 @@ func registerNewDevices(
 		registeredMu.Lock()
 		registeredServices[devName] = true
 		registeredConfigHashes[devName] = deviceConfigHash(devCfg, rtspURL, cfg.Stream)
+		registeredCardNumbers[devName] = dev.CardNumber
 		registeredMu.Unlock()
 		registered++
 		logger.Info("registered stream", "alsa_device", alsaDevice, "rtsp_url", rtspURL)

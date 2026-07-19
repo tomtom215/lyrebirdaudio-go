@@ -40,9 +40,11 @@ import (
 
 // ManagerConfig contains configuration for a stream manager.
 type ManagerConfig struct {
-	DeviceName      string                // Sanitized device name (e.g., "blue_yeti")
-	ALSADevice      string                // ALSA device identifier (e.g., "hw:0,0") or lavfi source
-	InputFormat     string                // Input format: "alsa" or "lavfi" (default: "alsa")
+	DeviceName    string // Sanitized device name (e.g., "blue_yeti")
+	ALSADevice    string // ALSA device identifier (e.g., "hw:0,0") or lavfi source
+	InputFormat   string // Input format: "alsa" or "lavfi" (default: "alsa")
+	RealtimeInput bool   // Pace a non-hardware input to real time with -re (e.g. a synthetic lavfi source); leave false for hardware ALSA capture, which is already real-time
+
 	StreamName      string                // Stream name for MediaMTX path
 	SampleRate      int                   // Sample rate in Hz
 	Channels        int                   // Number of channels
@@ -114,7 +116,12 @@ func NewManager(cfg *ManagerConfig) (*Manager, error) {
 		logWriter, err := LogWriter(cfg.LogDir, cfg.StreamName,
 			WithMaxSize(DefaultMaxLogSize),
 			WithMaxFiles(DefaultMaxLogFiles),
-			WithCompression(true))
+			WithCompression(true),
+			// Surface rotation/compression failures (e.g. a full log disk)
+			// instead of silently discarding them; without a logger the
+			// RotatingWriter swallows these errors (M-3), hiding disk problems
+			// on an unattended device. nil logger is fine (no-op).
+			WithRotateLogger(cfg.Logger))
 		if err != nil {
 			return nil, fmt.Errorf("failed to create log writer: %w", err)
 		}

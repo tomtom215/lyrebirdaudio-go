@@ -321,3 +321,76 @@ func TestConfigValidateStreamConfig(t *testing.T) {
 		t.Errorf("error should mention 'stream config', got: %v", err)
 	}
 }
+
+// TestConfigValidateRecordingCodecContainer verifies the local-recording
+// codec/container compatibility check. Pairings verified empirically against
+// ffmpeg 7.x: opus records only as ogg, aac only as wav. The check applies only
+// when recording is enabled.
+func TestConfigValidateRecordingCodecContainer(t *testing.T) {
+	tests := []struct {
+		name        string
+		codec       string
+		segFormat   string
+		record      bool
+		wantErr     bool
+		errContains string
+	}{
+		{name: "opus+ogg records", codec: "opus", segFormat: "ogg", record: true},
+		{name: "aac+wav records", codec: "aac", segFormat: "wav", record: true},
+		{name: "opus+wav rejected", codec: "opus", segFormat: "wav", record: true, wantErr: true, errContains: "ogg"},
+		{name: "opus+flac rejected", codec: "opus", segFormat: "flac", record: true, wantErr: true, errContains: "ogg"},
+		{name: "aac+ogg rejected", codec: "aac", segFormat: "ogg", record: true, wantErr: true, errContains: "wav"},
+		{name: "aac+flac rejected", codec: "aac", segFormat: "flac", record: true, wantErr: true, errContains: "wav"},
+		{name: "incompatible pairing ok when recording disabled", codec: "opus", segFormat: "wav", record: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.Default.Codec = tt.codec
+			cfg.Stream.SegmentFormat = tt.segFormat
+			if tt.record {
+				cfg.Stream.LocalRecordDir = "/var/lib/lyrebird/rec"
+			} else {
+				cfg.Stream.LocalRecordDir = ""
+			}
+			err := cfg.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("Config.Validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr && tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
+				t.Errorf("error = %q, want to contain %q", err.Error(), tt.errContains)
+			}
+		})
+	}
+}
+
+// TestConfigValidateRecordingDeviceCodecMismatch verifies a per-device codec
+// incompatible with the global segment_format is caught and names the device.
+func TestConfigValidateRecordingDeviceCodecMismatch(t *testing.T) {
+	cfg := DefaultConfig() // default opus + ogg
+	cfg.Stream.LocalRecordDir = "/var/lib/lyrebird/rec"
+	cfg.Devices = map[string]DeviceConfig{
+		"aac_mic": {Codec: "aac"}, // aac needs wav, but segment_format is ogg
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for aac device with ogg segment_format")
+	}
+	if !strings.Contains(err.Error(), "aac_mic") {
+		t.Errorf("error should name the offending device, got: %v", err)
+	}
+}
+
+// TestDefaultConfigRecordsCleanly guards against a default regression: the
+// default config must record without a codec/container error once a record dir
+// is set (default opus codec requires an ogg segment_format).
+func TestDefaultConfigRecordsCleanly(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.Stream.SegmentFormat != "ogg" {
+		t.Errorf("default SegmentFormat = %q, want ogg (must match the default opus codec)", cfg.Stream.SegmentFormat)
+	}
+	cfg.Stream.LocalRecordDir = "/var/lib/lyrebird/rec"
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("default config with recording enabled should validate, got: %v", err)
+	}
+}

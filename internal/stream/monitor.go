@@ -325,6 +325,13 @@ func (m *ResourceMonitor) MonitorProcess(ctx context.Context, pid int, interval 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
+	// Prune this pid's cached metrics/CPU sample when monitoring ends (context
+	// cancelled or process exited). The ResourceMonitor is reused across every
+	// FFmpeg restart, and each restart monitors a NEW pid, so without this the
+	// metrics/prevCPU maps would gain one permanent entry per pid and grow
+	// unboundedly over months of 24/7 operation. ClearMetrics is idempotent.
+	defer m.ClearMetrics(pid)
+
 	for {
 		select {
 		case <-ctx.Done():

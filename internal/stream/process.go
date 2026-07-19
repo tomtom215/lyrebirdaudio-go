@@ -136,12 +136,24 @@ func buildFFmpegCommand(ctx context.Context, cfg *ManagerConfig) *exec.Cmd {
 		inputFormat = "alsa"
 	}
 
-	args := []string{
-		"-f", inputFormat,
+	args := []string{"-f", inputFormat}
+
+	// RealtimeInput paces a non-hardware source (e.g. a synthetic lavfi test
+	// tone) to real time with -re. Such a source otherwise generates frames as
+	// fast as the CPU allows and blasts many minutes of audio per wall-clock
+	// second, so a live RTSP publish never settles into a healthy state. A real
+	// ALSA capture is already paced by the hardware clock and must NOT get -re
+	// (it would double-pace and drift), so this stays opt-in and defaults off.
+	// -re is an input option and must precede -i.
+	if cfg.RealtimeInput {
+		args = append(args, "-re")
+	}
+
+	args = append(args,
 		"-i", cfg.ALSADevice,
 		"-ar", fmt.Sprintf("%d", cfg.SampleRate),
 		"-ac", fmt.Sprintf("%d", cfg.Channels),
-	}
+	)
 
 	if cfg.ThreadQueue > 0 {
 		args = append(args, "-thread_queue_size", fmt.Sprintf("%d", cfg.ThreadQueue))
@@ -180,13 +192,44 @@ func buildFFmpegCommand(ctx context.Context, cfg *ManagerConfig) *exec.Cmd {
 		}
 		segPattern := filepath.Join(cfg.LocalRecordDir, cfg.StreamName+"_%Y%m%d_%H%M%S."+segFormat)
 
+		// onfail=ignore on the SEGMENT slave decouples local recording from the
+		// live stream: ffmpeg's tee muxer defaults to onfail=abort, so without
+		// this a failing segment write (a full or read-only recording disk, an
+		// I/O error) would abort the ENTIRE ffmpeg process and drop the live RTSP
+		// stream too. The live stream is the monitored primary function and must
+		// survive local-disk problems. The RTSP slave keeps the default
+		// (onfail=abort) so a genuine publish failure still exits ffmpeg promptly
+		// and the manager's backoff restart re-establishes BOTH outputs (which
+		// also recovers segment recording once the disk issue clears).
+		// rtsp_transport=tcp: publish over TCP, not UDP. RTSP-over-UDP can
+		// silently drop or reorder RTP packets — even on localhost under load —
+		// corrupting the audio, which is unacceptable for a recording/research
+		// pipeline; MediaMTX may also never mark a UDP publisher "ready". TCP
+		// guarantees in-order, lossless delivery.
+		//
+		// Note: the reconnect* options are deliberately NOT set on this slave. They
+		// are protocol/AVIO options, not rtsp-muxer options, so inside a tee slave
+		// bracket (which sets muxer options) they are meaningless and can perturb
+		// the muxer's setup. Recovery for the tee's RTSP output is instead provided
+		// by the manager: the slave keeps ffmpeg's default onfail=abort, so a real
+		// publish failure exits ffmpeg and the backoff restart re-establishes it.
 		teeOutput := fmt.Sprintf(
-			"[f=rtsp:reconnect=1:reconnect_streamed=1:reconnect_delay_max=30]%s|[f=segment:segment_time=%d:strftime=1]%s",
+			"[f=rtsp:rtsp_transport=tcp]%s|[onfail=ignore:f=segment:segment_time=%d:strftime=1]%s",
 			cfg.RTSPURL, segDuration, segPattern,
 		)
-		args = append(args, "-f", "tee", teeOutput)
+		// The tee muxer does NOT perform ffmpeg's automatic stream selection the
+		// way a normal single output does, so without an explicit -map it maps no
+		// streams and aborts with "Output file does not contain any stream" — the
+		// whole ffmpeg process exits before either slave opens, so local recording
+		// never starts AND the live stream never comes up. Map the (single) audio
+		// stream explicitly. This is required for the tee path only; the plain
+		// -f rtsp path below relies on automatic selection, which works there.
+		args = append(args, "-map", "0:a", "-f", "tee", teeOutput)
 	} else if outputFormat == "rtsp" {
 		args = append(args,
+			// Publish over TCP for lossless, in-order RTP delivery to MediaMTX
+			// (see the tee branch above for the rationale).
+			"-rtsp_transport", "tcp",
 			"-reconnect", "1",
 			"-reconnect_streamed", "1",
 			"-reconnect_delay_max", "30",

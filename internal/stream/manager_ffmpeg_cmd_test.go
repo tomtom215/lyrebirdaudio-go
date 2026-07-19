@@ -92,6 +92,95 @@ func TestBuildFFmpegCommandInputFormat(t *testing.T) {
 	}
 }
 
+// TestBuildFFmpegCommandRealtimePacing verifies that RealtimeInput adds -re
+// (required for a healthy live publish from a synthetic source), while the
+// default (a hardware ALSA capture, already paced by the device clock) does not.
+func TestBuildFFmpegCommandRealtimePacing(t *testing.T) {
+	tests := []struct {
+		name     string
+		realtime bool
+		wantRe   bool
+	}{
+		{"realtime input is paced with -re", true, true},
+		{"default (hardware) is not paced", false, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &ManagerConfig{
+				ALSADevice:    "hw:0,0",
+				RealtimeInput: tt.realtime,
+				StreamName:    "test",
+				SampleRate:    48000,
+				Channels:      2,
+				Bitrate:       "128k",
+				Codec:         "opus",
+				RTSPURL:       "rtsp://localhost:8554/test",
+			}
+
+			cmd := buildFFmpegCommand(context.Background(), cfg)
+
+			reIdx, iIdx := -1, -1
+			for i, arg := range cmd.Args {
+				if arg == "-re" {
+					reIdx = i
+				}
+				if arg == "-i" && iIdx == -1 {
+					iIdx = i
+				}
+			}
+
+			hasRe := reIdx != -1
+			if hasRe != tt.wantRe {
+				t.Errorf("-re present = %v, want %v; args=%v", hasRe, tt.wantRe, cmd.Args)
+			}
+			if tt.wantRe && (iIdx == -1 || reIdx > iIdx) {
+				t.Errorf("-re must appear before -i; args=%v", cmd.Args)
+			}
+		})
+	}
+}
+
+// TestBuildFFmpegCommandRTSPTransportTCP verifies both RTSP publish paths (plain
+// and tee) publish over TCP, so RTP is delivered losslessly and in order to
+// MediaMTX instead of over drop-prone UDP.
+func TestBuildFFmpegCommandRTSPTransportTCP(t *testing.T) {
+	base := ManagerConfig{
+		ALSADevice: "hw:0,0",
+		StreamName: "test",
+		SampleRate: 48000,
+		Channels:   2,
+		Bitrate:    "128k",
+		Codec:      "opus",
+		RTSPURL:    "rtsp://localhost:8554/test",
+	}
+
+	t.Run("plain rtsp publishes over tcp", func(t *testing.T) {
+		cfg := base
+		cmd := buildFFmpegCommand(context.Background(), &cfg)
+		found := false
+		for i, arg := range cmd.Args {
+			if arg == "-rtsp_transport" && i+1 < len(cmd.Args) && cmd.Args[i+1] == "tcp" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("plain rtsp output must include -rtsp_transport tcp, got: %v", cmd.Args)
+		}
+	})
+
+	t.Run("tee rtsp slave publishes over tcp", func(t *testing.T) {
+		cfg := base
+		cfg.LocalRecordDir = "/tmp/rec"
+		cmd := buildFFmpegCommand(context.Background(), &cfg)
+		last := cmd.Args[len(cmd.Args)-1]
+		if !strings.Contains(last, "rtsp_transport=tcp") {
+			t.Errorf("tee rtsp slave must include rtsp_transport=tcp, got: %s", last)
+		}
+	})
+}
+
 // TestBuildFFmpegCommandOutputFormat verifies output format handling.
 func TestBuildFFmpegCommandOutputFormat(t *testing.T) {
 	tests := []struct {
@@ -253,13 +342,32 @@ func TestBuildFFmpegCommandTeeMuxer(t *testing.T) {
 			t.Errorf("C-1: expected -f tee in args, got: %v", cmd.Args)
 		}
 
+		// The tee muxer requires an explicit stream map; without "-map 0:a"
+		// ffmpeg aborts with "Output file does not contain any stream" and local
+		// recording never starts. Verify -map 0:a precedes -f tee.
+		mapIdx, teeIdx := -1, -1
+		for i, arg := range cmd.Args {
+			if arg == "-map" && i+1 < len(cmd.Args) && cmd.Args[i+1] == "0:a" {
+				mapIdx = i
+			}
+			if arg == "-f" && i+1 < len(cmd.Args) && cmd.Args[i+1] == "tee" {
+				teeIdx = i
+			}
+		}
+		if mapIdx == -1 {
+			t.Errorf("tee command must include -map 0:a (else ffmpeg: no stream), got: %v", cmd.Args)
+		}
+		if mapIdx != -1 && teeIdx != -1 && mapIdx > teeIdx {
+			t.Errorf("-map 0:a must precede -f tee, got: %v", cmd.Args)
+		}
+
 		// Last arg should be the tee output string containing both RTSP and segment
 		lastArg := cmd.Args[len(cmd.Args)-1]
 		if !strings.Contains(lastArg, "[f=rtsp") {
 			t.Errorf("C-1: tee output should contain [f=rtsp], got: %s", lastArg)
 		}
-		if !strings.Contains(lastArg, "[f=segment") {
-			t.Errorf("C-1: tee output should contain [f=segment], got: %s", lastArg)
+		if !strings.Contains(lastArg, "f=segment") {
+			t.Errorf("C-1: tee output should contain f=segment, got: %s", lastArg)
 		}
 		if !strings.Contains(lastArg, "segment_time=1800") {
 			t.Errorf("C-1: tee output should contain segment_time=1800, got: %s", lastArg)
@@ -270,8 +378,33 @@ func TestBuildFFmpegCommandTeeMuxer(t *testing.T) {
 		if !strings.Contains(lastArg, "blue_yeti_") {
 			t.Errorf("C-1: tee output should contain stream name, got: %s", lastArg)
 		}
-		if !strings.Contains(lastArg, "reconnect=1") {
-			t.Errorf("C-2: tee RTSP output should contain reconnect options, got: %s", lastArg)
+		// The tee RTSP slave must publish over TCP and must NOT carry reconnect*
+		// options (those are protocol options, meaningless as tee-slave muxer
+		// options; recovery is handled by the manager's restart instead).
+		if !strings.Contains(lastArg, "rtsp_transport=tcp") {
+			t.Errorf("tee RTSP output should publish over TCP (rtsp_transport=tcp), got: %s", lastArg)
+		}
+		if strings.Contains(lastArg, "reconnect=") {
+			t.Errorf("tee RTSP slave should NOT contain reconnect options (protocol opts, not muxer opts), got: %s", lastArg)
+		}
+		// The segment slave must carry onfail=ignore so a full/broken recording
+		// disk cannot abort the whole tee and drop the live RTSP stream.
+		segIdx := strings.Index(lastArg, "[f=segment")
+		altSegIdx := strings.Index(lastArg, ":f=segment")
+		if segIdx == -1 && altSegIdx == -1 {
+			t.Fatalf("tee output should contain an f=segment slave, got: %s", lastArg)
+		}
+		if !strings.Contains(lastArg, "onfail=ignore") {
+			t.Errorf("tee segment output must contain onfail=ignore so disk failures don't kill the live stream, got: %s", lastArg)
+		}
+		// The RTSP slave must NOT be onfail=ignore: a genuine publish failure
+		// should still exit ffmpeg so the manager restarts promptly.
+		rtspSlave := lastArg
+		if pipe := strings.Index(lastArg, "|"); pipe != -1 {
+			rtspSlave = lastArg[:pipe]
+		}
+		if strings.Contains(rtspSlave, "onfail=ignore") {
+			t.Errorf("tee RTSP slave must NOT be onfail=ignore (fast restart on publish failure), got: %s", rtspSlave)
 		}
 	})
 

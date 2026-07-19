@@ -153,8 +153,8 @@ systemd/               → lyrebird-stream.service (18 security hardening direct
 | internal/updater | 95.9% | ✅ Excellent |
 | internal/lock | 85.2% | ✅ Good |
 | internal/menu | 61.5% | ⬜ Acceptable (requires terminal) |
-| cmd/lyrebird-stream | 78.7% | ⬜ Daemon (runtime env) |
-| cmd/lyrebird | 68.6% | ⬜ CLI (root/interactive) |
+| cmd/lyrebird-stream | 82.5% | ⬜ Daemon (runtime env) |
+| cmd/lyrebird | 69.9% | ⬜ CLI (root/interactive) |
 | **Internal avg** | **~93.5%** | **Target: 90%+ ✅** |
 | **Overall** | **~90.6%** | **CI min: 65% ✅** |
 

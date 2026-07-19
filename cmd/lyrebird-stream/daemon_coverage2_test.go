@@ -53,8 +53,9 @@ func TestRegisterNewDevicesAbsentAsound(t *testing.T) {
 	var mu sync.RWMutex
 	registered := make(map[string]bool)
 	hashes := make(map[string]string)
+	cards := make(map[string]int)
 
-	count := registerNewDevices(ctx, logger, cfg, flags, "/fake/ffmpeg", sup, &mu, registered, hashes)
+	count := registerNewDevices(ctx, logger, cfg, flags, "/fake/ffmpeg", sup, &mu, registered, hashes, cards)
 	if count != 0 {
 		t.Errorf("registerNewDevices() = %d, want 0 when /proc/asound absent", count)
 	}
@@ -82,8 +83,9 @@ func TestRegisterNewDevicesAlreadyRegisteredPath(t *testing.T) {
 	// Pre-populate with a fake device name so the already-registered branch fires.
 	registered := map[string]bool{"usb-mic": true}
 	hashes := make(map[string]string)
+	cards := make(map[string]int)
 
-	count := registerNewDevices(ctx, logger, cfg, flags, "/fake/ffmpeg", sup, &mu, registered, hashes)
+	count := registerNewDevices(ctx, logger, cfg, flags, "/fake/ffmpeg", sup, &mu, registered, hashes, cards)
 	// Either 0 (DetectDevices error) or 0 (all devices already registered).
 	if count != 0 {
 		t.Errorf("registerNewDevices() = %d, want 0", count)
