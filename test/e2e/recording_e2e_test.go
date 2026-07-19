@@ -7,6 +7,7 @@ package e2e
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -36,6 +37,7 @@ func TestE2E_LocalRecordingTee(t *testing.T) {
 
 	recordDir := t.TempDir()
 	lockDir := t.TempDir()
+	logDir := t.TempDir() // capture ffmpeg stderr so a failed run is diagnosable
 
 	// opus-in-ogg is a valid codec/container pairing, so the segment recorder can
 	// mux the same encoded stream the RTSP output publishes.
@@ -50,6 +52,7 @@ func TestE2E_LocalRecordingTee(t *testing.T) {
 		Codec:           "opus",
 		RTSPURL:         "rtsp://127.0.0.1:" + strconv.Itoa(rtspPort) + "/e2e_rec",
 		LockDir:         lockDir,
+		LogDir:          logDir,
 		FFmpegPath:      ffmpegBin,
 		LocalRecordDir:  recordDir,
 		SegmentDuration: 1, // 1s segments so files appear within the test window
@@ -74,6 +77,16 @@ func TestE2E_LocalRecordingTee(t *testing.T) {
 			t.Log("manager did not stop within 10s of cancel")
 		}
 		_ = mgr.Close()
+		// On failure, surface ffmpeg's own stderr (captured by the manager's
+		// rotating log writer) so the root cause is visible in CI logs.
+		if t.Failed() {
+			logPath := filepath.Join(logDir, "ffmpeg-e2e_rec.log")
+			if data, rerr := os.ReadFile(logPath); rerr == nil {
+				t.Logf("ffmpeg stderr (%s):\n%s", logPath, string(data))
+			} else {
+				t.Logf("could not read ffmpeg log %s: %v", logPath, rerr)
+			}
+		}
 	})
 
 	// 1. The live RTSP stream must become healthy at MediaMTX.
