@@ -151,11 +151,12 @@ func TestRegisterNewDevicesNoALSA(t *testing.T) {
 	var mu sync.RWMutex
 	services := make(map[string]bool)
 	hashes := make(map[string]string)
+	cards := make(map[string]int)
 
 	// registerNewDevices calls audio.DetectDevices("/proc/asound").
 	// In CI, /proc/asound exists but has no USB audio devices (or may not exist at all).
 	// Either way, the function should return 0 gracefully.
-	n := registerNewDevices(ctx, logger, cfg, flags, "/nonexistent/ffmpeg", sup, &mu, services, hashes)
+	n := registerNewDevices(ctx, logger, cfg, flags, "/nonexistent/ffmpeg", sup, &mu, services, hashes, cards)
 	if n != 0 {
 		t.Errorf("expected 0 registered devices with no USB audio, got %d", n)
 	}
@@ -179,9 +180,10 @@ func TestRegisterNewDevicesContextCancellationDuringStabilization(t *testing.T) 
 	var mu sync.RWMutex
 	services := make(map[string]bool)
 	hashes := make(map[string]string)
+	cards := make(map[string]int)
 
 	// With cancelled context and no real devices, should return 0 without blocking.
-	n := registerNewDevices(ctx, logger, cfg, flags, "/nonexistent/ffmpeg", sup, &mu, services, hashes)
+	n := registerNewDevices(ctx, logger, cfg, flags, "/nonexistent/ffmpeg", sup, &mu, services, hashes, cards)
 	if n != 0 {
 		t.Errorf("expected 0 registered devices, got %d", n)
 	}
