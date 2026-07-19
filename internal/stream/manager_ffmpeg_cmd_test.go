@@ -253,6 +253,25 @@ func TestBuildFFmpegCommandTeeMuxer(t *testing.T) {
 			t.Errorf("C-1: expected -f tee in args, got: %v", cmd.Args)
 		}
 
+		// The tee muxer requires an explicit stream map; without "-map 0:a"
+		// ffmpeg aborts with "Output file does not contain any stream" and local
+		// recording never starts. Verify -map 0:a precedes -f tee.
+		mapIdx, teeIdx := -1, -1
+		for i, arg := range cmd.Args {
+			if arg == "-map" && i+1 < len(cmd.Args) && cmd.Args[i+1] == "0:a" {
+				mapIdx = i
+			}
+			if arg == "-f" && i+1 < len(cmd.Args) && cmd.Args[i+1] == "tee" {
+				teeIdx = i
+			}
+		}
+		if mapIdx == -1 {
+			t.Errorf("tee command must include -map 0:a (else ffmpeg: no stream), got: %v", cmd.Args)
+		}
+		if mapIdx != -1 && teeIdx != -1 && mapIdx > teeIdx {
+			t.Errorf("-map 0:a must precede -f tee, got: %v", cmd.Args)
+		}
+
 		// Last arg should be the tee output string containing both RTSP and segment
 		lastArg := cmd.Args[len(cmd.Args)-1]
 		if !strings.Contains(lastArg, "[f=rtsp") {

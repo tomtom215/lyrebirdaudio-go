@@ -193,7 +193,14 @@ func buildFFmpegCommand(ctx context.Context, cfg *ManagerConfig) *exec.Cmd {
 			"[f=rtsp:reconnect=1:reconnect_streamed=1:reconnect_delay_max=30]%s|[onfail=ignore:f=segment:segment_time=%d:strftime=1]%s",
 			cfg.RTSPURL, segDuration, segPattern,
 		)
-		args = append(args, "-f", "tee", teeOutput)
+		// The tee muxer does NOT perform ffmpeg's automatic stream selection the
+		// way a normal single output does, so without an explicit -map it maps no
+		// streams and aborts with "Output file does not contain any stream" — the
+		// whole ffmpeg process exits before either slave opens, so local recording
+		// never starts AND the live stream never comes up. Map the (single) audio
+		// stream explicitly. This is required for the tee path only; the plain
+		// -f rtsp path below relies on automatic selection, which works there.
+		args = append(args, "-map", "0:a", "-f", "tee", teeOutput)
 	} else if outputFormat == "rtsp" {
 		args = append(args,
 			"-reconnect", "1",
