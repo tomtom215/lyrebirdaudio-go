@@ -201,8 +201,13 @@ func buildFFmpegCommand(ctx context.Context, cfg *ManagerConfig) *exec.Cmd {
 		// (onfail=abort) so a genuine publish failure still exits ffmpeg promptly
 		// and the manager's backoff restart re-establishes BOTH outputs (which
 		// also recovers segment recording once the disk issue clears).
+		// rtsp_transport=tcp: publish over TCP, not UDP. RTSP-over-UDP can
+		// silently drop or reorder RTP packets — even on localhost under load —
+		// corrupting the audio, which is unacceptable for a recording/research
+		// pipeline; MediaMTX may also never mark a UDP publisher "ready". TCP
+		// guarantees in-order, lossless delivery.
 		teeOutput := fmt.Sprintf(
-			"[f=rtsp:reconnect=1:reconnect_streamed=1:reconnect_delay_max=30]%s|[onfail=ignore:f=segment:segment_time=%d:strftime=1]%s",
+			"[f=rtsp:rtsp_transport=tcp:reconnect=1:reconnect_streamed=1:reconnect_delay_max=30]%s|[onfail=ignore:f=segment:segment_time=%d:strftime=1]%s",
 			cfg.RTSPURL, segDuration, segPattern,
 		)
 		// The tee muxer does NOT perform ffmpeg's automatic stream selection the
@@ -215,6 +220,9 @@ func buildFFmpegCommand(ctx context.Context, cfg *ManagerConfig) *exec.Cmd {
 		args = append(args, "-map", "0:a", "-f", "tee", teeOutput)
 	} else if outputFormat == "rtsp" {
 		args = append(args,
+			// Publish over TCP for lossless, in-order RTP delivery to MediaMTX
+			// (see the tee branch above for the rationale).
+			"-rtsp_transport", "tcp",
 			"-reconnect", "1",
 			"-reconnect_streamed", "1",
 			"-reconnect_delay_max", "30",

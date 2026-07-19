@@ -141,6 +141,46 @@ func TestBuildFFmpegCommandRealtimePacing(t *testing.T) {
 	}
 }
 
+// TestBuildFFmpegCommandRTSPTransportTCP verifies both RTSP publish paths (plain
+// and tee) publish over TCP, so RTP is delivered losslessly and in order to
+// MediaMTX instead of over drop-prone UDP.
+func TestBuildFFmpegCommandRTSPTransportTCP(t *testing.T) {
+	base := ManagerConfig{
+		ALSADevice: "hw:0,0",
+		StreamName: "test",
+		SampleRate: 48000,
+		Channels:   2,
+		Bitrate:    "128k",
+		Codec:      "opus",
+		RTSPURL:    "rtsp://localhost:8554/test",
+	}
+
+	t.Run("plain rtsp publishes over tcp", func(t *testing.T) {
+		cfg := base
+		cmd := buildFFmpegCommand(context.Background(), &cfg)
+		found := false
+		for i, arg := range cmd.Args {
+			if arg == "-rtsp_transport" && i+1 < len(cmd.Args) && cmd.Args[i+1] == "tcp" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("plain rtsp output must include -rtsp_transport tcp, got: %v", cmd.Args)
+		}
+	})
+
+	t.Run("tee rtsp slave publishes over tcp", func(t *testing.T) {
+		cfg := base
+		cfg.LocalRecordDir = "/tmp/rec"
+		cmd := buildFFmpegCommand(context.Background(), &cfg)
+		last := cmd.Args[len(cmd.Args)-1]
+		if !strings.Contains(last, "rtsp_transport=tcp") {
+			t.Errorf("tee rtsp slave must include rtsp_transport=tcp, got: %s", last)
+		}
+	})
+}
+
 // TestBuildFFmpegCommandOutputFormat verifies output format handling.
 func TestBuildFFmpegCommandOutputFormat(t *testing.T) {
 	tests := []struct {
