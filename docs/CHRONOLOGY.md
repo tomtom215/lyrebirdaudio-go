@@ -177,6 +177,65 @@ Development timeline for LyreBirdAudio-Go, tracking major milestones, audit resu
 
 ---
 
+## Phase 7: Opus 4.8 Field-Reliability Hardening (Session 4)
+
+**Date**: 2026-07-19
+**Branch**: `claude/bioacoustics-hardening-6j7t86`
+**Focus**: Latent 24/7/365 field-reliability bugs, dependency currency, expanded E2E.
+
+Deep audit of the full daemon/stream reliability path (manual review + two parallel
+adversarial surveys). The codebase was already unusually well-hardened; the prime
+suspects (backoff overflow, timer/goroutine/fd leaks, config validate-before-swap,
+MediaMTX request timeouts, flock stale detection) were all verified sound. Fixes
+landed for the genuine gaps:
+
+### Fixed
+- **HIGH — USB re-enumeration strands a device for hours.** The daemon pinned
+  `hw:<card>,0` at registration and keyed the registry on device *name*, so a mic
+  that returned on a different ALSA card number (unplug/replug, hub reset, USB bus
+  reset) kept the manager driving the stale card until ~50 backoff attempts (hours)
+  plus the 5-minute failed-stream recovery rebuilt it — and could stream a different
+  device under the old name. The poller now tracks each stream's card number and
+  restarts on change within one poll (~seconds). (`cmd/lyrebird-stream/main.go`)
+- **HIGH — a full recording disk killed the live RTSP stream.** FFmpeg's `tee`
+  muxer defaults to `onfail=abort`, so a failing segment write aborted the whole
+  process, dropping the monitored live stream. Added `onfail=ignore` to the segment
+  slave; the RTSP slave keeps `onfail=abort` for fast restart on publish failure.
+  (`internal/stream/process.go`)
+- **MEDIUM — a panic in any daemon background loop crashed the whole process**,
+  dropping every stream. Added `runSupervised`, a recover-and-restart wrapper, and
+  wired the six long-lived loops (poller, reload, stall detector, failed-stream
+  recovery, segment retention, disk monitor) through it. (`cmd/lyrebird-stream`)
+- **LOW — ResourceMonitor leaked one map entry per FFmpeg PID** (dormant: monitoring
+  is off by default). `MonitorProcess` now prunes its pid on exit.
+  (`internal/stream/monitor.go`)
+- **LOW — ffmpeg log-rotation failures were silently discarded**; the manager now
+  wires `WithRotateLogger` so a full log disk is visible. (`internal/stream/manager.go`)
+- **Test robustness** — `TestRunCheckSystemSmoke` asserted an environment-dependent
+  outcome; now asserts the error correlates with actual ffmpeg presence.
+- **Dependencies** — `go-isatty` v0.0.23, `x/sys` v0.47.0, `x/text` v0.40.0; govulncheck clean.
+
+### Expanded tests
+- New E2E `TestE2E_LocalRecordingTee` drives the real `stream.Manager` (tee →
+  live MediaMTX + local ogg segments), the regression guard proving the `onfail=ignore`
+  tee syntax is valid ffmpeg and that segments are written while publishing.
+- New unit tests for the card-number-change restart, `runSupervised` panic recovery,
+  ResourceMonitor pruning, and the tee `onfail` guard.
+
+### Flagged for verification (not changed)
+- **Default `segment_format: wav` with the default `opus` codec is a likely
+  incompatible codec/container pairing** (opus muxes into ogg, not WAV/FLAC). Left
+  unchanged pending ffmpeg verification; the `onfail=ignore` fix now prevents such a
+  segment-init failure from crash-looping the live stream. Recommend confirming the
+  codec×segment_format matrix and validating it at config load.
+
+### Verification
+`gofmt`, `go vet`, `golangci-lint` (0 issues), `gosec`, `govulncheck` (no vulns), and
+`go test -race ./...` all clean. Coverage flat-to-improved (cmd/lyrebird-stream
+78.7%→82.5%).
+
+---
+
 ## Quality Metrics Over Time
 
 | Metric | Phase 3 Start | Phase 3 End | Phase 5 End | Phase 6 End |

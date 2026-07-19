@@ -283,6 +283,24 @@ Backoff that resets after N seconds of successful running prevents permanent slo
 
 **Lesson**: Backup-before-write is a *caller* concern, not a method concern. CLI commands that modify user config should call `BackupConfig()` before `Save()`. The daemon (which only reads config) has no need for backups.
 
+### LL-17: Pin-Once Device Identifiers Rot Under Re-enumeration
+
+**Pattern**: The daemon resolved each stream's ALSA device to `hw:<card>,0` exactly once at registration and keyed the registry on the sanitized device *name*. When a USB mic returned on a different card number (unplug/replug, hub reset, a USB bus reset from a field power dip), the poller — which skips already-registered names — never re-resolved it, so the manager drove the stale card for hours until backoff exhaustion. The stall detector couldn't help either: a departed publisher makes MediaMTX return 404, which the detector treated as "skip", not "unhealthy".
+
+**Lesson**: Any identifier derived from volatile OS enumeration (card numbers, `/dev` indices, PIDs) must be *re-validated on each poll*, not pinned at first sight. Track it alongside the registration and restart the consumer when it changes. Prefer a registration-owned map that the add-path always overwrites, so the delete-paths cannot desync it into a wrong decision.
+
+### LL-18: `tee` Muxer Couples Output Fates — Decouple With `onfail=ignore`
+
+**Pattern**: A single ffmpeg `tee` feeding both the live RTSP output and the local segment recorder defaults to `onfail=abort`, so a failure in *either* slave (a full recording disk, an RTSP drop) aborted the whole process — the "redundant" local recording became a single point of failure on the critical live path.
+
+**Lesson**: When one process fans out to multiple sinks with independent failure domains, make the non-critical sink `onfail=ignore` so its failure can't take down the critical one. Keep the critical sink at `onfail=abort` so a genuine failure still triggers a fast supervised restart (which also re-establishes the ignored sink). Codec/container pairing still matters: a single encode muxed to both sinks means both must accept that codec (opus → ogg, not wav/flac).
+
+### LL-19: Recover-and-Restart Beats Bare `SafeGo` for Daemon Loops
+
+**Pattern**: `util.SafeGo` recovers a goroutine panic but leaves the goroutine dead. For a long-lived daemon loop (device poller, stall detector) that silently converts "one panic → whole-daemon crash + clean systemd restart" into "one subsystem permanently dead while the daemon looks healthy" — often worse on an unattended device.
+
+**Lesson**: Wrap critical background loops in a recover-*and-restart* supervisor (`runSupervised`) so a panic is contained to its subsystem, logged with a stack, and the loop self-heals — without crashing the process and dropping every stream. Gate the restart with a short delay so a tight panic loop can't spin the CPU, and exit cleanly when the context is cancelled.
+
 ---
 
-*Last updated: 2026-02-20*
+*Last updated: 2026-07-19*
