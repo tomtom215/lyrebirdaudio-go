@@ -92,6 +92,56 @@ func TestBuildFFmpegCommandInputFormat(t *testing.T) {
 	}
 }
 
+// TestBuildFFmpegCommandRealtimePacing verifies that a synthetic lavfi source
+// is paced to real time with -re (required for a healthy live RTSP publish),
+// while a hardware ALSA capture is not (the device clock already paces it).
+func TestBuildFFmpegCommandRealtimePacing(t *testing.T) {
+	tests := []struct {
+		name        string
+		inputFormat string
+		wantRe      bool
+	}{
+		{"lavfi is paced with -re", "lavfi", true},
+		{"alsa is not paced", "alsa", false},
+		{"empty (defaults to alsa) is not paced", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &ManagerConfig{
+				ALSADevice:  "hw:0,0",
+				InputFormat: tt.inputFormat,
+				StreamName:  "test",
+				SampleRate:  48000,
+				Channels:    2,
+				Bitrate:     "128k",
+				Codec:       "opus",
+				RTSPURL:     "rtsp://localhost:8554/test",
+			}
+
+			cmd := buildFFmpegCommand(context.Background(), cfg)
+
+			reIdx, iIdx := -1, -1
+			for i, arg := range cmd.Args {
+				if arg == "-re" {
+					reIdx = i
+				}
+				if arg == "-i" && iIdx == -1 {
+					iIdx = i
+				}
+			}
+
+			hasRe := reIdx != -1
+			if hasRe != tt.wantRe {
+				t.Errorf("-re present = %v, want %v; args=%v", hasRe, tt.wantRe, cmd.Args)
+			}
+			if tt.wantRe && (iIdx == -1 || reIdx > iIdx) {
+				t.Errorf("-re must appear before -i; args=%v", cmd.Args)
+			}
+		})
+	}
+}
+
 // TestBuildFFmpegCommandOutputFormat verifies output format handling.
 func TestBuildFFmpegCommandOutputFormat(t *testing.T) {
 	tests := []struct {

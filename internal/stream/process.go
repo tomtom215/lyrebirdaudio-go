@@ -136,12 +136,24 @@ func buildFFmpegCommand(ctx context.Context, cfg *ManagerConfig) *exec.Cmd {
 		inputFormat = "alsa"
 	}
 
-	args := []string{
-		"-f", inputFormat,
+	args := []string{"-f", inputFormat}
+
+	// A synthetic "lavfi" source (e.g. a test tone) generates frames as fast as
+	// the CPU allows, so for LIVE streaming it must be paced to real time with
+	// -re; otherwise it blasts many minutes of audio per wall-clock second and
+	// the RTSP publish never settles into a healthy live state. A real ALSA
+	// capture is already paced by the hardware clock, so it must NOT get -re
+	// (that would double-pace it and drift). -re is an input option and must
+	// precede -i.
+	if inputFormat == "lavfi" {
+		args = append(args, "-re")
+	}
+
+	args = append(args,
 		"-i", cfg.ALSADevice,
 		"-ar", fmt.Sprintf("%d", cfg.SampleRate),
 		"-ac", fmt.Sprintf("%d", cfg.Channels),
-	}
+	)
 
 	if cfg.ThreadQueue > 0 {
 		args = append(args, "-thread_queue_size", fmt.Sprintf("%d", cfg.ThreadQueue))
