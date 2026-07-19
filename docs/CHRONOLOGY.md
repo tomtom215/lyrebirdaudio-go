@@ -190,6 +190,15 @@ MediaMTX request timeouts, flock stale detection) were all verified sound. Fixes
 landed for the genuine gaps:
 
 ### Fixed
+- **CRITICAL — local recording never worked (missing `-map` on the tee).** The
+  `local_record_dir` feature builds an ffmpeg `-f tee` output feeding both the RTSP
+  publish and the segment recorder, but never passed `-map`. The tee muxer does not
+  do ffmpeg's automatic stream selection, so ffmpeg mapped zero streams and aborted
+  with "Output file does not contain any stream" before either slave opened — every
+  start failed, taking down BOTH the recording and the live stream in a crash/backoff
+  loop. Latent because nothing drove the real tee command end-to-end; the new
+  `TestE2E_LocalRecordingTee` (real ffmpeg + MediaMTX) exposed it. Fixed by mapping
+  the audio stream explicitly (`-map 0:a`) before `-f tee`. (`internal/stream/process.go`)
 - **HIGH — USB re-enumeration strands a device for hours.** The daemon pinned
   `hw:<card>,0` at registration and keyed the registry on device *name*, so a mic
   that returned on a different ALSA card number (unplug/replug, hub reset, USB bus
