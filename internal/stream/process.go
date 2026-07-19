@@ -206,8 +206,15 @@ func buildFFmpegCommand(ctx context.Context, cfg *ManagerConfig) *exec.Cmd {
 		// corrupting the audio, which is unacceptable for a recording/research
 		// pipeline; MediaMTX may also never mark a UDP publisher "ready". TCP
 		// guarantees in-order, lossless delivery.
+		//
+		// Note: the reconnect* options are deliberately NOT set on this slave. They
+		// are protocol/AVIO options, not rtsp-muxer options, so inside a tee slave
+		// bracket (which sets muxer options) they are meaningless and can perturb
+		// the muxer's setup. Recovery for the tee's RTSP output is instead provided
+		// by the manager: the slave keeps ffmpeg's default onfail=abort, so a real
+		// publish failure exits ffmpeg and the backoff restart re-establishes it.
 		teeOutput := fmt.Sprintf(
-			"[f=rtsp:rtsp_transport=tcp:reconnect=1:reconnect_streamed=1:reconnect_delay_max=30]%s|[onfail=ignore:f=segment:segment_time=%d:strftime=1]%s",
+			"[f=rtsp:rtsp_transport=tcp]%s|[onfail=ignore:f=segment:segment_time=%d:strftime=1]%s",
 			cfg.RTSPURL, segDuration, segPattern,
 		)
 		// The tee muxer does NOT perform ffmpeg's automatic stream selection the

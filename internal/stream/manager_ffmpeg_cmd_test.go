@@ -378,8 +378,14 @@ func TestBuildFFmpegCommandTeeMuxer(t *testing.T) {
 		if !strings.Contains(lastArg, "blue_yeti_") {
 			t.Errorf("C-1: tee output should contain stream name, got: %s", lastArg)
 		}
-		if !strings.Contains(lastArg, "reconnect=1") {
-			t.Errorf("C-2: tee RTSP output should contain reconnect options, got: %s", lastArg)
+		// The tee RTSP slave must publish over TCP and must NOT carry reconnect*
+		// options (those are protocol options, meaningless as tee-slave muxer
+		// options; recovery is handled by the manager's restart instead).
+		if !strings.Contains(lastArg, "rtsp_transport=tcp") {
+			t.Errorf("tee RTSP output should publish over TCP (rtsp_transport=tcp), got: %s", lastArg)
+		}
+		if strings.Contains(lastArg, "reconnect=") {
+			t.Errorf("tee RTSP slave should NOT contain reconnect options (protocol opts, not muxer opts), got: %s", lastArg)
 		}
 		// The segment slave must carry onfail=ignore so a full/broken recording
 		// disk cannot abort the whole tee and drop the live RTSP stream.
