@@ -50,7 +50,7 @@ type StreamConfig struct {
 	StopTimeout           time.Duration `yaml:"stop_timeout" koanf:"stop_timeout"`                       // H-1 fix: graceful stop timeout (default: 5s)
 	LocalRecordDir        string        `yaml:"local_record_dir" koanf:"local_record_dir"`               // C-1 fix: local recording directory (empty = disabled)
 	SegmentDuration       int           `yaml:"segment_duration" koanf:"segment_duration"`               // C-1 fix: segment duration in seconds (default: 3600)
-	SegmentFormat         string        `yaml:"segment_format" koanf:"segment_format"`                   // C-1 fix: segment format: wav, flac, ogg (default: wav)
+	SegmentFormat         string        `yaml:"segment_format" koanf:"segment_format"`                   // C-1 fix: segment container (default: ogg). Must be compatible with the codec: opus→ogg, aac→wav (validated at load)
 	SegmentMaxAge         time.Duration `yaml:"segment_max_age" koanf:"segment_max_age"`                 // GAP-1c: max age of recording segments before deletion (0 = no limit)
 	SegmentMaxTotalBytes  int64         `yaml:"segment_max_total_bytes" koanf:"segment_max_total_bytes"` // GAP-1c: max total bytes in LocalRecordDir before oldest deletion (0 = no limit)
 }
@@ -281,7 +281,69 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("stream config: %w", err)
 	}
 
+	// Codec/container compatibility for local recording. FFmpeg encodes once and
+	// muxes the SAME stream to both the RTSP output and the segment file, so the
+	// segment container must accept that codec. Verified empirically against
+	// ffmpeg 7.x: among wav/flac/ogg, opus muxes ONLY into ogg and aac ONLY into
+	// wav. A mismatch makes the segment writer fail — now silently, because the
+	// segment slave is onfail=ignore — so recordings would vanish without a
+	// trace. Reject it at load time instead. Only relevant when recording is on.
+	if c.Stream.LocalRecordDir != "" && c.Stream.SegmentFormat != "" {
+		checked := map[string]struct{}{}
+		checkCodec := func(codec string) error {
+			if codec == "" {
+				return nil
+			}
+			if _, ok := checked[codec]; ok {
+				return nil
+			}
+			checked[codec] = struct{}{}
+			if !segmentFormatSupportsCodec(codec, c.Stream.SegmentFormat) {
+				return fmt.Errorf("local recording: codec %q cannot be muxed into segment_format %q; use segment_format %q for codec %q",
+					codec, c.Stream.SegmentFormat, requiredSegmentFormat(codec), codec)
+			}
+			return nil
+		}
+		if err := checkCodec(c.Default.Codec); err != nil {
+			return err
+		}
+		for name, devCfg := range c.Devices {
+			if err := checkCodec(devCfg.Codec); err != nil {
+				return fmt.Errorf("device %q: %w", name, err)
+			}
+		}
+	}
+
 	return nil
+}
+
+// segmentFormatSupportsCodec reports whether ffmpeg can mux audioCodec into a
+// local-recording segment container of segFormat. Verified empirically against
+// ffmpeg 7.x: among the supported segment formats (wav/flac/ogg), opus muxes
+// only into ogg and aac only into wav. An unknown codec is not blocked here
+// (codec validity is enforced by DeviceConfig.Validate).
+func segmentFormatSupportsCodec(audioCodec, segFormat string) bool {
+	switch audioCodec {
+	case "opus":
+		return segFormat == "ogg"
+	case "aac":
+		return segFormat == "wav"
+	default:
+		return true
+	}
+}
+
+// requiredSegmentFormat returns the segment container ffmpeg can mux the given
+// codec into, for use in a helpful validation error. Empty for unknown codecs.
+func requiredSegmentFormat(audioCodec string) string {
+	switch audioCodec {
+	case "opus":
+		return "ogg"
+	case "aac":
+		return "wav"
+	default:
+		return ""
+	}
 }
 
 // Validate checks stream configuration for invalid values.
@@ -406,7 +468,7 @@ func DefaultConfig() *Config {
 			USBStabilizationDelay: 5 * time.Second,
 			StopTimeout:           5 * time.Second,    // H-1 fix: 5s default (was hardcoded 2s)
 			SegmentDuration:       3600,               // C-1: 1-hour segments by default
-			SegmentFormat:         "wav",              // C-1: lossless WAV by default
+			SegmentFormat:         "ogg",              // must match the default opus codec: opus muxes into ogg, not wav/flac (verified against ffmpeg)
 			SegmentMaxAge:         7 * 24 * time.Hour, // GAP-1c: retain segments for 7 days
 			SegmentMaxTotalBytes:  0,                  // GAP-1c: no total-size limit by default
 			// LocalRecordDir: empty by default (local recording disabled)

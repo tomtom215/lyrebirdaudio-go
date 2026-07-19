@@ -210,6 +210,16 @@ landed for the genuine gaps:
   slave (recovery there is the manager's backoff restart). A `RealtimeInput` opt-in was
   also added so a synthetic (lavfi) source can be `-re`-paced for a healthy live publish
   without affecting hardware ALSA capture. (`internal/stream/process.go`, `manager.go`)
+- **HIGH — default recording codec/container pairing was invalid.** Verified
+  directly against ffmpeg 7.x that, among the supported segment formats, opus muxes
+  ONLY into ogg and aac ONLY into wav (opus+wav, opus+flac, aac+ogg, aac+flac all
+  fail ffmpeg's container check). The default was `opus` codec + `wav` segment format
+  — an impossible pairing that, with the new `onfail=ignore`, would silently record
+  nothing. Fixed the default to `ogg` (matching the default opus codec) and added
+  load-time validation that rejects an incompatible codec×segment_format when local
+  recording is enabled, with an error naming the required format — so a misconfig
+  fails loudly at startup instead of losing research recordings silently.
+  (`internal/config/config.go`)
 - **HIGH — USB re-enumeration strands a device for hours.** The daemon pinned
   `hw:<card>,0` at registration and keyed the registry on device *name*, so a mic
   that returned on a different ALSA card number (unplug/replug, hub reset, USB bus

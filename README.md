@@ -173,10 +173,14 @@ stream:
   # Segments are named: <device>_YYYYMMDD_HHMMSS.<segment_format>
   local_record_dir: /var/lib/lyrebird/recordings  # Comment out to disable
   segment_duration: 3600     # Segment length in seconds (default: 1 hour)
-  segment_format: wav        # wav, flac, or ogg (default: wav = lossless)
+  segment_format: ogg        # Container for the recorded segments (default: ogg).
+                             # MUST match the codec: opus -> ogg, aac -> wav.
+                             # (One encode is muxed to both RTSP and the segment
+                             # file, so an incompatible pairing is rejected at
+                             # startup rather than silently recording nothing.)
   segment_max_age: 168h      # Delete segments older than 7 days (0 = no limit)
   segment_max_total_bytes: 0 # Delete oldest segments when dir exceeds this size (0 = no limit)
-  # At 48kHz/stereo/WAV ≈ 660 MB/hour per stream. A 64 GB Pi holds ~48 hours per stream.
+  # At 48kHz/stereo/opus 128k ≈ 58 MB/hour per stream. A 64 GB Pi holds ~1000+ hours per stream.
 
 # MediaMTX integration
 mediamtx:
