@@ -258,8 +258,8 @@ func TestBuildFFmpegCommandTeeMuxer(t *testing.T) {
 		if !strings.Contains(lastArg, "[f=rtsp") {
 			t.Errorf("C-1: tee output should contain [f=rtsp], got: %s", lastArg)
 		}
-		if !strings.Contains(lastArg, "[f=segment") {
-			t.Errorf("C-1: tee output should contain [f=segment], got: %s", lastArg)
+		if !strings.Contains(lastArg, "f=segment") {
+			t.Errorf("C-1: tee output should contain f=segment, got: %s", lastArg)
 		}
 		if !strings.Contains(lastArg, "segment_time=1800") {
 			t.Errorf("C-1: tee output should contain segment_time=1800, got: %s", lastArg)
@@ -272,6 +272,25 @@ func TestBuildFFmpegCommandTeeMuxer(t *testing.T) {
 		}
 		if !strings.Contains(lastArg, "reconnect=1") {
 			t.Errorf("C-2: tee RTSP output should contain reconnect options, got: %s", lastArg)
+		}
+		// The segment slave must carry onfail=ignore so a full/broken recording
+		// disk cannot abort the whole tee and drop the live RTSP stream.
+		segIdx := strings.Index(lastArg, "[f=segment")
+		altSegIdx := strings.Index(lastArg, ":f=segment")
+		if segIdx == -1 && altSegIdx == -1 {
+			t.Fatalf("tee output should contain an f=segment slave, got: %s", lastArg)
+		}
+		if !strings.Contains(lastArg, "onfail=ignore") {
+			t.Errorf("tee segment output must contain onfail=ignore so disk failures don't kill the live stream, got: %s", lastArg)
+		}
+		// The RTSP slave must NOT be onfail=ignore: a genuine publish failure
+		// should still exit ffmpeg so the manager restarts promptly.
+		rtspSlave := lastArg
+		if pipe := strings.Index(lastArg, "|"); pipe != -1 {
+			rtspSlave = lastArg[:pipe]
+		}
+		if strings.Contains(rtspSlave, "onfail=ignore") {
+			t.Errorf("tee RTSP slave must NOT be onfail=ignore (fast restart on publish failure), got: %s", rtspSlave)
 		}
 	})
 

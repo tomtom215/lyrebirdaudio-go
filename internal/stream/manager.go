@@ -114,7 +114,12 @@ func NewManager(cfg *ManagerConfig) (*Manager, error) {
 		logWriter, err := LogWriter(cfg.LogDir, cfg.StreamName,
 			WithMaxSize(DefaultMaxLogSize),
 			WithMaxFiles(DefaultMaxLogFiles),
-			WithCompression(true))
+			WithCompression(true),
+			// Surface rotation/compression failures (e.g. a full log disk)
+			// instead of silently discarding them; without a logger the
+			// RotatingWriter swallows these errors (M-3), hiding disk problems
+			// on an unattended device. nil logger is fine (no-op).
+			WithRotateLogger(cfg.Logger))
 		if err != nil {
 			return nil, fmt.Errorf("failed to create log writer: %w", err)
 		}

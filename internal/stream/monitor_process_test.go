@@ -172,6 +172,50 @@ func TestMonitorProcessNilCallback(t *testing.T) {
 	m.MonitorProcess(ctx, pid, 30*time.Millisecond, nil)
 }
 
+// TestMonitorProcessClearsMetricsOnExit verifies that MonitorProcess prunes its
+// per-PID entries from the metrics/prevCPU maps when it returns. On a 24/7
+// field device, FFmpeg is restarted with a NEW pid on every failure while the
+// ResourceMonitor is reused across restarts (one monitor per Manager). Without
+// pruning on exit, these maps would gain one permanent entry per pid and grow
+// unboundedly over months of operation until the host runs out of memory.
+func TestMonitorProcessClearsMetricsOnExit(t *testing.T) {
+	tmpDir := t.TempDir()
+	pid := 4242
+	procDir := filepath.Join(tmpDir, strconv.Itoa(pid))
+	fdDir := filepath.Join(procDir, "fd")
+	if err := os.MkdirAll(fdDir, 0755); err != nil {
+		t.Fatalf("Failed to create fd dir: %v", err)
+	}
+	statContent := "4242 (test) S 1 4242 4242 0 -1 4194304 100 0 0 0 10 5 0 0 20 0 3 0 1000 1000000 100 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n"
+	if err := os.WriteFile(filepath.Join(procDir, "stat"), []byte(statContent), 0644); err != nil {
+		t.Fatalf("Failed to create stat file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(procDir, "statm"), []byte("1000 500 100 10 0 500 0\n"), 0644); err != nil {
+		t.Fatalf("Failed to create statm file: %v", err)
+	}
+
+	m := NewResourceMonitor(WithProcPath(tmpDir))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+	defer cancel()
+
+	// Runs until ctx times out, collecting several samples along the way.
+	m.MonitorProcess(ctx, pid, 30*time.Millisecond, nil)
+
+	// After monitoring ends, the cached metrics for this pid must be gone.
+	if got := m.GetCachedMetrics(pid); got != nil {
+		t.Errorf("GetCachedMetrics(%d) = %+v after MonitorProcess returned; want nil (entry should be pruned)", pid, got)
+	}
+
+	// And the internal maps must not retain any per-PID entry (leak check).
+	m.mu.RLock()
+	nMetrics, nCPU := len(m.metrics), len(m.prevCPU)
+	m.mu.RUnlock()
+	if nMetrics != 0 || nCPU != 0 {
+		t.Errorf("after MonitorProcess returned: metrics map=%d, prevCPU map=%d; want 0/0 (no per-PID leak across restarts)", nMetrics, nCPU)
+	}
+}
+
 func TestGetProcessStartTime(t *testing.T) {
 	tmpDir := t.TempDir()
 	pid := 12348

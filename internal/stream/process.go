@@ -180,8 +180,17 @@ func buildFFmpegCommand(ctx context.Context, cfg *ManagerConfig) *exec.Cmd {
 		}
 		segPattern := filepath.Join(cfg.LocalRecordDir, cfg.StreamName+"_%Y%m%d_%H%M%S."+segFormat)
 
+		// onfail=ignore on the SEGMENT slave decouples local recording from the
+		// live stream: ffmpeg's tee muxer defaults to onfail=abort, so without
+		// this a failing segment write (a full or read-only recording disk, an
+		// I/O error) would abort the ENTIRE ffmpeg process and drop the live RTSP
+		// stream too. The live stream is the monitored primary function and must
+		// survive local-disk problems. The RTSP slave keeps the default
+		// (onfail=abort) so a genuine publish failure still exits ffmpeg promptly
+		// and the manager's backoff restart re-establishes BOTH outputs (which
+		// also recovers segment recording once the disk issue clears).
 		teeOutput := fmt.Sprintf(
-			"[f=rtsp:reconnect=1:reconnect_streamed=1:reconnect_delay_max=30]%s|[f=segment:segment_time=%d:strftime=1]%s",
+			"[f=rtsp:reconnect=1:reconnect_streamed=1:reconnect_delay_max=30]%s|[onfail=ignore:f=segment:segment_time=%d:strftime=1]%s",
 			cfg.RTSPURL, segDuration, segPattern,
 		)
 		args = append(args, "-f", "tee", teeOutput)
