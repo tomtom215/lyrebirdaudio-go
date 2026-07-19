@@ -44,6 +44,7 @@ func TestE2E_LocalRecordingTee(t *testing.T) {
 	mgrCfg := &stream.ManagerConfig{
 		DeviceName:      "e2e_rec",
 		InputFormat:     "lavfi",
+		RealtimeInput:   true, // pace the synthetic sine to real time for a healthy live publish
 		ALSADevice:      "sine=frequency=440:sample_rate=48000",
 		StreamName:      "e2e_rec",
 		SampleRate:      48000,

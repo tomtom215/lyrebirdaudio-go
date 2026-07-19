@@ -92,31 +92,30 @@ func TestBuildFFmpegCommandInputFormat(t *testing.T) {
 	}
 }
 
-// TestBuildFFmpegCommandRealtimePacing verifies that a synthetic lavfi source
-// is paced to real time with -re (required for a healthy live RTSP publish),
-// while a hardware ALSA capture is not (the device clock already paces it).
+// TestBuildFFmpegCommandRealtimePacing verifies that RealtimeInput adds -re
+// (required for a healthy live publish from a synthetic source), while the
+// default (a hardware ALSA capture, already paced by the device clock) does not.
 func TestBuildFFmpegCommandRealtimePacing(t *testing.T) {
 	tests := []struct {
-		name        string
-		inputFormat string
-		wantRe      bool
+		name     string
+		realtime bool
+		wantRe   bool
 	}{
-		{"lavfi is paced with -re", "lavfi", true},
-		{"alsa is not paced", "alsa", false},
-		{"empty (defaults to alsa) is not paced", "", false},
+		{"realtime input is paced with -re", true, true},
+		{"default (hardware) is not paced", false, false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := &ManagerConfig{
-				ALSADevice:  "hw:0,0",
-				InputFormat: tt.inputFormat,
-				StreamName:  "test",
-				SampleRate:  48000,
-				Channels:    2,
-				Bitrate:     "128k",
-				Codec:       "opus",
-				RTSPURL:     "rtsp://localhost:8554/test",
+				ALSADevice:    "hw:0,0",
+				RealtimeInput: tt.realtime,
+				StreamName:    "test",
+				SampleRate:    48000,
+				Channels:      2,
+				Bitrate:       "128k",
+				Codec:         "opus",
+				RTSPURL:       "rtsp://localhost:8554/test",
 			}
 
 			cmd := buildFFmpegCommand(context.Background(), cfg)

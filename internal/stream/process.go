@@ -138,14 +138,14 @@ func buildFFmpegCommand(ctx context.Context, cfg *ManagerConfig) *exec.Cmd {
 
 	args := []string{"-f", inputFormat}
 
-	// A synthetic "lavfi" source (e.g. a test tone) generates frames as fast as
-	// the CPU allows, so for LIVE streaming it must be paced to real time with
-	// -re; otherwise it blasts many minutes of audio per wall-clock second and
-	// the RTSP publish never settles into a healthy live state. A real ALSA
-	// capture is already paced by the hardware clock, so it must NOT get -re
-	// (that would double-pace it and drift). -re is an input option and must
-	// precede -i.
-	if inputFormat == "lavfi" {
+	// RealtimeInput paces a non-hardware source (e.g. a synthetic lavfi test
+	// tone) to real time with -re. Such a source otherwise generates frames as
+	// fast as the CPU allows and blasts many minutes of audio per wall-clock
+	// second, so a live RTSP publish never settles into a healthy state. A real
+	// ALSA capture is already paced by the hardware clock and must NOT get -re
+	// (it would double-pace and drift), so this stays opt-in and defaults off.
+	// -re is an input option and must precede -i.
+	if cfg.RealtimeInput {
 		args = append(args, "-re")
 	}
 

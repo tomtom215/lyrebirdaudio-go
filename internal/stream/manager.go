@@ -40,9 +40,11 @@ import (
 
 // ManagerConfig contains configuration for a stream manager.
 type ManagerConfig struct {
-	DeviceName      string                // Sanitized device name (e.g., "blue_yeti")
-	ALSADevice      string                // ALSA device identifier (e.g., "hw:0,0") or lavfi source
-	InputFormat     string                // Input format: "alsa" or "lavfi" (default: "alsa")
+	DeviceName    string // Sanitized device name (e.g., "blue_yeti")
+	ALSADevice    string // ALSA device identifier (e.g., "hw:0,0") or lavfi source
+	InputFormat   string // Input format: "alsa" or "lavfi" (default: "alsa")
+	RealtimeInput bool   // Pace a non-hardware input to real time with -re (e.g. a synthetic lavfi source); leave false for hardware ALSA capture, which is already real-time
+
 	StreamName      string                // Stream name for MediaMTX path
 	SampleRate      int                   // Sample rate in Hz
 	Channels        int                   // Number of channels
