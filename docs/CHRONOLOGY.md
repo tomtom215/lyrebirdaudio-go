@@ -199,6 +199,17 @@ landed for the genuine gaps:
   loop. Latent because nothing drove the real tee command end-to-end; the new
   `TestE2E_LocalRecordingTee` (real ffmpeg + MediaMTX) exposed it. Fixed by mapping
   the audio stream explicitly (`-map 0:a`) before `-f tee`. (`internal/stream/process.go`)
+- **HIGH — RTSP published over UDP; tee RTSP slave carried invalid options.** Driving
+  the real tee end-to-end (once `-map` let it run) surfaced two more issues on the
+  same path: both RTSP publish paths used ffmpeg's default UDP transport (RTSP-over-UDP
+  can silently drop/reorder RTP even on localhost, corrupting research audio and
+  leaving MediaMTX not marking the publisher "ready"), and the tee's RTSP slave carried
+  `reconnect*` protocol options in a muxer-option position where they are meaningless
+  and perturb muxer setup. Fixed: publish over TCP (`rtsp_transport=tcp`) on both paths
+  for lossless in-order delivery, and drop the bogus reconnect options from the tee
+  slave (recovery there is the manager's backoff restart). A `RealtimeInput` opt-in was
+  also added so a synthetic (lavfi) source can be `-re`-paced for a healthy live publish
+  without affecting hardware ALSA capture. (`internal/stream/process.go`, `manager.go`)
 - **HIGH — USB re-enumeration strands a device for hours.** The daemon pinned
   `hw:<card>,0` at registration and keyed the registry on device *name*, so a mic
   that returned on a different ALSA card number (unplug/replug, hub reset, USB bus
