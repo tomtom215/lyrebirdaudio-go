@@ -64,8 +64,8 @@ func TestRunReopensLogWriterAfterClose(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFileLock() error = %v", err)
 	}
-	if err := external.Acquire(0); err != nil {
-		t.Fatalf("external Acquire() error = %v", err)
+	if err := external.AcquireContext(context.Background(), 0); err != nil {
+		t.Fatalf("external AcquireContext() error = %v", err)
 	}
 
 	runCtx, runCancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
@@ -105,5 +105,58 @@ func TestRunReopensLogWriterAfterClose(t *testing.T) {
 
 	if !sawMarker {
 		t.Fatal("FFmpeg stderr never reached the log file after Close()+re-Run: log writer was not reopened")
+	}
+}
+
+// TestEnsureLogWriterFailureTolerated pins the mid-life policy: if the log
+// writer cannot be reopened on a re-run (here: LogDir is a plain file, as it
+// would appear after filesystem corruption), the manager logs and continues
+// WITHOUT FFmpeg logging rather than failing — a log-disk problem must never
+// take down the live audio stream.
+func TestEnsureLogWriterFailureTolerated(t *testing.T) {
+	logDir := filepath.Join(t.TempDir(), "logs")
+	if err := os.MkdirAll(logDir, 0750); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &ManagerConfig{
+		DeviceName: "test_ensure_fail",
+		ALSADevice: "dummy",
+		StreamName: "test_ensure_fail",
+		SampleRate: 48000,
+		Channels:   2,
+		Bitrate:    "128k",
+		Codec:      "opus",
+		RTSPURL:    "/dev/null",
+		LockDir:    t.TempDir(),
+		LogDir:     logDir,
+		FFmpegPath: "/fake/ffmpeg",
+		Backoff:    NewBackoff(time.Second, 10*time.Second, 5),
+		Logger:     newTestLogger(t),
+	}
+
+	mgr, err := NewManager(cfg)
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+	if err := mgr.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	// Replace the log directory with a plain file so reopening must fail.
+	if err := os.RemoveAll(logDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(logDir, []byte("not a directory"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr.ensureLogWriter() // must not panic and must not fail the manager
+
+	mgr.mu.RLock()
+	writer := mgr.logWriter
+	mgr.mu.RUnlock()
+	if writer != nil {
+		t.Error("logWriter should remain nil when reopening fails")
 	}
 }
