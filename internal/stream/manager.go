@@ -113,15 +113,7 @@ func NewManager(cfg *ManagerConfig) (*Manager, error) {
 
 	// Create rotating log writer if LogDir is specified
 	if cfg.LogDir != "" {
-		logWriter, err := LogWriter(cfg.LogDir, cfg.StreamName,
-			WithMaxSize(DefaultMaxLogSize),
-			WithMaxFiles(DefaultMaxLogFiles),
-			WithCompression(true),
-			// Surface rotation/compression failures (e.g. a full log disk)
-			// instead of silently discarding them; without a logger the
-			// RotatingWriter swallows these errors (M-3), hiding disk problems
-			// on an unattended device. nil logger is fine (no-op).
-			WithRotateLogger(cfg.Logger))
+		logWriter, err := newManagerLogWriter(cfg)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create log writer: %w", err)
 		}
@@ -136,6 +128,54 @@ func NewManager(cfg *ManagerConfig) (*Manager, error) {
 	}
 
 	return mgr, nil
+}
+
+// newManagerLogWriter builds the rotating FFmpeg-stderr writer for cfg.
+// Shared by NewManager and ensureLogWriter so the two paths cannot drift.
+func newManagerLogWriter(cfg *ManagerConfig) (io.WriteCloser, error) {
+	return LogWriter(cfg.LogDir, cfg.StreamName,
+		WithMaxSize(DefaultMaxLogSize),
+		WithMaxFiles(DefaultMaxLogFiles),
+		WithCompression(true),
+		// Surface rotation/compression failures (e.g. a full log disk)
+		// instead of silently discarding them; without a logger the
+		// RotatingWriter swallows these errors (M-3), hiding disk problems
+		// on an unattended device. nil logger is fine (no-op).
+		WithRotateLogger(cfg.Logger))
+}
+
+// ensureLogWriter recreates the rotating FFmpeg log writer if it was closed.
+//
+// streamService closes the manager after EVERY Run return, and the supervisor
+// re-runs the SAME service after a failure (e.g. a lock-acquire timeout while
+// a competing process holds the device lock at startup). Without reopening
+// here, every FFmpeg run after the first supervisor re-run would silently
+// discard its stderr — an unattended device could stream for months with
+// empty logs, leaving nothing to diagnose a later failure with.
+//
+// Unlike NewManager, a failure here is logged and tolerated: mid-life,
+// keeping the audio stream alive matters more than its log file (a full log
+// disk must not take down the stream).
+func (m *Manager) ensureLogWriter() {
+	if m.cfg.LogDir == "" {
+		return
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.logWriter != nil {
+		return
+	}
+
+	logWriter, err := newManagerLogWriter(m.cfg)
+	if err != nil {
+		if m.cfg.Logger != nil {
+			m.cfg.Logger.Warn("failed to reopen FFmpeg log writer; continuing without FFmpeg logging",
+				"device", m.cfg.DeviceName, "error", err)
+		}
+		return
+	}
+	m.logWriter = logWriter
 }
 
 // logf writes a formatted info-level log message if Logger is configured.
@@ -183,6 +223,10 @@ func (m *Manager) Run(ctx context.Context) error {
 	}
 	defer m.releaseLock()
 	m.logf("Lock acquired, starting main loop")
+
+	// Reopen the FFmpeg log writer if a previous Run/Close cycle closed it
+	// (the supervisor re-runs a failed service on the same manager).
+	m.ensureLogWriter()
 
 	// Main restart loop
 	for {

@@ -266,6 +266,82 @@ landed for the genuine gaps:
 
 ---
 
+## Phase 8: Fable 5 Adversarial Reliability Audit (Session 5)
+
+**Date**: 2026-07-21
+**Branch**: `claude/lyrebird-reliability-audit-92322q`
+**Focus**: Long-horizon field chaos — identity stability across polls, clock
+discontinuities, resource exhaustion over restart cycles, fault-injection E2E,
+32-bit smoke testing. All fixes TDD (failing test first).
+
+### Fixed
+- **HIGH — unstable device identity registered unbounded streams.**
+  `SanitizeDeviceName` falls back to a TIMESTAMPED `unknown_device_<unix>`
+  name (bash-compatible) for raw names that sanitize to nothing — e.g. a fully
+  non-ASCII or symbols-only USB product string. The daemon keyed its stream
+  registry on that name, so every 10 s poll computed a NEW identity for the
+  same physical device and registered another stream service: unbounded growth
+  of managers, lock files, goroutines and failing FFmpeg processes, plus a
+  config/MediaMTX path that changed every poll. Added
+  `audio.Device.StableName()` (substitutes deterministic
+  `usb_<vendor>_<product>` when sanitization hit the timestamped fallback);
+  daemon registration now uses it. (`internal/audio/detector.go`,
+  `cmd/lyrebird-stream/main.go`)
+- **MEDIUM — FFmpeg stderr logging silently lost after a supervisor re-run.**
+  `streamService` closes the manager after every `Run` return, but suture
+  re-runs the SAME service after an error (e.g. a lock-acquire timeout while a
+  competing process briefly holds the device lock). The re-run streamed with a
+  nil log writer forever — months of unattended operation with empty FFmpeg
+  logs. `Manager.Run` now reopens the rotating writer; a reopen failure is
+  logged and tolerated so a log-disk problem can never take down the stream.
+  (`internal/stream/manager.go`)
+- **MEDIUM — retention deleted pre-clock-sync recordings.** A no-RTC Pi boots
+  near the Unix epoch; segments recorded before NTP sync carry ~1970 mtimes.
+  After NTP steps the clock forward, the hourly retention pass computed a
+  "55-year" age and deleted the only copy of audio captured while offline.
+  Segments stamped before a 2020-01-01 sanity floor are now exempt from
+  AGE-based deletion (still first in line for the SIZE budget).
+  (`cmd/lyrebird-stream/maintenance.go`)
+
+### New test artifacts
+- **Fuzz**: `FuzzParseUSBID`, `FuzzParseCPUJiffies` (+ sibling stat parsers on
+  the same corpus), `FuzzStableNameDeterministic` — ~1M execs each, clean.
+- **Fault-injection E2E** (real ffmpeg + MediaMTX): `TestE2E_FFmpegKillRecovery`
+  (SIGKILL ffmpeg mid-publish twice; assert backoff re-publish + fd baseline
+  after shutdown), `TestE2E_MediaMTXRestartRecovery` (kill/restart the server
+  on the same ports mid-stream; assert recovery).
+- **Soak**: `TestRegisterRemoveCyclesNoResourceLeak` — 12 register→run→remove
+  cycles through the real supervisor/manager/flock/log-writer wiring; asserts
+  fds and goroutines return to baseline (runs untagged, -race clean).
+
+### Verified sound (no change needed)
+- Stall-detector 404-vs-stall semantics (a departed publisher makes ffmpeg's
+  TCP publish fail → exit → manager backoff restart covers it); flock
+  single-gate acquire; koanf validate-before-swap; MediaMTX client timeouts;
+  backoff jitter math; RotatingWriter close/rotate interleaving (unreachable
+  in manager usage — writes are sequenced before Close).
+- **32-bit**: full test suite passes compiled as GOARCH=386 (32-bit `int`);
+  cross-compiles clean for linux/amd64, arm64, arm GOARM=7, arm GOARM=6.
+
+### Residual risks (documented, accepted)
+- A fake-hwclock offset of hours–days at boot can still mis-age recent
+  segments (only the epoch-class discontinuity is guarded); a backwards NTP
+  step larger than one segment duration could overwrite a segment via
+  strftime filename collision.
+- Two devices with identical names — or identical USB IDs and unusable
+  names — collapse to one stream identity (pre-existing limitation).
+- Stall-detector removal + poller re-registration resets a persistently
+  failing device's backoff (~3 min cadence) — intended aggressive recovery,
+  bounded.
+
+### Verification
+`gofmt -s`, `go vet`, `golangci-lint` (0 issues), `gosec`, `govulncheck` all
+clean; `go test -race ./...` green; e2e green against real ffmpeg + MediaMTX
+v1.19.2 including the new fault-injection tests; GOARCH=386 suite green;
+`go mod tidy` a no-op. Coverage flat-to-improved (audio 97.6%→98.1%).
+
+---
+
 ## Quality Metrics Over Time
 
 | Metric | Phase 3 Start | Phase 3 End | Phase 5 End | Phase 6 End |

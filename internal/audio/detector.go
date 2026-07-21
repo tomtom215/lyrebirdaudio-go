@@ -41,6 +41,31 @@ func (d *Device) FriendlyName() string {
 	return SanitizeDeviceName(d.Name)
 }
 
+// StableName returns a deterministic sanitized identity for the device,
+// suitable as a long-lived registry/config key.
+//
+// SanitizeDeviceName intentionally falls back to a TIMESTAMPED name
+// ("unknown_device_<unix>") when the raw name sanitizes to nothing (e.g. a
+// fully non-ASCII or symbols-only USB product string) or is rejected as
+// suspicious — matching the bash implementation. That fallback is unstable:
+// every call yields a different identity. Code that keys long-lived state on
+// the sanitized name (the daemon's stream registry, config lookup, MediaMTX
+// path) must use StableName instead, which substitutes the deterministic
+// "usb_<vendor>_<product>" identity whenever sanitization produced the
+// timestamped fallback and a USB ID is available.
+//
+// Names that sanitize cleanly are returned unchanged, so this differs from
+// SanitizeDeviceName only for devices that had no usable name anyway. Two
+// identical devices with unusable names collapse to one identity — the same
+// pre-existing limitation as two devices reporting identical names.
+func (d *Device) StableName() string {
+	name := SanitizeDeviceName(d.Name)
+	if !strings.HasPrefix(name, "unknown_device_") || d.VendorID == "" || d.ProductID == "" {
+		return name
+	}
+	return "usb_" + strings.ToLower(d.VendorID) + "_" + strings.ToLower(d.ProductID)
+}
+
 // FullDeviceID returns the sanitized full device ID for config lookup.
 // This is the "full ID" format: uppercase, USB_ prefix.
 //
