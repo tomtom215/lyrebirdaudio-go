@@ -301,7 +301,12 @@ func registerNewDevices(
 
 	registered := 0
 	for _, dev := range devices {
-		devName := audio.SanitizeDeviceName(dev.Name)
+		// StableName, not SanitizeDeviceName: the sanitizer's fallback for an
+		// unusable raw name is timestamped (unstable), and this name keys the
+		// stream registry across polls. An unstable key would re-register the
+		// same physical device as a new stream on every 10s poll — unbounded
+		// growth of managers, lock files and failing FFmpeg processes.
+		devName := dev.StableName()
 
 		registeredMu.RLock()
 		alreadyRegistered := registeredServices[devName]
