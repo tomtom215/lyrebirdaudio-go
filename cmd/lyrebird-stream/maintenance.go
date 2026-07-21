@@ -118,6 +118,18 @@ func runSegmentRetention(ctx context.Context, logger *slog.Logger, streamCfg con
 	}
 }
 
+// segmentMtimeSanityFloor is the earliest modification time considered a REAL
+// wall-clock timestamp on a recording segment. Field stations (Raspberry Pi)
+// have no RTC: after a power loss the clock starts at or near the Unix epoch,
+// FFmpeg records segments stamped ~1970, and only later does NTP step the
+// clock forward to the true date. Age-based retention run after that step
+// would compute a "55-year" age for every pre-sync segment and delete the
+// only copy of audio captured while the station was offline. Any segment
+// stamped before this floor therefore carries a bogus timestamp whose age
+// cannot be computed, and is exempt from AGE-based deletion (it remains
+// subject to the size budget, which needs no trustworthy clock).
+var segmentMtimeSanityFloor = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+
 // cleanupSegments performs one pass of segment file cleanup.
 func cleanupSegments(logger *slog.Logger, streamCfg config.StreamConfig) {
 	dir := streamCfg.LocalRecordDir
@@ -154,11 +166,20 @@ func cleanupSegments(logger *slog.Logger, streamCfg config.StreamConfig) {
 		})
 	}
 
-	// Step 1: Delete files older than SegmentMaxAge.
+	// Step 1: Delete files older than SegmentMaxAge. Files stamped before the
+	// sanity floor were written while the clock was unsynced (no-RTC boot);
+	// their real age is unknowable, so they are kept here and left to the
+	// size-budget step below.
 	if streamCfg.SegmentMaxAge > 0 {
 		cutoff := now.Add(-streamCfg.SegmentMaxAge)
+		bogus := 0
 		remaining := files[:0]
 		for _, f := range files {
+			if f.modTime.Before(segmentMtimeSanityFloor) {
+				bogus++
+				remaining = append(remaining, f)
+				continue
+			}
 			if f.modTime.Before(cutoff) {
 				if err := os.Remove(f.path); err != nil {
 					logger.Warn("segment retention: failed to delete old segment", "path", f.path, "error", err)
@@ -170,6 +191,10 @@ func cleanupSegments(logger *slog.Logger, streamCfg config.StreamConfig) {
 			remaining = append(remaining, f)
 		}
 		files = remaining
+		if bogus > 0 {
+			logger.Info("segment retention: kept segments with pre-clock-sync timestamps (age unknowable; still subject to size budget)",
+				"count", bogus, "floor", segmentMtimeSanityFloor.Format(time.RFC3339))
+		}
 	}
 
 	// Step 2: Delete oldest files until total size is within SegmentMaxTotalBytes.
