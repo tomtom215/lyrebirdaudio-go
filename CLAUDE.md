@@ -134,6 +134,7 @@ systemd/               → lyrebird-stream.service (18 security hardening direct
 - **Opus deep audit**: [docs/OPUS_AUDIT_REPORT.md](docs/OPUS_AUDIT_REPORT.md) — 3 bugs found and fixed
 - **Security audit**: [docs/SECURITY_AUDIT.md](docs/SECURITY_AUDIT.md) — Permissions hardening (SEC-1 through SEC-5)
 - **Engineering review (2026-07)**: [docs/ENGINEERING_REVIEW_2026-07.md](docs/ENGINEERING_REVIEW_2026-07.md) — 1 critical + 8 high fixed (real-E2E verified), MediaMTX v1.19.2 + Go 1.25.12 modernization; full MEDIUM + LOW backlog since resolved (all with regression tests; race/lint/govulncheck/E2E clean)
+- **Adversarial reliability audit (2026-07, Phase 8)**: see [docs/CHRONOLOGY.md](docs/CHRONOLOGY.md) — 1 high + 2 medium fixed (unstable device identity, log-writer loss on re-run, pre-clock-sync retention deletion); fault-injection E2E + fuzz + cycle-soak added; 32-bit (386) suite green
 
 ---
 
@@ -144,7 +145,7 @@ systemd/               → lyrebird-stream.service (18 security hardening direct
 | internal/util | 100.0% | ✅ Excellent |
 | internal/supervisor | 99.2% | ✅ Excellent |
 | internal/diagnostics | 97.8% | ✅ Excellent |
-| internal/audio | 97.6% | ✅ Excellent |
+| internal/audio | 98.1% | ✅ Excellent |
 | internal/config | 97.3% | ✅ Excellent |
 | internal/health | 97.1% | ✅ Excellent |
 | internal/mediamtx | 97.1% | ✅ Excellent |

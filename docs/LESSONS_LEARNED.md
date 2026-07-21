@@ -301,6 +301,43 @@ Backoff that resets after N seconds of successful running prevents permanent slo
 
 **Lesson**: Wrap critical background loops in a recover-*and-restart* supervisor (`runSupervised`) so a panic is contained to its subsystem, logged with a stack, and the loop self-heals — without crashing the process and dropping every stream. Gate the restart with a short delay so a tight panic loop can't spin the CPU, and exit cleanly when the context is cancelled.
 
+### LL-20: Identity Keys Must Be Deterministic — Timestamped Fallbacks Poison Registries
+
+**Pattern**: `SanitizeDeviceName` returns `unknown_device_<unix-timestamp>` for
+unusable raw names (bash-compatible). Fine for a one-shot CLI; fatal for the
+daemon, which keyed its stream registry on the name across polls — the same
+physical device got a NEW identity every second, so every poll registered
+another stream (unbounded manager/lock/FFmpeg growth).
+
+**Lesson**: Any value used as a long-lived registry/config key must be a pure
+function of stable attributes. If a sanitizer has a time-, random- or
+counter-based fallback, wrap it (`Device.StableName()` derives
+`usb_<vendor>_<product>`) before using it as identity. Fuzz the invariant:
+same input → same key, always.
+
+### LL-21: Resources Closed by a Service Wrapper Must Be Re-Openable
+
+**Pattern**: `streamService.Run` closes the manager after every `Run` return
+(correct for fd hygiene), but suture re-Serves the SAME service object after a
+failure. The manager's log writer was created once in the constructor, so
+every post-re-run FFmpeg lost its stderr logging silently.
+
+**Lesson**: If a supervisor can re-run a service, everything the service's
+teardown closes must be lazily re-acquirable at the start of `Run`. Decide the
+failure policy explicitly: fail-fast at construction (operator feedback), but
+tolerate-and-log on mid-life reopen (keep the stream alive).
+
+### LL-22: Never Trust File mtimes Across a Clock-Sync Discontinuity
+
+**Pattern**: No-RTC devices boot near the epoch; files written before NTP sync
+carry ~1970 mtimes. Age-based retention run after the clock steps forward
+computed a 55-year age and deleted irreplaceable pre-sync recordings.
+
+**Lesson**: Age-based deletion needs a sanity floor: an mtime before any
+plausible deployment date means "age unknowable — skip age policy" (keep
+size-based policy, which needs no clock). Applies to any retention/expiry
+logic on embedded devices without an RTC.
+
 ---
 
-*Last updated: 2026-07-19*
+*Last updated: 2026-07-21*
